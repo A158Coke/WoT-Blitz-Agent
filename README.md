@@ -280,6 +280,12 @@ usage          # Token 用量统计
 
 ## 许可证
 
+本项目代码以 [MIT License](LICENSE) 发布，版权所有 (c) 2026 Chen Yu。
+
 引用开源库：
 - `wotbreplay-parser` (MIT) — https://github.com/eigenein/wotbreplay-parser
 - 其他 Rust crate 均为 MIT 或 Apache-2.0 许可
+
+注意：MIT 许可仅覆盖本项目自研代码。运行中下载/生成的第三方与游戏内容
+（BlitzKit 数据、坦克 GLB 模型、Wargaming 游戏贴图、`.wotbreplay` 回放等）
+归其各自权利人（Wargaming 等）所有，不在本许可范围内。

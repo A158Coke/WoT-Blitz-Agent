@@ -844,8 +844,10 @@ function populateFilters() {
     addOpts('tp-type',types,v=>TYPE_LABEL[v]||v,'Type');
 }
 // ---------- 模糊搜索 ----------
-// 归一化：小写 + 去除空格/连字符/点等符号（e100↔E 100、t34↔T-34、obj261↔Object 261）
-const normTank = s => (s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+// 归一化：小写 + 去除空格/连字符/点等符号（e100↔E 100、t34↔T-34、obj261↔Object 261）。
+// 保留 Unicode 字母/数字（\p{L}\p{N}）：中文车名（如 24689"星际猎人"）归一化后原样保留，
+// 可直接子串/子序列命中——旧版 [^a-z0-9] 会把中文剥成空串导致中文名搜不到。
+const normTank = s => (s||'').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 // 单 token 对名称打分：① 归一化子串（越靠前越高，前缀再加分）② 子序列（匹配越紧凑越高）。
 // 0 = 不匹配。
 function tankTokenScore(name, tok) {

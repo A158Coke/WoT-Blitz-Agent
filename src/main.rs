@@ -973,9 +973,14 @@ fn main() -> Result<()> {
                 .map(|br| wotb_agent::replay::combat::author_nick_from_battle_results(br))
                 .or_else(|| replay.read_meta().ok().map(|m| m.player_name.clone()))
                 .unwrap_or_default();
+            // 实际搭载 comp blob：俯仰锚定按实际搭载的炮对号（多炮车非顶级主炮范围不同）
+            let comps = br.as_ref().map(|br| {
+                let valid: Vec<u32> = br.player_results.iter().map(|pr| pr.info.tank_id).collect();
+                wotb_agent::replay::playback::collect_comp_descriptors(&raw_packets, &valid)
+            }).unwrap_or_default();
             let pitch_limits = br.as_ref()
                 .and_then(|br| TankResolver::load_from_json_file(std::path::Path::new("data/tank_cache.json")).ok()
-                    .map(|r| r.pitch_limits_from_battle_results(br)))
+                    .map(|r| r.pitch_limits_from_battle_results(br, &comps)))
                 .unwrap_or_default();
             let mut shot_replay = wotb_agent::replay::combat::extract_shot_replays_auto_with_limits(
                 &raw_packets, &author_nick, &pitch_limits)?;
@@ -1326,7 +1331,7 @@ fn cmd_update_data(
     }.save()?;
 
     println!("  Manifest: data/data_version.json updated");
-    println!("Note: armor_cache.json / gun_angles.json are static fallback data and are NOT refreshed by this command.");
+    println!("Note: armor_cache.json is static fallback data (armor summary) and is NOT refreshed by this command.");
     Ok(())
 }
 

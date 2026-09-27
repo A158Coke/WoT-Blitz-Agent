@@ -16,7 +16,7 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
 | 3D 装甲查看器 | GLB 双模型（视觉+碰撞）+ 炮塔/炮管交互 + 多层穿透判定 + 实时穿透热力图 |
 | 坦克配置切换 | 多炮塔/多主炮坦克（如 E-100 双炮）切换配置，同步模型/装甲/弹种 |
 | 击穿判定内核 | Rust 统一实现：跳弹/转正/overmatch/间隙甲/HEAT 间隙衰减/HE 溅射/装备修正 |
-| BlitzKit 数据集成 | tanks.pb 735 辆（弹种/穿深/血量）+ models.pb（spaced 权威）+ GLB 几何 |
+| BlitzKit 数据集成 | tanks.pb 735 辆（弹种/穿深/血量）+ models.pb（spaced 权威 + **逐板装甲厚度/车体炮塔碰撞盒/俯仰极限**，唯一来源）+ GLB 几何 |
 | LLM Agent | 自然语言对话，10 个工具自主获取数据并生成分析（含热力图截图） |
 | 射击复现（实验性） | 从回放提取射击事件链，3D 查看器按射手视角复现弹道与判定；**游戏弹孔解码点**（服务器 segment 按游戏 `DecodeShotSegment` 同构公式解出的部件 AABB 量化点，橙色 ◆ 标记，与本地 raycast 弹着点对照）；目标/射手模型按**实际搭载配置**选炮塔/主炮变体 |
 | 全场实时回放 | 14 车连续播放整场战斗：客户端滤波位姿（AvatarFilter 移植，60Hz→0.1s 网格）+ prop2 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流/计分板；播放/暂停/0.5~16x 倍速/进度拖拽，自由/俯视/跟随镜头，可选 GLB 真实车模。多配置坦克按 **实际搭载**（ARENA_INFO 组成 blob → 发射弹种 → 初始血量 三级证据）自动选炮塔/主炮变体。3D 场景叠加（离线导出真贴图场景 + 分层地表实时合成）；场上标签（昵称+血量条，恒定屏幕占比/半透明）；队伍色弹道轨迹线 |
@@ -28,17 +28,18 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
 | 模块 | 数据文件依赖 | 外部服务 |
 |------|------|------|
 | 回放解析（single/scan/combat/loadout/playback） | 仅 `.wotbreplay` 文件本身 | 无 |
-| 射击复现（3D 查看器） | `tank_cache.json`（昵称→tank_id/俯仰极限）· `tanks.pb`（comp blob 局部 id→配置对号）· `models.pb`（部件盒/原点）· `glb_cache/`（模型）★ | 无（模型缓存后离线可用） |
+| 射击复现（3D 查看器） | `tanks.pb`（comp blob 局部 id→配置对号）· `models.pb`（俯仰极限/部件盒/原点，按实际搭载 comp 对号）· `game_data/`（炮管/底盘碰撞盒）· `glb_cache/`（模型）★ | 无（模型缓存后离线可用） |
 | 全场实时回放 | 同射击复现（真实车模开关关闭时仅需 `.wotbreplay`） | 同上（仅 GLB 开关） |
-| 3D 装甲查看器 / 穿透热力图 | `game_data/`（装甲逐板厚度）· `models.pb`（原点/变体映射）· `glb_cache/` ★ | 无（缓存后离线可用） |
+| 3D 装甲查看器 / 穿透热力图 | `models.pb`（逐板装甲/车体炮塔碰撞盒/原点/变体映射）· `game_data/`（炮管/底盘碰撞盒）· `glb_cache/` ★ | 无（缓存后离线可用） |
 | WG API 集成（Player/Compare/Prematch/Snapshot） | `tank_cache.json`（昵称→tank_id 联表） | WG API（application_id） |
 | LLM Agent | `tank_cache.json` + 各工具自身依赖 | LLM API 端点 |
 
 补充说明：
 
-- **实际搭载配置**（射击复现/实时回放的炮塔/主炮变体选择）三级证据链：
+- **实际搭载配置**（射击复现/实时回放的炮塔/主炮变体选择与**俯仰锚定**）三级证据链：
   ① ARENA_INFO 组成 blob（回放内嵌，确定性）；② 发射弹种 ⊆ 炮弹表；③ 初始血量 = 车体+炮塔
-  health（×1.125 改进耐久）。依次回退，均不命中 → 顶级配置。
+  health（×1.125 改进耐久）。依次回退，均不命中 → 顶级配置。prop2 俯仰 frac 按锚定
+  范围解码（扇区化：随炮塔朝向 front/back 分段）。
 - `glb_cache/` 首次访问自动从 BlitzKit CDN 下载（reqwest 失败自动回退系统 curl）；
   下载完成后离线可用。
 - 非调试模式下射击复现常显内容：入射延长射线（900m）+ 命中点标记 + 轨迹管；
@@ -99,9 +100,9 @@ tank_cache_path = "data/tank_cache.json"
 | 数据 | 位置 | 说明 |
 |------|------|------|
 | 坦克数据源 | `data/tanks.pb` | BlitzKit 坦克数据库（运行时解析元数据/武器/装填，唯一数据源） |
-| 模型节点映射 | `data/models.pb` | 炮塔/主炮→`gun/turret_0X` 模型节点映射 + spaced 分类权威 |
+| 模型定义 | `data/models.pb` | 炮塔/主炮→`gun/turret_0X` 模型节点映射 + spaced 分类权威 + 逐板装甲厚度/车体炮塔碰撞盒/俯仰极限（唯一来源） |
 | 坦克缓存 | `data/tank_cache.json` | 由 `fetch-tanks` 构建的缓存 |
-| 装甲/碰撞数据 | `data/game_data/`（700+ 个 JSON） | 从游戏 DVPL 提取的可移植数据 |
+| 装甲/碰撞数据 | `data/game_data/`（700+ 个 JSON） | 从游戏 DVPL 提取：primaryArmor 装甲摘要、炮管/底盘碰撞盒（BlitzKit 缺项）及调试字段 |
 | 数据版本清单 | `data/data_version.json` | 各数据文件对应的游戏版本与更新时间（`update-data` 维护） |
 
 其他按需缓存（首次访问自动下载，无需手动准备）：3D 模型 `glb_cache/`、
@@ -123,10 +124,10 @@ cargo run --release -- update-data --check  # 只查看版本状态与将要执�
 常用参数：`--offline`（跳过联网下载，仅用现有 pb 重建）、`--force`（强制全量重提取）、
 `--game-dir`（手动指定游戏目录，默认自动探测 Steam 安装路径）。
 
-注意：`armor_cache.json` / `gun_angles.json` 是静态回退数据（仓库内无生成器），
-不随 `update-data` 刷新；它们仅在 `game_data/` 缺失时兜底，优先级更低。
+注意：`armor_cache.json` 是静态回退数据（仓库内无生成器），不随 `update-data` 刷新；
+仅在 `game_data/` 缺失时兜底装甲摘要，优先级更低。
 
-回放 3D 场景（建筑/树木真贴图 GLB、分层地表、草地密度、地形尺度元数据）同样
+回放 3D 场景（建筑/树木真贴图 GLB、分层地表、地形尺度元数据）同样
 源自本机客户端，按客户端自身管线离线导出，游戏更新后建议重跑：
 
 ```bash
@@ -149,7 +150,6 @@ SCALED_TILES / HEIGHT_BLEND）。
 | `<space>.ground.webp` | 整图烘焙地面 4096²（客户端着色公式逐像素；前端回退与 2D 模式用） |
 | `<space>.ground.cm/lm/tile0/tile1/mask0/mask1[/hmap0/hmap1].webp` | 分层地表贴图（全部无 alpha——Chrome 把带 alpha 的 webp 预乘解码会压暗 GPU 侧权重） |
 | `<space>.ground.layers.json` | 分层合成参数（textureTiling/tileScale/tileColor/HeightBlend 等逐图旗标） |
-| `<space>.grass.bin` / `<space>.grasstint.webp` | 草地密度位图 / 按位置染色图 |
 | `<space>.json` | 地图元数据（世界包围盒/地形尺度/导出统计） |
 
 前端 3D 地形优先用分层贴图按客户端同款公式实时合成（tile 细节纹理以原生分辨率
@@ -270,7 +270,8 @@ Export 导出为 Markdown；每轮对话结束自动落盘 `data/sessions/<会�
 
 ### Tankopedia
 
-全部 723 辆坦克的图鉴网格。支持模糊搜索（`e100`、`is7`、`def…`）、
+全部 723 辆坦克的图鉴网格。支持中英文模糊搜索（`e100`、`is7`、`def…`、中文车名如
+`星际猎人`；支持子串与紧凑子序列匹配）、
 按等级/国家/类型筛选。点击卡片进入坦克详情：装甲汇总、逐板厚度（含 spaced 分类）、
 弹种数据（正式名/穿深/伤害/HE 爆炸半径）。
 

@@ -1,6 +1,6 @@
 // 数据路径层：静态数据统一放项目根 `data/` 目录，经 data_path() 访问，避免散落硬编码路径。
 // 关键数据源：tanks.pb + models.pb（BlitzKit 坦克数据库/模型定义，运行时直接解析）、
-// armor_cache.json / gun_angles.json / tank_cache.json / game_data/（便携装甲模型）。
+// armor_cache.json / tank_cache.json / game_data/（便携装甲模型/碰撞盒）。
 //
 // 运行根目录（base_dir）：桌面/CLI 不设置 = 当前目录（语义与历史版本完全一致）；
 // 移动端由 Tauri 入口在启动最早期 set_base_dir(应用私有目录)，此后所有相对路径

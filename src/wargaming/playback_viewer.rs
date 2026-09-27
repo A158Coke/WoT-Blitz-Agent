@@ -67,8 +67,12 @@ fn build_playback_json_uncached(path: &Path, key: &str) -> anyhow::Result<Vec<u8
 
     let br = replay.read_battle_results().ok();
     let resolver = crate::wargaming::viewer::global_resolver();
+    // 实际搭载 comp blob（俯仰锚定与变体标注共用一份收集）
+    let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
+        .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
+    let comps = crate::replay::playback::collect_comp_descriptors(&packets, &valid_tanks);
     let pitch_limits = br.as_ref()
-        .map(|br| resolver.pitch_limits_from_battle_results(br))
+        .map(|br| resolver.pitch_limits_from_battle_results(br, &comps))
         .unwrap_or_default();
 
     // battle_results → 玩家联表（昵称/队伍 × tank_id）+ 坦克名
@@ -116,9 +120,7 @@ fn build_playback_json_uncached(path: &Path, key: &str) -> anyhow::Result<Vec<u8
         tank_names,
     };
     let mut pb = crate::replay::playback::build_playback_data(&input)?;
-    // 实际搭载：comp blob（确定性）优先，弹种/血量推断回退
-    let valid_tanks: Vec<u32> = pb.vehicles.iter().map(|v| v.tank_id).collect();
-    let comps = crate::replay::playback::collect_comp_descriptors(&packets, &valid_tanks);
+    // 实际搭载：comp blob（确定性）优先，弹种/血量推断回退（comps 已在锚定表构建时收集）
     if !comps.is_empty() {
         eprintln!("[playback] comp 描述符: {} 条（updateArena subtype 1）", comps.len());
     }

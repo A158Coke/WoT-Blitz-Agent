@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::Path;
+
+use crate::wargaming::dvpl::BoundingBox;
 
 // BlitzKit tanks.pb / models.pb 自实现 Protobuf 解析器：逐字段解析二进制
 // 坦克数据库（tier/类型/国家/名称/血量/炮塔/主炮），支持批量下载封面图。
@@ -246,6 +249,13 @@ pub struct TurretModelInfo {
     /// 炮塔装甲板 spaced 列表（TurretModelDefinition.armor.spaced，BlitzKit 分类权威）。
     #[serde(default)]
     pub turret_spaced: Vec<u32>,
+    /// 炮塔装甲板逐板厚度（TurretModelDefinition.armor.thickness，板局部 id → mm；
+    /// 0 值板被序列化器省略，与 BlitzKit 语义一致）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub turret_plates: BTreeMap<u32, f32>,
+    /// 炮塔碰撞盒（TurretModelDefinition field1，部件枢轴系）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<BoundingBox>,
     /// 火炮原点（TurretModelDefinition.gun_origin，DAVA 坐标）——炮管装甲板的定位基准。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gun_origin: Option<[f32; 3]>,
@@ -273,6 +283,10 @@ pub struct GunModelInfo {
     /// 炮弹必须继续穿透后面的车体/炮塔主装甲（实测 T-34 [1,2,3]、E 100 [1,2,3,4,5] 等）。
     #[serde(default)]
     pub gun_spaced: Vec<u32>,
+    /// 炮管装甲板逐板厚度（GunModelDefinition.armor.thickness，板局部 id → mm；
+    /// 炮管外部壁厚在独立字段 thickness）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gun_plates: BTreeMap<u32, f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch_limits: Option<PitchLimitsInfo>,
 }
@@ -284,6 +298,16 @@ pub struct TankModelInfo {
     /// 车体装甲板 spaced 列表（ModelDefinition.armor.spaced）。
     #[serde(default)]
     pub hull_spaced: Vec<u32>,
+    /// 车体装甲板逐板厚度（ModelDefinition.armor.thickness，板局部 id → mm；
+    /// 0 值板被序列化器省略）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hull_plates: BTreeMap<u32, f32>,
+    /// 车体碰撞盒（ModelDefinition field6，模型原点系）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hull_bbox: Option<BoundingBox>,
+    /// 履带厚度（TrackModelDefinition.thickness，左右同值；None = 无数据）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_thickness: Option<f32>,
     /// 炮塔原点（ModelDefinition.turret_origin，DAVA 坐标）——炮塔装甲板的定位基准。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_origin: Option<[f32; 3]>,
@@ -730,12 +754,34 @@ pub fn parse_models_pb(buf: &[u8]) -> Result<Vec<TankModelInfo>> {
 }
 
 /// Armor = { map<uint32,float> thickness=1; repeated uint32 spaced=2 }；field2 支持 packed 或逐项 varint。
-fn parse_armor_spaced(ab: &[u8]) -> Result<Vec<u32>> {
+/// 厚度条目 value 缺省（序列化器省略 0 值板）不入表——与 BlitzKit 语义一致。
+fn parse_armor(ab: &[u8]) -> Result<(BTreeMap<u32, f32>, Vec<u32>)> {
     let mut ar = Reader { buf: ab, pos: 0 };
+    let mut plates: BTreeMap<u32, f32> = BTreeMap::new();
     let mut spaced = Vec::new();
     while let Some(res) = ar.tag() {
         let (f, w) = res?;
         match (f, w) {
+            (1, 2) => {
+                let l = ar.varint()? as usize;
+                let eb = ar.bytes(l)?;
+                let mut er = Reader { buf: eb, pos: 0 };
+                let (mut kid, mut val) = (None, None);
+                while let Some(res2) = er.tag() {
+                    let (f2, w2) = res2?;
+                    match (f2, w2) {
+                        (1, 0) => kid = Some(er.varint()? as u32),
+                        (2, 5) => {
+                            let b = er.bytes(4)?;
+                            val = Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                        }
+                        _ => er.skip_field(w2)?,
+                    }
+                }
+                if let (Some(k), Some(v)) = (kid, val) {
+                    plates.insert(k, v);
+                }
+            }
             (2, 2) => {
                 let l = ar.varint()? as usize;
                 let pb = ar.bytes(l)?;
@@ -748,7 +794,25 @@ fn parse_armor_spaced(ab: &[u8]) -> Result<Vec<u32>> {
             _ => ar.skip_field(w)?,
         }
     }
-    Ok(spaced)
+    Ok((plates, spaced))
+}
+
+/// BoundingBox 消息（{1: Vec3 min, 2: Vec3 max}，分量 fixed32）。
+fn parse_bounding_box(vb: &[u8]) -> Result<Option<BoundingBox>> {
+    let mut br = Reader { buf: vb, pos: 0 };
+    let (mut min, mut max) = (None, None);
+    while let Some(res) = br.tag() {
+        let (f, w) = res?;
+        match (f, w) {
+            (1, 2) => { let l = br.varint()? as usize; min = parse_vec3(br.bytes(l)?)?; }
+            (2, 2) => { let l = br.varint()? as usize; max = parse_vec3(br.bytes(l)?)?; }
+            _ => br.skip_field(w)?,
+        }
+    }
+    Ok(match (min, max) {
+        (Some(min), Some(max)) => Some(BoundingBox { min, max }),
+        _ => None,
+    })
 }
 
 /// 解析 Vector3 消息（field1/2/3 均为 fixed32 float；缺失分量记 0）。
@@ -783,6 +847,9 @@ fn parse_model_tank_entry(tb: &[u8]) -> Result<Option<TankModelInfo>> {
     let Some(content) = content else { return Ok(None) };
 
     let mut hull_spaced = Vec::new();
+    let mut hull_plates: BTreeMap<u32, f32> = BTreeMap::new();
+    let mut hull_bbox: Option<BoundingBox> = None;
+    let mut track_thickness: Option<f32> = None;
     let mut turret_origin: Option<[f32; 3]> = None;
     let mut track_origin: Option<[f32; 3]> = None;
     let mut initial_turret_rotation: Option<InitialRotationInfo> = None;
@@ -794,7 +861,9 @@ fn parse_model_tank_entry(tb: &[u8]) -> Result<Option<TankModelInfo>> {
             // ModelDefinition.armor（field1）= 车体 Armor（thickness map + spaced）
             (1, 2) => {
                 let l = cr.varint()? as usize;
-                hull_spaced = parse_armor_spaced(cr.bytes(l)?)?;
+                let (plates, spaced) = parse_armor(cr.bytes(l)?)?;
+                hull_plates = plates;
+                hull_spaced = spaced;
             }
             // ModelDefinition.turret_origin（field2）——注意：全 0 的 origin 可能被序列化器
             // 省略为空消息，此时按 (0,0,0) 处理（否则 model_origins 整体失效、定位回退旧方案）
@@ -831,6 +900,7 @@ fn parse_model_tank_entry(tb: &[u8]) -> Result<Option<TankModelInfo>> {
                 let l = cr.varint()? as usize;
                 let kb = cr.bytes(l)?;
                 let mut k = None;
+                let mut thickness: Option<f32> = None;
                 let mut origin: Option<[f32; 3]> = None;
                 let mut kr = Reader { buf: kb, pos: 0 };
                 while let Some(res2) = kr.tag() {
@@ -844,6 +914,8 @@ fn parse_model_tank_entry(tb: &[u8]) -> Result<Option<TankModelInfo>> {
                             while let Some(res3) = trr.tag() {
                                 let (f3, w3) = res3?;
                                 match (f3, w3) {
+                                    (1, 5) => { let b = trr.bytes(4)?; thickness = Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]])); }
+                                    (1, 0) => thickness = Some(trr.varint()? as f32),
                                     (2, 2) => { let l3 = trr.varint()? as usize; origin = parse_vec3(trr.bytes(l3)?)?; }
                                     _ => trr.skip_field(w3)?,
                                 }
@@ -852,15 +924,35 @@ fn parse_model_tank_entry(tb: &[u8]) -> Result<Option<TankModelInfo>> {
                         _ => kr.skip_field(w2)?,
                     }
                 }
-                if k.is_some() && track_origin.is_none() {
+                if k.is_some() {
                     // 空的 origin 消息（全 0 省略）按 (0,0,0) 处理——如 T28 Defender
-                    track_origin = Some(origin.unwrap_or([0.0, 0.0, 0.0]));
+                    if track_origin.is_none() {
+                        track_origin = Some(origin.unwrap_or([0.0, 0.0, 0.0]));
+                    }
+                    if track_thickness.is_none() {
+                        track_thickness = thickness;
+                    }
                 }
+            }
+            // ModelDefinition field6 = 车体碰撞盒（BoundingBox，模型原点系）
+            (6, 2) => {
+                let l = cr.varint()? as usize;
+                hull_bbox = parse_bounding_box(cr.bytes(l)?)?;
             }
             _ => cr.skip_field(w)?,
         }
     }
-    Ok(Some(TankModelInfo { tank_id, hull_spaced, turret_origin, track_origin, initial_turret_rotation, turrets }))
+    Ok(Some(TankModelInfo {
+        tank_id,
+        hull_spaced,
+        hull_plates,
+        hull_bbox,
+        track_thickness,
+        turret_origin,
+        track_origin,
+        initial_turret_rotation,
+        turrets,
+    }))
 }
 
 fn parse_model_turret(tb: &[u8]) -> Result<Option<TurretModelInfo>> {
@@ -879,6 +971,8 @@ fn parse_model_turret(tb: &[u8]) -> Result<Option<TurretModelInfo>> {
 
     let mut model_node = 0u32;
     let mut turret_spaced = Vec::new();
+    let mut turret_plates: BTreeMap<u32, f32> = BTreeMap::new();
+    let mut bbox: Option<BoundingBox> = None;
     let mut gun_origin: Option<[f32; 3]> = None;
     let mut yaw_limits: Option<YawLimitsInfo> = None;
     let mut guns = Vec::new();
@@ -887,10 +981,17 @@ fn parse_model_turret(tb: &[u8]) -> Result<Option<TurretModelInfo>> {
         let (f, w) = res?;
         match (f, w) {
             (3, 0) => model_node = cr.varint()? as u32,
+            // TurretModelDefinition.field1 = 炮塔碰撞盒（部件枢轴系）
+            (1, 2) => {
+                let l = cr.varint()? as usize;
+                bbox = parse_bounding_box(cr.bytes(l)?)?;
+            }
             // TurretModelDefinition.armor（field2）= 炮塔 Armor（thickness map + spaced）
             (2, 2) => {
                 let l = cr.varint()? as usize;
-                turret_spaced = parse_armor_spaced(cr.bytes(l)?)?;
+                let (plates, spaced) = parse_armor(cr.bytes(l)?)?;
+                turret_plates = plates;
+                turret_spaced = spaced;
             }
             // TurretModelDefinition.gun_origin（field4）
             (4, 2) => { let l = cr.varint()? as usize; gun_origin = parse_vec3(cr.bytes(l)?)?; }
@@ -920,7 +1021,7 @@ fn parse_model_turret(tb: &[u8]) -> Result<Option<TurretModelInfo>> {
             _ => cr.skip_field(w)?,
         }
     }
-    Ok(Some(TurretModelInfo { module_id: tmod, model_node, turret_spaced, gun_origin, yaw_limits, guns }))
+    Ok(Some(TurretModelInfo { module_id: tmod, model_node, turret_spaced, turret_plates, bbox, gun_origin, yaw_limits, guns }))
 }
 
 /// 解析 models.pb 中单个主炮条目（GunModelDefinition：1=armor 2=thickness 3=model_id 4=pitch 5=mask）。
@@ -937,7 +1038,7 @@ fn parse_model_gun(gb: &[u8]) -> Result<Option<GunModelInfo>> {
         }
     }
     let Some(inner) = inner else {
-        return Ok(Some(GunModelInfo { gun_module_id: gmod, model_node: 0, thickness: None, mask: None, gun_spaced: Vec::new(), pitch_limits: None }));
+        return Ok(Some(GunModelInfo { gun_module_id: gmod, model_node: 0, thickness: None, mask: None, gun_spaced: Vec::new(), gun_plates: BTreeMap::new(), pitch_limits: None }));
     };
 
     let mut ir = Reader { buf: inner, pos: 0 };
@@ -945,6 +1046,7 @@ fn parse_model_gun(gb: &[u8]) -> Result<Option<GunModelInfo>> {
     let mut thickness = None;
     let mut mask = None;
     let mut gun_spaced = Vec::new();
+    let mut gun_plates: BTreeMap<u32, f32> = BTreeMap::new();
     let mut pitch_limits: Option<PitchLimitsInfo> = None;
     while let Some(res) = ir.tag() {
         let (f, w) = res?;
@@ -953,7 +1055,12 @@ fn parse_model_gun(gb: &[u8]) -> Result<Option<GunModelInfo>> {
             (2, 5) => { let b = ir.bytes(4)?; thickness = Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]])); }
             (5, 5) => { let b = ir.bytes(4)?; mask = Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]])); }
             // GunModelDefinition.armor（field1）= 炮管 Armor（thickness map + spaced）
-            (1, 2) => { let l = ir.varint()? as usize; gun_spaced = parse_armor_spaced(ir.bytes(l)?)?; }
+            (1, 2) => {
+                let l = ir.varint()? as usize;
+                let (plates, spaced) = parse_armor(ir.bytes(l)?)?;
+                gun_plates = plates;
+                gun_spaced = spaced;
+            }
             // GunModelDefinition.pitch（field4）= PitchLimits{min=1, max=2, front=3, back=4, transition=5}
             (4, 2) => {
                 let l = ir.varint()? as usize;
@@ -990,7 +1097,7 @@ fn parse_model_gun(gb: &[u8]) -> Result<Option<GunModelInfo>> {
             _ => ir.skip_field(w)?,
         }
     }
-    Ok(Some(GunModelInfo { gun_module_id: gmod, model_node, thickness, mask, gun_spaced, pitch_limits }))
+    Ok(Some(GunModelInfo { gun_module_id: gmod, model_node, thickness, mask, gun_spaced, gun_plates, pitch_limits }))
 }
 
 /// 读取并解析 models.pb（进程内缓存，只解析一次）；文件缺失或解析失败返回 None。
@@ -1056,6 +1163,36 @@ mod parse_tests {
         let g0 = &pr.turrets[0].guns[0];
         assert!(g0.reload.is_burst && g0.reload.is_drum, "Progetto should be drum");
         assert_eq!(g0.reload.burst_reloads.len(), 3);
+    }
+
+    #[test]
+    fn parse_models_pb_armor_boxes() {
+        // IS-7（7169）：装甲厚度表/碰撞盒/履带厚度扩展字段锚点（与 game_data 提取值同源对照）
+        let bytes = std::fs::read(crate::data::data_path("models.pb")).unwrap();
+        let ms = parse_models_pb(&bytes).unwrap();
+        let m = ms.iter().find(|m| m.tank_id == 7169).expect("IS-7");
+        // 车体逐板厚度（0 值板 8 被序列化器省略 → 13 项）+ spaced
+        assert_eq!(m.hull_plates.len(), 13);
+        assert_eq!(m.hull_plates.get(&1), Some(&150.0));
+        assert_eq!(m.hull_plates.get(&5), Some(&270.0));
+        assert!(!m.hull_plates.contains_key(&8), "0 值板省略");
+        assert_eq!(m.hull_spaced, vec![9]);
+        // 车体碰撞盒（模型原点系）
+        let hb = m.hull_bbox.as_ref().expect("hull bbox");
+        assert!((hb.min[0] - -1.7195).abs() < 1e-3 && (hb.max[2] - 1.7058).abs() < 1e-3);
+        // 履带厚度（左右同值）
+        assert_eq!(m.track_thickness, Some(20.0));
+        // 顶级炮塔碰撞盒与逐板厚度
+        let t = m.turrets.iter().find(|t| t.module_id == 12033).expect("IS-7 top turret");
+        let tb = t.bbox.as_ref().expect("turret bbox");
+        assert!((tb.min[1] - -2.2459).abs() < 1e-3 && (tb.max[2] - 0.8644).abs() < 1e-3);
+        assert_eq!(t.turret_plates.get(&2), Some(&210.0));
+        assert_eq!(t.turret_spaced, vec![9]);
+        // 顶级炮逐板厚度与炮管壁厚
+        let g = t.guns.iter().find(|g| g.gun_module_id == 14849).expect("IS-7 gun");
+        assert_eq!(g.gun_plates.get(&1), Some(&350.0));
+        assert_eq!(g.thickness, Some(60.0));
+        assert_eq!(g.gun_spaced, vec![1, 2, 3, 4]);
     }
 
     #[test]

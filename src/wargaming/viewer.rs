@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::path::Path;
 use crate::wargaming::tank_resolver::TankResolver;
-use crate::wargaming::dvpl::{DvplFile, ArmorModel};
+use crate::wargaming::dvpl::ArmorModel;
 use crate::wargaming::penetration::{self, PenetrationRequest};
 
 const GLB_CACHE_DIR: &str = "glb_cache";
@@ -21,35 +21,40 @@ fn wsl_ip() -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
-fn load_armor_model(tank_id: u32) -> Option<ArmorModel> {
-    if let Some(crate::wargaming::game_extract::TankGameData { armor_model: Some(m), .. }) =
-        crate::wargaming::game_extract::load_game_data(tank_id, &crate::data::data_dir().join("game_data"))
-    {
-        return Some(m);
-    }
-
-    let dev_name = find_dev_name(tank_id)?;
-    let game_dirs = [
-        "/mnt/d/SteamLibrary/steamapps/common/World of Tanks Blitz/Data",
-        "D:/SteamLibrary/steamapps/common/World of Tanks Blitz/Data",
-    ];
-    let nations = ["ussr", "usa", "germany", "uk", "japan", "china", "france", "european", "other"];
-    for game_dir in &game_dirs {
-        for nation in &nations {
-            let filepath = format!("{}/XML/item_defs/vehicles/{}/{}.xml.dvpl", game_dir, nation, dev_name);
-            if Path::new(&filepath).exists() {
-                if let Ok(dvpl) = DvplFile::read(Path::new(&filepath)) {
-                    let text = String::from_utf8_lossy(&dvpl.data);
-                    return ArmorModel::parse_from_xml(&text);
-                }
-            }
+/// 从 models.pb 合成精确装甲模型（逐板厚度/spaced/履带厚度，BlitzKit 唯一来源）。
+/// primaryArmor 是 BlitzKit 缺项，从 game_data 同节段拷贝（缺失时留空串——仅影响展示，
+/// 装甲摘要链走 game_data 原路径不受影响）；炮塔/主炮取顶级配置（最后炮塔×最后炮），
+/// 与 game_data 的 XML 顶级配置语义对齐。
+fn synth_armor_model(tank_id: u32) -> Option<ArmorModel> {
+    let mi = crate::wargaming::blitzkit::model_info(tank_id)?;
+    let game_am = crate::wargaming::game_extract::load_game_data(
+        tank_id, &crate::data::data_dir().join("game_data"))
+        .and_then(|gd| gd.armor_model);
+    let section = |plates: &std::collections::BTreeMap<u32, f32>, spaced: &[u32],
+                   primary: Option<&crate::wargaming::dvpl::PrimaryArmor>| {
+        crate::wargaming::dvpl::SectionArmor {
+            plates: plates.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            primary: primary.cloned().unwrap_or(crate::wargaming::dvpl::PrimaryArmor {
+                front: String::new(), sides: String::new(), rear: String::new(),
+            }),
+            spaced: spaced.iter().map(|s| s.to_string()).collect(),
         }
-    }
-    None
-}
-
-fn find_dev_name(tank_id: u32) -> Option<String> {
-    crate::wargaming::blitzkit::tank_full(tank_id).map(|t| t.dev_name)
+    };
+    let top_module = crate::wargaming::blitzkit::tank_full(tank_id)
+        .and_then(|t| t.turrets.last().map(|t2| t2.module_id));
+    let top_turret = mi.turrets.iter().find(|t| Some(t.module_id) == top_module)
+        .or_else(|| mi.turrets.last());
+    Some(ArmorModel {
+        hull: section(&mi.hull_plates, &mi.hull_spaced,
+            game_am.as_ref().map(|am| &am.hull.primary)),
+        turret: top_turret.map(|t| section(&t.turret_plates, &t.turret_spaced,
+            game_am.as_ref().and_then(|am| am.turret.as_ref()).map(|s| &s.primary))),
+        gun: top_turret.and_then(|t| t.guns.last()).map(|g| section(&g.gun_plates, &g.gun_spaced,
+            game_am.as_ref().and_then(|am| am.gun.as_ref()).map(|s| &s.primary))),
+        chassis: mi.track_thickness.map(|t| crate::wargaming::dvpl::ChassisArmor {
+            left_track: t, right_track: t,
+        }),
+    })
 }
 
 static GLOBAL_RESOLVER: std::sync::OnceLock<Arc<TankResolver>> = std::sync::OnceLock::new();
@@ -293,9 +298,13 @@ pub async fn start_viewer_server_for_replay(
         .or_else(|| meta.as_ref().map(|m| m.player_name.clone()))
         .unwrap_or_default();
     let author_player_eid = crate::replay::combat::resolve_author_player_eid_by_nick(&raw_packets, &author_nickname);
-    // 双方炮管俯仰的车型极限锚定表（昵称→俯角/仰角）——prop2 frac 比例解码用
+    // 双方炮管俯仰的车型极限锚定表（昵称→俯角/仰角）——prop2 frac 比例解码用；
+    // 实际搭载 comp blob 一并收集（锚定与每发配置下标共用）
+    let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
+        .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
+    let comps = crate::replay::playback::collect_comp_descriptors(&raw_packets, &valid_tanks);
     let pitch_limits = br.as_ref()
-        .map(|br| tank_resolver.pitch_limits_from_battle_results(br))
+        .map(|br| tank_resolver.pitch_limits_from_battle_results(br, &comps))
         .unwrap_or_default();
     let tank_of = |nick: &str| -> Option<u32> {
         let br = br.as_ref()?;
@@ -326,9 +335,7 @@ pub async fn start_viewer_server_for_replay(
         .map(|i| i as u32)
         .unwrap_or(shell_slot);
     // 实际搭载配置下标（目标/射手）：comp blob → 发射弹种 → 初始血量 证据链，注入每发数据
-    let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
-        .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
-    let comps = crate::replay::playback::collect_comp_descriptors(&raw_packets, &valid_tanks);
+    //（comps 已在俯仰锚定表构建时收集）
     let initial_hp_all = crate::replay::combat::collect_initial_hp(&raw_packets);
     let mut player_shells: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
     for s in &replay_data {
@@ -502,15 +509,10 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.get(tank_id.to_string()).cloned());
 
+    // C 类数据：炮管/底盘碰撞盒仍取本机客户端提取（BlitzKit 无对应数据）
     let game_data = crate::wargaming::game_extract::load_game_data(tank_id, &crate::data::data_dir().join("game_data"));
-    let armor_model = match &game_data {
-        Some(gd) => gd.armor_model.clone(),
-        None => load_armor_model(tank_id),
-    };
-    let gun_angles = std::fs::read_to_string(crate::data::data_path("gun_angles.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get(tank_id.to_string()).cloned());
+    // 逐板装甲：BlitzKit models.pb 唯一来源（primary 为 BlitzKit 缺项，合成时从 game_data 拷贝）
+    let armor_model = synth_armor_model(tank_id);
 
     let name = resolver
         .resolve(tank_id)
@@ -593,17 +595,27 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
     let gun_collision = game_data.as_ref().and_then(|gd| gd.collision.as_ref())
         .and_then(|c| c.gun_bbox.clone())
         .map(|b| json!({ "min": b.min, "max": b.max }));
-    // 各部件原生碰撞盒（游戏数据，坐标系 = 各部件节点枢轴系 x右/y前/z上；
-    // chassis/hull 位于模型原点）。供 DecodeShotSegment 解码盒使用。
-    let collision_boxes = game_data.as_ref().and_then(|gd| gd.collision.as_ref())
-        .map(|c| json!({
-            "chassis": c.chassis_bbox.clone().map(|b| json!({ "min": b.min, "max": b.max })),
-            "hull": c.hull_bbox.clone().map(|b| json!({ "min": b.min, "max": b.max })),
-            "turret": c.turret_bbox.clone().map(|b| json!({ "min": b.min, "max": b.max })),
-            "gun": c.gun_bbox.clone().map(|b| json!({ "min": b.min, "max": b.max })),
-        }));
+    // 各部件原生碰撞盒（坐标系 = 各部件节点枢轴系 x右/y前/z上；chassis/hull 位于模型原点）。
+    // 供 DecodeShotSegment 解码盒使用。hull/turret：models.pb（BlitzKit 唯一来源，炮塔取
+    // 顶级配置）；gun/chassis：BlitzKit 无对应数据，仍取本机客户端提取（game_data）。
+    let mi = crate::wargaming::blitzkit::model_info(tank_id);
+    let top_module = crate::wargaming::blitzkit::tank_full(tank_id)
+        .and_then(|t| t.turrets.last().map(|t2| t2.module_id));
+    let hull_bbox = mi.as_ref().and_then(|mi| mi.hull_bbox.clone());
+    let turret_bbox = mi.as_ref().and_then(|mi| {
+        mi.turrets.iter().find(|t| Some(t.module_id) == top_module)
+            .or_else(|| mi.turrets.last())
+            .and_then(|t| t.bbox.clone())
+    });
+    let gd_collision = game_data.as_ref().and_then(|gd| gd.collision.as_ref());
+    let bbox_json = |b: Option<crate::wargaming::dvpl::BoundingBox>| b.map(|b| json!({ "min": b.min, "max": b.max }));
+    let collision_boxes = json!({
+        "chassis": bbox_json(gd_collision.and_then(|c| c.chassis_bbox.clone())),
+        "hull": bbox_json(hull_bbox),
+        "turret": bbox_json(turret_bbox),
+        "gun": bbox_json(gd_collision.and_then(|c| c.gun_bbox.clone())),
+    });
 
-    let ga = gun_angles.as_ref();
     json!({
         "tank_id": tank_id,
         "name": name,
@@ -625,8 +637,8 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
         "configs": configs,
         "hp": info.as_ref().and_then(|i| i.hp),
         "speed": info.as_ref().and_then(|i| i.speed_forward),
-        "gun_depression": ga.and_then(|g| g.get("gun_depression")).and_then(|v| v.as_f64()).or(info.as_ref().and_then(|i| i.gun_depression).map(|v| v as f64)),
-        "gun_elevation": ga.and_then(|g| g.get("gun_elevation")).and_then(|v| v.as_f64()).or(info.as_ref().and_then(|i| i.gun_elevation).map(|v| v as f64)),
+        "gun_depression": info.as_ref().and_then(|i| i.gun_depression).map(|v| v as f64),
+        "gun_elevation": info.as_ref().and_then(|i| i.gun_elevation).map(|v| v as f64),
         "turret_traverse_left": info.as_ref().and_then(|i| i.turret_traverse_left).map(|v| v as f64),
         "turret_traverse_right": info.as_ref().and_then(|i| i.turret_traverse_right).map(|v| v as f64),
     })
@@ -5077,3 +5089,32 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     </script>
 </body>
 </html>"#;
+
+#[cfg(test)]
+mod synth_tests {
+    use super::*;
+
+    /// 装甲模型合成迁移锚点（IS-7）：逐板厚度/履带来自 models.pb（BlitzKit 唯一来源），
+    /// primaryArmor 来自 game_data 拷贝；键格式（数值字符串）与前端 plateId 查找兼容。
+    #[test]
+    fn synth_armor_model_migrates_to_blitzkit() {
+        let am = synth_armor_model(7169).expect("IS-7 synth");
+        // 车体逐板厚度：models.pb（0 值板省略）
+        assert_eq!(am.hull.plates.get("1"), Some(&150.0));
+        assert_eq!(am.hull.plates.get("5"), Some(&270.0));
+        assert!(!am.hull.plates.contains_key("8"), "0 值板省略");
+        assert_eq!(am.hull.spaced.iter().map(String::as_str).collect::<Vec<_>>(), vec!["9"]);
+        // primary：game_data 同节段拷贝
+        assert_eq!(am.hull.primary.front, "armor_1");
+        // 炮塔/主炮（顶级配置）
+        let t = am.turret.as_ref().expect("turret");
+        assert_eq!(t.plates.get("2"), Some(&210.0));
+        assert_eq!(t.primary.front, "armor_1");
+        let g = am.gun.as_ref().expect("gun");
+        assert_eq!(g.plates.get("1"), Some(&350.0));
+        // 履带厚度：models.pb track
+        let ch = am.chassis.as_ref().expect("chassis");
+        assert_eq!(ch.left_track, 20.0);
+        assert_eq!(ch.right_track, 20.0);
+    }
+}

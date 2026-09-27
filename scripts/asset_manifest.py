@@ -42,7 +42,6 @@ def scan() -> dict:
         "tanks.pb": file_info(data / "tanks.pb"),
         "models.pb": file_info(data / "models.pb"),
         "tank_cache.json": file_info(data / "tank_cache.json"),
-        "gun_angles.json": file_info(data / "gun_angles.json"),
         "data_version.json": file_info(data / "data_version.json"),
     }
 

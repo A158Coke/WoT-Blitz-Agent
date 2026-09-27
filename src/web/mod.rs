@@ -660,10 +660,14 @@ async fn replay_shots_handler(
             .map(|p| p.info.nickname.clone()))
         .or_else(|| meta.as_ref().map(|m| m.player_name.clone()))
         .unwrap_or_default();
-    // 双方炮管俯仰的车型极限锚定表（battle_results 昵称→tank_id × TankResolver 极限）
+    // 双方炮管俯仰的车型极限锚定表（battle_results 昵称→tank_id × TankResolver 极限，
+    // 实际搭载 comp blob 优先对号）；comps 与后面的实际搭载配置注入共用
+    let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
+        .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
+    let comps = crate::replay::playback::collect_comp_descriptors(&raw_packets, &valid_tanks);
     let pitch_limits = br.as_ref()
         .and_then(|br| state.tank_cache.resolver()
-            .map(|r| r.pitch_limits_from_battle_results(br)))
+            .map(|r| r.pitch_limits_from_battle_results(br, &comps)))
         .unwrap_or_default();
     // fail-fast：提取失败直接返回 500 + 错误信息（前端可见），不做静默降级
     let shot_replay = match crate::replay::combat::extract_shot_replays_auto_with_limits(&raw_packets, &author_nick, &pitch_limits) {
@@ -728,11 +732,9 @@ async fn replay_shots_handler(
         Some((team, tank_by_account.get(&aid).copied().unwrap_or(0)))
     };
 
-    // —— 实际搭载配置（comp blob 确定性 → 发射弹种 → 初始血量 证据链，与实时回放共享）——
+    // —— 实际搭载配置（comp blob 确定性 → 发射弹种 → 初始血量 证据链，与实时回放共享；
+    //    comps 已在俯仰锚定表构建时收集）——
     let initial_hp = crate::replay::combat::collect_initial_hp(&raw_packets);
-    let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
-        .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
-    let comps = crate::replay::playback::collect_comp_descriptors(&raw_packets, &valid_tanks);
     let mut player_shells: HashMap<String, Vec<u32>> = HashMap::new();
     for s in &all_shots {
         if s.shell_id == 0 { continue; }

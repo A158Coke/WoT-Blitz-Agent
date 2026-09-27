@@ -114,14 +114,15 @@ impl TankResolver {
 
     /// 昵称 → 炮管俯仰限制锚定表：prop2 frac 解码用（combat::decode_prop2_gun_pitch，
     /// 扇区化——俯仰范围随炮塔朝向 front/back 分段，T95E6 旋转实验定案）。
-    /// 数据源（优先级）：models.pb 顶级配置（最后炮塔×最后炮）的模块级
-    /// GunModelDefinition.pitch（含扇区）> 本表 TankInfo 的 gun_angles 静态回退（无扇区）。
-    /// 缺两者的玩家不入选（其俯仰走提取链回退路径并打质量标记）。注意匿名玩家共用
-    /// 显示名 "Anonyme"，同场多个匿名玩家会互相覆盖（按昵称连接的固有歧义）；取顶级
-    /// 配置（多配置车辆的模块级差异未区分，见"俯仰锚定粒度"审计）。
+    /// 数据源（优先级）：models.pb 按**实际搭载**（`comps` = ARENA_INFO comp blob 的
+    /// 炮塔/主炮局部 id，`module_id>>8` 对号；多炮车非顶级主炮俯仰范围不同）>
+    /// models.pb 顶级配置（最后炮塔×最后炮，comp 缺失或对号失败时回退）。
+    /// models.pb 无数据的玩家不入选（其俯仰走提取链回退路径并打质量标记）。注意匿名玩家
+    /// 共用显示名 "Anonyme"，同场多个匿名玩家会互相覆盖（按昵称连接的固有歧义）。
     pub fn pitch_limits_from_battle_results(
         &self,
         br: &wotbreplay_parser::models::battle_results::BattleResults,
+        comps: &HashMap<String, crate::replay::playback::CompDescriptor>,
     ) -> HashMap<String, crate::replay::combat::GunPitchRange> {
         let mut m: HashMap<String, crate::replay::combat::GunPitchRange> = HashMap::new();
         for p in &br.players {
@@ -129,35 +130,47 @@ impl TankResolver {
                 .find(|pr| pr.info.account_id == p.account_id)
                 .map(|pr| pr.info.tank_id);
             let Some(tid) = tank_id else { continue };
-            // models.pb 顶级配置（含扇区）
-            let from_models = crate::wargaming::blitzkit::tank_full(tid).and_then(|tank| {
-                let top_gun_module = tank.turrets.last().and_then(|t| t.guns.last())?.module_id;
-                let mi = crate::wargaming::blitzkit::model_info(tid)?;
-                let pl = mi.turrets.iter().flat_map(|t| t.guns.iter())
-                    .find(|gm| gm.gun_module_id == top_gun_module)
-                    .and_then(|gm| gm.pitch_limits.clone())?;
-                Some(crate::replay::combat::GunPitchRange {
-                    dep: pl.max,
-                    ele: -pl.min,
-                    front: pl.front.map(|f| crate::replay::combat::SectorLimits { min: f.min, max: f.max, range: f.range }),
-                    back: pl.back.map(|b| crate::replay::combat::SectorLimits { min: b.min, max: b.max, range: b.range }),
-                    transition: pl.transition,
-                })
-            });
-            if let Some(r) = from_models {
+            // 实际搭载（comp blob，确定性）：tank 低 16 位对号后取该炮塔/主炮局部 id
+            let comp = comps.get(p.info.nickname.as_str())
+                .filter(|c| (c.tank_id & 0xFFFF) == (tid & 0xFFFF))
+                .map(|c| (c.turret_local, c.gun_local));
+            if let Some(r) = Self::models_pitch_limits(tid, comp) {
                 m.insert(p.info.nickname.clone(), r);
-                continue;
-            }
-            // 静态回退：gun_angles.json（无扇区）
-            if let Some(info) = self.resolve_info(tid) {
-                if let (Some(dep), Some(ele)) = (info.gun_depression, info.gun_elevation) {
-                    m.insert(p.info.nickname.clone(), crate::replay::combat::GunPitchRange {
-                        dep, ele, front: None, back: None, transition: None,
-                    });
-                }
             }
         }
         m
+    }
+
+    /// 单车俯仰锚定（含扇区）：实际搭载（comp blob 局部 id 对号）优先，顶级配置回退；
+    /// models.pb 无该车或两条路都取不到 pitch → None。
+    fn models_pitch_limits(
+        tank_id: u32,
+        comp: Option<(u16, u16)>,
+    ) -> Option<crate::replay::combat::GunPitchRange> {
+        let mi = crate::wargaming::blitzkit::model_info(tank_id)?;
+        let pitch_of = |turret_local: u32, gun_local: u32| {
+            mi.turrets.iter()
+                .find(|t| (t.module_id >> 8) == turret_local)
+                .and_then(|t| t.guns.iter().find(|gm| (gm.gun_module_id >> 8) == gun_local))
+                .and_then(|gm| gm.pitch_limits.clone())
+        };
+        let pl = comp.and_then(|(tl, gl)| pitch_of(tl as u32, gl as u32))
+            .or_else(|| {
+                let top_gun_module = crate::wargaming::blitzkit::tank_full(tank_id)
+                    .and_then(|tank| tank.turrets.last()
+                        .and_then(|t| t.guns.last())
+                        .map(|g| g.module_id))?;
+                mi.turrets.iter().flat_map(|t| t.guns.iter())
+                    .find(|gm| gm.gun_module_id == top_gun_module)
+                    .and_then(|gm| gm.pitch_limits.clone())
+            })?;
+        Some(crate::replay::combat::GunPitchRange {
+            dep: pl.max,
+            ele: -pl.min,
+            front: pl.front.map(|f| crate::replay::combat::SectorLimits { min: f.min, max: f.max, range: f.range }),
+            back: pl.back.map(|b| crate::replay::combat::SectorLimits { min: b.min, max: b.max, range: b.range }),
+            transition: pl.transition,
+        })
     }
 
     pub fn add(&mut self, tank_id: u32, info: TankInfo) {
@@ -200,16 +213,13 @@ impl TankResolver {
     }
 
     /// 从本地 BlitzKit 数据文件构建完整解析器（无需 WG API）。
-    /// 数据源：tanks.pb（唯一数据源，运行时解析）、gun_angles.json（俯仰角）、
+    /// 数据源：tanks.pb（唯一数据源，运行时解析）、models.pb（俯仰角）、
     /// game_data/{id}.json（装甲模型）、armor_cache.json（装甲摘要兜底）。
     pub fn from_blitzkit() -> Result<Self> {
         let mut resolver = Self::new();
 
         // load_tanks 返回进程内共享缓存引用（零克隆），此处只读
         let tanks = crate::wargaming::blitzkit::load_tanks();
-        let gun_angles = std::fs::read_to_string(crate::data::data_path("gun_angles.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
 
         for (id, tank) in tanks.iter() {
             let name = tank.name.clone();
@@ -244,15 +254,10 @@ impl TankResolver {
             let view_range = first_turret.map(|t| t.view_range as f32);
             let turret_traverse_speed = first_turret.map(|t| t.traverse_speed as f32);
 
-            // 俯仰角：来自 gun_angles.json（tanks.pb 不含）
-            let gun_depression = gun_angles.as_ref()
-                .and_then(|g| g.get(id.to_string()))
-                .and_then(|g| g.get("gun_depression"))
-                .and_then(|v| v.as_f64()).map(|v| v as f32);
-            let gun_elevation = gun_angles.as_ref()
-                .and_then(|g| g.get(id.to_string()))
-                .and_then(|g| g.get("gun_elevation"))
-                    .and_then(|v| v.as_f64()).map(|v| v as f32);
+            // 俯仰角：models.pb 顶级配置全局极值（gun_angles.json 已退役）
+            let (gun_depression, gun_elevation) = Self::models_pitch_limits(*id, None)
+                .map(|r| (Some(r.dep), Some(r.ele)))
+                .unwrap_or((None, None));
 
             let armor = extract_armor_summary(*id);
 
@@ -355,4 +360,41 @@ fn armor_from_model(armor_model: &serde_json::Value) -> Option<ArmorData> {
         hull_sides: plate_of("hull", "sides")?,
         hull_rear: plate_of("hull", "rear")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 俯仰锚定按实际搭载（comp blob 对号的炮）取，而非一律顶级配置。
+    /// 样本 769：顶级炮塔双炮俯仰不同（local 1014 → dep 8/ele 25，local 3 → dep 8/ele 15，
+    /// 后者为顶级主炮）。comp 缺失时回退顶级；comp 对号非顶级炮时锚定随之切换。
+    #[test]
+    fn pitch_limits_follow_comp_mounted_gun() {
+        let tank_id = 769;
+        let tank = crate::wargaming::blitzkit::tank_full(tank_id).expect("tank 769 in tanks.pb");
+        let top_turret = tank.turrets.last().expect("turret");
+        assert!(top_turret.guns.len() >= 2, "样本车顶级炮塔应有 ≥2 门炮");
+        let top_gun = top_turret.guns.last().unwrap();
+        let sub_gun = &top_turret.guns[top_turret.guns.len() - 2];
+
+        let to_local = |module_id: u32| (module_id >> 8) as u16;
+        let top = TankResolver::models_pitch_limits(tank_id, None).expect("顶级配置俯仰");
+        let sub = TankResolver::models_pitch_limits(
+            tank_id, Some((to_local(top_turret.module_id), to_local(sub_gun.module_id))))
+            .expect("实际搭载（非顶级炮）俯仰");
+        // 两门炮俯仰范围确实不同（否则样本无判别力）
+        assert_ne!(top.ele, sub.ele, "样本车两炮仰角应不同");
+
+        // comp 对号顶级炮 → 与无 comp 的顶级回退一致
+        let via_comp_top = TankResolver::models_pitch_limits(
+            tank_id, Some((to_local(top_turret.module_id), to_local(top_gun.module_id))))
+            .expect("comp 对号顶级炮");
+        assert_eq!(via_comp_top.dep, top.dep);
+        assert_eq!(via_comp_top.ele, top.ele);
+
+        // comp 对号失败（局部 id 不属于该车）→ 回退顶级
+        let fallback = TankResolver::models_pitch_limits(tank_id, Some((999, 999)));
+        assert_eq!(fallback.as_ref().map(|r| (r.dep, r.ele)), Some((top.dep, top.ele)));
+    }
 }

@@ -83,7 +83,7 @@ impl Agent {
             tank_cache.as_deref(),
         );
 
-        let usage_path = std::path::PathBuf::from("token_usage.json");
+        let usage_path = crate::data::app_path("token_usage.json");
         let usage = TokenUsage::load_from_file(&usage_path).unwrap_or_default();
 
         // 系统提示：约束 LLM 只使用工具返回的真实数据，严禁编造坦克统计数字

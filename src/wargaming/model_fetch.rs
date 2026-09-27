@@ -19,14 +19,69 @@ const PROGRESS_STEP: usize = 25;
 /// 失败清单最多记录条数（超出后省略，避免刷屏）。
 const MAX_ERROR_LINES: usize = 50;
 
+/// 批量下载进度（进程级共享）：`fetch-models` CLI 打印与 Web 端 `/api/models/status`
+/// 轮询共读同一份原子量；`running` 同时充当防重入锁（已在跑时再次调用直接报错）。
+pub struct DlProgress {
+    pub running: std::sync::atomic::AtomicBool,
+    pub total: AtomicUsize,
+    pub done: AtomicUsize,
+    pub downloaded: AtomicUsize,
+    pub cached: AtomicUsize,
+    pub failed: AtomicUsize,
+    pub bytes: AtomicU64,
+}
+
+pub static PROGRESS: DlProgress = DlProgress {
+    running: std::sync::atomic::AtomicBool::new(false),
+    total: AtomicUsize::new(0),
+    done: AtomicUsize::new(0),
+    downloaded: AtomicUsize::new(0),
+    cached: AtomicUsize::new(0),
+    failed: AtomicUsize::new(0),
+    bytes: AtomicU64::new(0),
+};
+
+impl DlProgress {
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn snapshot(&self) -> (bool, usize, usize, usize, usize, usize, u64) {
+        (
+            self.running(),
+            self.total.load(Ordering::Relaxed),
+            self.done.load(Ordering::Relaxed),
+            self.downloaded.load(Ordering::Relaxed),
+            self.cached.load(Ordering::Relaxed),
+            self.failed.load(Ordering::Relaxed),
+            self.bytes.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// 全量预热全部坦克模型。返回 `(downloaded, cached, failed, downloaded_bytes)`。
+/// 幂等可重跑；已有同类任务在跑时返回错误（`running` 防重入）。
 pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize, usize, usize, u64)> {
     let ids = crate::wargaming::blitzkit::load_model_ids();
     anyhow::ensure!(
         !ids.is_empty(),
         "models.pb 为空或缺失 —— 先运行 `fetch-blitzkit` / `update-data` 生成数据源"
     );
-    // 单连接实测仅 ~40KB/s（CDN 逐连接限速），靠并发数堆聚合带宽
+    anyhow::ensure!(!PROGRESS.running.swap(true, Ordering::SeqCst), "已有模型下载任务在运行");
+    // 提前返回的路径都要复位 running
+    match fetch_all_models_inner(force, concurrency, ids).await {
+        out => {
+            PROGRESS.running.store(false, Ordering::SeqCst);
+            out
+        }
+    }
+}
+
+async fn fetch_all_models_inner(
+    force: bool,
+    concurrency: usize,
+    ids: Vec<u32>,
+) -> Result<(usize, usize, usize, u64)> {
     let concurrency = concurrency.clamp(1, 64);
 
     // 任务队列：每辆坦克两个文件，展平后按原子下标分发到并发任务
@@ -36,6 +91,14 @@ pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize,
         .collect();
     let total = jobs.len();
 
+    // 复位并发布全局进度（Web /api/models/status 轮询用）
+    PROGRESS.total.store(total, Ordering::Relaxed);
+    PROGRESS.done.store(0, Ordering::Relaxed);
+    PROGRESS.downloaded.store(0, Ordering::Relaxed);
+    PROGRESS.cached.store(0, Ordering::Relaxed);
+    PROGRESS.failed.store(0, Ordering::Relaxed);
+    PROGRESS.bytes.store(0, Ordering::Relaxed);
+
     println!("=== Fetch Models (full offline preload) ===");
     println!("  Tanks: {}  Files: {}  Concurrency: {}  Force: {}",
         ids.len(), total, concurrency, force);
@@ -44,7 +107,7 @@ pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize,
     let cached = Arc::new(AtomicUsize::new(0));
     let failed = Arc::new(AtomicUsize::new(0));
     let total_bytes = Arc::new(AtomicU64::new(0));
-    let done = Arc::new(AtomicUsize::new(0));
+    let done = &PROGRESS.done;
     let errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(Default::default());
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
@@ -54,7 +117,7 @@ pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize,
             .context("download semaphore closed")?;
         let (downloaded, cached, failed) =
             (downloaded.clone(), cached.clone(), failed.clone());
-        let (total_bytes, done, errors) = (total_bytes.clone(), done.clone(), errors.clone());
+        let (total_bytes, errors) = (total_bytes.clone(), errors.clone());
         set.spawn(async move {
             let _permit = permit;
 
@@ -82,6 +145,7 @@ pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize,
                 }
             }
 
+            // done 计数即全局进度（Web /api/models/status 直接轮询 PROGRESS）
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d % PROGRESS_STEP == 0 || d == total {
                 eprintln!("  [{}/{}] downloaded={} cached={} failed={}",

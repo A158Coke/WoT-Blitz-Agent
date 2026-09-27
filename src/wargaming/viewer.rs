@@ -90,7 +90,7 @@ pub async fn serve(tank_resolver: TankResolver, tank_id: u32, shooter_id: Option
 }
 
 pub fn viewer_index_html(tank_id: u32, shooter_id: u32, base_prefix: &str) -> String {
-    let vendor_local = Path::new(VENDOR_DIR).join("three.module.js").exists();
+    let vendor_local = crate::data::app_path(VENDOR_DIR).join("three.module.js").exists();
     let importmap = if vendor_local {
         r#"{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }"#
     } else {
@@ -136,7 +136,7 @@ pub fn build_viewer_router(
 
 /// 单个 GLB 的缓存路径（glb_cache/{tank_id}/{filename}），按需服务与 fetch-models 全量预热共用。
 pub(crate) fn glb_cache_path(tank_id: u32, filename: &str) -> std::path::PathBuf {
-    Path::new(GLB_CACHE_DIR).join(tank_id.to_string()).join(filename)
+    crate::data::app_path(GLB_CACHE_DIR).join(tank_id.to_string()).join(filename)
 }
 
 pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec<u8>, String> {
@@ -144,13 +144,19 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
         return Err(format!("invalid GLB filename: {}", filename));
     }
     let cache_path = glb_cache_path(tank_id, filename);
-    let cache_dir = cache_path.parent().unwrap_or(Path::new(GLB_CACHE_DIR)).to_path_buf();
+    let cache_dir = cache_path.parent().map(Path::to_path_buf).unwrap_or_else(|| crate::data::app_path(GLB_CACHE_DIR));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         // 损坏自愈：无 glTF magic（截断/HTML 错误页）视作未命中，走重下覆盖
         if bytes.starts_with(b"glTF") {
             return Ok(bytes);
         }
         eprintln!("[glb-cache] 缓存文件损坏（缺 glTF magic），重新下载: {}", cache_path.display());
+    }
+    // APK 内置资产兜底（移动端离线全量版）：直读不落盘，避免 1.9GB 复制
+    if let Some(bytes) = crate::data::read_embedded(&format!("glb_cache/{tank_id}/{filename}")) {
+        if bytes.starts_with(b"glTF") {
+            return Ok(bytes);
+        }
     }
 
     let url = format!("https://api.blitzkit.app/tanks/{}/{}", tank_id, filename);
@@ -413,7 +419,7 @@ fn glb_response(bytes: Vec<u8>) -> Response {
 const TANK_IMAGE_DIR: &str = "tank_images";
 
 pub(crate) async fn tank_image_handler(axum::extract::Path(tank_id): axum::extract::Path<u32>) -> Response {
-    let cache_path = Path::new(TANK_IMAGE_DIR).join(format!("{}.webp", tank_id));
+    let cache_path = crate::data::app_path(TANK_IMAGE_DIR).join(format!("{}.webp", tank_id));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         return image_response(bytes);
     }
@@ -424,7 +430,7 @@ pub(crate) async fn tank_image_handler(axum::extract::Path(tank_id): axum::extra
             match resp.bytes().await {
                 Ok(bytes) => {
                     let vec = bytes.to_vec();
-                    let _ = std::fs::create_dir_all(TANK_IMAGE_DIR);
+                    let _ = std::fs::create_dir_all(crate::data::app_path(TANK_IMAGE_DIR));
                     if std::fs::write(&cache_path, &vec).is_ok() {
                         eprintln!("[image-cache] cached {} ({} bytes)", cache_path.display(), vec.len());
                     }
@@ -455,7 +461,7 @@ pub(crate) async fn vendor_handler(axum::extract::Path(path): axum::extract::Pat
     if path.contains("..") {
         return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let full = Path::new(VENDOR_DIR).join(&path);
+    let full = crate::data::app_path(VENDOR_DIR).join(&path);
     match std::fs::read(&full) {
         Ok(bytes) => {
             let ct = if path.ends_with(".js") {
@@ -629,7 +635,7 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
 fn model_config_nodes(tank_id: u32) -> (Vec<String>, Vec<String>) {
     let mut guns = Vec::new();
     let mut turrets = Vec::new();
-    let path = std::path::Path::new(GLB_CACHE_DIR).join(tank_id.to_string()).join("model.glb");
+    let path = crate::data::app_path(GLB_CACHE_DIR).join(tank_id.to_string()).join("model.glb");
     if let Ok(bytes) = std::fs::read(&path) {
         if let Some(names) = parse_glb_top_nodes(&bytes) {
             for nm in names {

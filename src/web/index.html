@@ -390,6 +390,8 @@
                 <select id="scan-mode"><option value="all">All</option><option value="rating">Rating</option><option value="regular">Regular</option></select>
                 <input id="scan-days" type="number" placeholder="Days" style="max-width:100px;">
                 <button class="btn btn-primary" id="btn-scan">Scan</button>
+                <button class="btn" id="btn-import" style="display:none;">📥 导入回放</button>
+                <input type="file" id="import-file" accept=".wotbreplay" style="display:none;">
             </div>
             <div id="scan-out"></div>
         </div>
@@ -399,8 +401,10 @@
             <div class="sub">解析单场回放，还原每发射击的双方位置/朝向与伤害，点击在 3D 查看器中复现该发</div>
             <div class="row">
                 <input id="sr-file" placeholder="Path to the .wotbreplay file (Windows or WSL path)" style="flex:1;">
+                <button class="btn" id="btn-sr-import" style="display:none;">📂 导入</button>
                 <button class="btn btn-primary" id="btn-sr-load">Parse</button>
                 <button class="btn" id="btn-sr-playback" title="全场连续实时回放（新窗口）">▶ 实时回放</button>
+                <input type="file" id="sr-import-file" accept=".wotbreplay" style="display:none;">
             </div>
             <div id="sr-out"></div>
         </div>
@@ -978,11 +982,13 @@ function wrBar(wr){
 }
 let scanChart=null;
 function destroyChart(id){ if(window[id]){ window[id].destroy(); window[id]=null; } }
-async function doScan() {
+async function doScan(scanOverride) {
     const out=$('scan-out'); out.innerHTML='<span class="spinner"></span> scanning...';
     destroyChart('scanChart');
     const dir = $('scan-dir').value;   // 后端按运行平台自动转换 Windows/WSL 路径风格
     const body={dir,mode:$('scan-mode').value,days:$('scan-days').value?parseInt($('scan-days').value):null};
+    // 移动端导入流程：显式文件列表 → 报告只覆盖本次实际导入的文件
+    if (scanOverride && Array.isArray(scanOverride.files) && scanOverride.files.length) body.files = scanOverride.files;
     let r;
     try { r=await fetch(API+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
     catch(e){ out.innerHTML='<div class="muted">⚠ 请求失败: '+esc(e.message)+'</div>'; return; }
@@ -1393,6 +1399,176 @@ async function loadUsage() {
     const calls=(d.calls||[]).map(c=>`<tr><td>${esc(c.timestamp)}</td><td>${esc(c.model)}</td><td>${c.input_tokens}/${c.output_tokens}</td><td>$${c.cost.toFixed(4)}</td></tr>`).join('');
     $('usage-calls').innerHTML=`<table><tr><th>Time</th><th>Model</th><th>in/out</th><th>cost</th></tr>${calls}</table>`;
 }
+</script>
+<script>
+// ---------- 模型库悬浮组件 + 移动端兼容（Tauri WebView / 桌面浏览器均可用） ----------
+(function(){
+  // ---- 导入回放（双模式：Tauri=系统对话框；普通浏览器=原生文件选择 + 上传） ----
+  const T = window.__TAURI__;
+  const USE_DIALOG = !!(T && T.dialog && T.core);
+  if (T && T.core) { $('sr-file').placeholder = '点击「📂 导入」选择 .wotbreplay（或粘贴路径）'; }
+
+  async function uploadReplay(file) {
+    const buf = await file.arrayBuffer();
+    const r = await fetch(API + '/api/replay/upload?name=' + encodeURIComponent(file.name), {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buf,
+    });
+    if (!r.ok) throw new Error((await r.text()).slice(0, 160));
+    return r.json();
+  }
+  async function importViaDialog(btn) {
+    btn.disabled = true; const old = btn.textContent; btn.textContent = '⏳ 选择中…';
+    try {
+      const picked = await T.dialog.open({
+        multiple: false,
+        filters: [{ name: 'WoTB Replay', extensions: ['wotbreplay'] }],
+      });
+      if (!picked) return null;
+      btn.textContent = '⏳ 导入中…';
+      const dest = await T.core.invoke('import_replay', { src: picked });
+      toast('已导入: ' + (dest || '').split(/[\/]/).pop());
+      return dest;
+    } catch (e) {
+      toast('导入失败: ' + (e && e.message || e));
+      return null;
+    } finally {
+      btn.disabled = false; btn.textContent = old;
+    }
+  }
+
+  // 扫描卡导入：Tauri=选择回放目录（批量同步进私有库后扫描）；浏览器=单文件上传导入
+  const importBtn = document.getElementById('btn-import');
+  const importFile = document.getElementById('import-file');
+  if (importBtn && importFile) {
+    importBtn.style.display = '';
+    if (USE_DIALOG) importBtn.textContent = '📥 导入回放（可多选）';
+    importBtn.addEventListener('click', async () => {
+      if (USE_DIALOG) {
+        importBtn.disabled = true; const old = importBtn.textContent; importBtn.textContent = '⏳ 选择中…';
+        try {
+          const picked = await T.dialog.open({
+            multiple: true,
+            filters: [{ name: 'WoTB Replay', extensions: ['wotbreplay'] }],
+          });
+          if (!picked) return;
+          const list = Array.isArray(picked) ? picked : [picked];
+          const imported = [];
+          for (let i = 0; i < list.length; i++) {
+            importBtn.textContent = `⏳ 导入中 ${i + 1}/${list.length}…`;
+            try {
+              const dest = await T.core.invoke('import_replay', { src: list[i] });
+              if (dest) imported.push(dest);
+            }
+            catch (err) { console.warn('import failed:', list[i], err); }
+          }
+          toast(`已导入 ${imported.length}/${list.length} 个回放，开始扫描…`);
+          const dirInput = document.getElementById('scan-dir');
+          if (dirInput) dirInput.value = '';
+          doScan({ files: imported });
+        } catch (e) {
+          toast('导入失败: ' + (e && e.message || e));
+        } finally {
+          importBtn.disabled = false; importBtn.textContent = old;
+        }
+      } else {
+        importFile.click();
+      }
+    });
+    importFile.addEventListener('change', async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      importBtn.disabled = true;
+      try {
+        const d = await uploadReplay(f);
+        toast('已导入: ' + f.name);
+        const dirInput = document.getElementById('scan-dir');
+        if (dirInput) dirInput.value = '';
+        doScan({ files: [d.path] });
+      } catch (err) { toast('导入失败: ' + (err && err.message || err)); }
+      importBtn.disabled = false; e.target.value = '';
+    });
+  }
+
+  // 射击复现卡导入（导入后自动填入路径输入框）
+  const srBtn = document.getElementById('btn-sr-import');
+  const srFileInput = document.getElementById('sr-import-file');
+  if (srBtn && srFileInput) {
+    srBtn.style.display = '';
+    srBtn.addEventListener('click', async () => {
+      if (USE_DIALOG) {
+        const dest = await importViaDialog(srBtn);
+        if (dest) document.getElementById('sr-file').value = dest;
+      } else {
+        srFileInput.click();
+      }
+    });
+    srFileInput.addEventListener('change', async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      srBtn.disabled = true;
+      try {
+        const d = await uploadReplay(f);
+        document.getElementById('sr-file').value = d.path;
+        toast('已导入: ' + f.name);
+      } catch (err) { toast('导入失败: ' + (err && err.message || err)); }
+      srBtn.disabled = false; e.target.value = '';
+    });
+  }
+
+  // Android WebView 协议拦截拿不到 POST body：Tauri 环境下 POST 全部改道 IPC 直达 Rust 路由
+  if (T && T.core) {
+    const __origFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init) {
+      init = init || {};
+      const method = (init.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+      if (method === 'POST' && typeof init.body === 'string') {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const r = await T.core.invoke('bridge_post', { path: url.pathname + url.search, body: init.body });
+        const bin = atob(r.body);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const headers = { 'Content-Type': r.contentType || 'application/json' };
+        if (r.contentEncoding) headers['Content-Encoding'] = r.contentEncoding;
+        return new Response(bytes, { status: r.status, headers });
+      }
+      return __origFetch(input, init);
+    };
+  }
+
+  // Tauri Android WebView 不支持多窗口：同源 window.open 一律改为当前页跳转
+  const __open = window.open.bind(window);
+  window.open = function(url, target, features){
+    try { const u = new URL(url, location.href); if (u.origin === location.origin) { location.href = u.href; return null; } } catch(e) {}
+    return __open(url, target, features);
+  };
+
+  const chip = document.createElement('div');
+  chip.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:9999;background:#1d2330f2;color:#cfd8ea;border:1px solid #33405c;border-radius:10px;padding:8px 12px;font-size:12px;font-family:system-ui,sans-serif;box-shadow:0 4px 16px #0006;cursor:pointer;user-select:none;max-width:300px;line-height:1.5';
+  chip.title = '坦克 GLB 模型库：点击全量预下载（约 2GB，需网络）';
+  document.body.appendChild(chip);
+
+  let fastTimer = null;
+  async function refresh(){
+    try {
+      const d = await (await fetch('/api/models/status')).json();
+      const pct = d.total_tanks ? Math.round(d.ready_tanks/d.total_tanks*100) : 0;
+      if (d.running) {
+        chip.innerHTML = '📦 模型库 下载中 '+d.done_files+'/'+d.total_files+'（就绪 '+pct+'%）<br><span style="color:#8fa3c8">失败 '+d.failed+' · '+(d.bytes/1048576).toFixed(0)+' MB — 服务器后台执行</span>';
+      } else if (d.total_tanks && d.ready_tanks >= d.total_tanks) {
+        chip.innerHTML = '📦 模型库 '+d.ready_tanks+'/'+d.total_tanks+' 已就绪（离线可用）';
+      } else {
+        chip.innerHTML = '📦 模型库 '+d.ready_tanks+'/'+d.total_tanks+'（'+pct+'%）— 点击补齐全量';
+      }
+    } catch(e) { chip.textContent = '📦 模型库 状态不可用'; }
+  }
+  chip.addEventListener('click', async () => {
+    const d = await (await fetch('/api/models/status')).json();
+    if (d.running || (d.total_tanks && d.ready_tanks >= d.total_tanks)) { refresh(); return; }
+    await fetch('/api/models/download_all', {method:'POST'});
+    if (!fastTimer) { fastTimer = setInterval(refresh, 2000); setTimeout(()=>{clearInterval(fastTimer); fastTimer=null;}, 600000); }
+    refresh();
+  });
+  refresh();
+  setInterval(refresh, 30000);
+})();
 </script>
 </body>
 </html>

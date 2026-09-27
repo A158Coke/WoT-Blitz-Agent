@@ -737,12 +737,15 @@ impl AgentTools {
             return Ok("Chrome/Chromium not found (required for headless screenshots). Install Google Chrome, or set the CHROME_PATH environment variable to the browser executable.".to_string());
         };
 
-        std::fs::create_dir_all("screenshots")?;
+        std::fs::create_dir_all(crate::data::app_path("screenshots"))?;
         let shell_txt = shell_filter.as_deref().unwrap_or("default").to_uppercase();
-        let fname = format!(
-            "screenshots/heatmap_{}_vs_{}_{}_{}.png",
-            sanitize_name(&target_name), sanitize_name(&shooter_name), sanitize_name(&shell_txt), view
-        );
+        let fname = crate::data::app_path("screenshots")
+            .join(format!(
+                "heatmap_{}_vs_{}_{}_{}.png",
+                sanitize_name(&target_name), sanitize_name(&shooter_name), sanitize_name(&shell_txt), view
+            ))
+            .to_string_lossy()
+            .to_string();
 
         // 独立线程 + 独立 runtime：启动服务器（阻塞）→ Chrome 无头截图 → 线程结束即关闭服务器
         let resolver2 = resolver.clone();
@@ -831,7 +834,7 @@ impl AgentTools {
         };
 
         let resolver = self.load_resolver()?;
-        let fname2 = format!("screenshots/replay_shot_{:02}.png", shot_no);
+        let fname2 = crate::data::app_path("screenshots").join(format!("replay_shot_{:02}.png", shot_no)).to_string_lossy().to_string();
 
         let handle = std::thread::spawn(move || -> Result<String> {
             let rt = tokio::runtime::Runtime::new()?;

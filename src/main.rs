@@ -1,26 +1,19 @@
 
-mod models;
-mod replay;
-mod wargaming;
-mod agent;
-mod web;
-mod data;
-#[cfg(feature = "bundle")]
-mod bundle;
+// 业务模块在 lib.rs（wotb_agent::），本文件只保留 CLI 定义与命令分发。
 
 use std::path::{Path, PathBuf};
 use std::io::{self, Write, BufRead};
 use clap::{Parser as ClapParser, Subcommand};
 use anyhow::Result;
 
-use crate::models::report::AggregatedReport;
-use crate::models::config::{Config, TokenUsage};
-use crate::replay::scanner::{ReplayScanner, ScanFilter};
-use crate::wargaming::tank_resolver::TankResolver;
-use crate::wargaming::api_client::WgApiClient;
-use crate::wargaming::snapshot::SnapshotStore;
-use crate::replay::combat::{CombatTimeline, CombatEventType};
-use crate::agent::Agent;
+use wotb_agent::models::report::AggregatedReport;
+use wotb_agent::models::config::{Config, TokenUsage};
+use wotb_agent::replay::scanner::{ReplayScanner, ScanFilter};
+use wotb_agent::wargaming::tank_resolver::TankResolver;
+use wotb_agent::wargaming::api_client::WgApiClient;
+use wotb_agent::wargaming::snapshot::SnapshotStore;
+use wotb_agent::replay::combat::{CombatTimeline, CombatEventType};
+use wotb_agent::agent::Agent;
 
 #[derive(ClapParser)]
 #[command(name = "wotb-agent", version = "0.1.0", about = "WoTB Replay Analysis Agent")]
@@ -313,7 +306,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     #[cfg(feature = "bundle")]
-    bundle::bootstrap()?;
+    wotb_agent::bundle::bootstrap()?;
 
     let cli = Cli::parse();
 
@@ -321,7 +314,7 @@ fn main() -> Result<()> {
         let tank_id = *tank_id;
         let tank_cache = tank_cache.clone();
         return tokio::runtime::Runtime::new()?.block_on(async {
-            let resolver_path = tank_cache.unwrap_or_else(|| crate::data::data_path("tank_cache.json"));
+            let resolver_path = tank_cache.unwrap_or_else(|| wotb_agent::data::data_path("tank_cache.json"));
             let resolver = TankResolver::load_from_json_file(&resolver_path)
                 .map_err(|e| {
                     eprintln!("Failed to load tank cache: {}. Run `fetch-tanks` first.", e);
@@ -333,29 +326,29 @@ fn main() -> Result<()> {
             eprintln!("Models served via local cache proxy (/glb/{}/...), first fetch cached to glb_cache/.", tank_id);
             eprintln!("Tip: run `fetch-models` once to pre-download ALL tank models for full offline use.");
 
-            crate::wargaming::viewer::serve(resolver, tank_id, None).await
+            wotb_agent::wargaming::viewer::serve(resolver, tank_id, None).await
         });
     }
 
     if let Commands::Web { config, .. } = &cli.command {
         let config_path = config.clone();
         return tokio::runtime::Runtime::new()?.block_on(async {
-            crate::web::serve(config_path).await
+            wotb_agent::web::serve(config_path).await
         });
     }
 
     if let Commands::Playback { file } = &cli.command {
         let file = file.clone();
         return tokio::runtime::Runtime::new()?.block_on(async {
-            crate::wargaming::playback_viewer::serve_standalone(&file).await
+            wotb_agent::wargaming::playback_viewer::serve_standalone(&file).await
         });
     }
 
     match cli.command {
         Commands::ParseGame { dev_name, game_dir } => {
-            use crate::wargaming::dvpl::{DvplFile, CollisionData};
+            use wotb_agent::wargaming::dvpl::{DvplFile, CollisionData};
 
-            let game_dir = crate::wargaming::game_extract::resolve_game_dir(game_dir.as_deref())?;
+            let game_dir = wotb_agent::wargaming::game_extract::resolve_game_dir(game_dir.as_deref())?;
             let nations = ["ussr", "usa", "germany", "uk", "japan", "china", "france", "european", "other"];
             let mut found = false;
 
@@ -418,7 +411,7 @@ fn main() -> Result<()> {
                     eprintln!("\nFound XML: {}", xml_path.display());
                     let dvpl = DvplFile::read(&xml_path)?;
                     let text = String::from_utf8_lossy(&dvpl.data);
-                    let armor = crate::wargaming::dvpl::ArmorModel::parse_from_xml(&text);
+                    let armor = wotb_agent::wargaming::dvpl::ArmorModel::parse_from_xml(&text);
                     if let Some(ref am) = armor {
                         println!("\n=== Armor Model ===");
                         println!("  Hull plates: {:?}", am.hull.plates);
@@ -432,7 +425,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         Commands::ExtractGame { game_dir, output, force } => {
-            let stats = crate::wargaming::game_extract::extract_all(
+            let stats = wotb_agent::wargaming::game_extract::extract_all(
                 game_dir.as_deref(), &output, force,
             )?;
             println!("\n=== Game Data Extraction ===");
@@ -447,20 +440,20 @@ fn main() -> Result<()> {
         }
         Commands::FetchBlitzkit { output } => {
             let n = tokio::runtime::Runtime::new()?
-                .block_on(crate::wargaming::blitzkit::fetch_and_save(&output))?;
+                .block_on(wotb_agent::wargaming::blitzkit::fetch_and_save(&output))?;
             println!("Saved tanks.pb ({}) — parsed {} tanks -> {}", output.display(), n, output.display());
             return Ok(());
         }
         Commands::FetchIcons { dir, force } => {
             let (downloaded, cached, failed) =
-                crate::wargaming::blitzkit::download_all_icons(&dir, force)?;
+                wotb_agent::wargaming::blitzkit::download_all_icons(&dir, force)?;
             println!("Tank icons downloaded={} cached={} failed={} -> {}",
                 downloaded, cached, failed, dir.display());
             return Ok(());
         }
         Commands::FetchModels { force, concurrency } => {
             let (downloaded, cached, failed, bytes) = tokio::runtime::Runtime::new()?
-                .block_on(crate::wargaming::model_fetch::fetch_all_models(force, concurrency))?;
+                .block_on(wotb_agent::wargaming::model_fetch::fetch_all_models(force, concurrency))?;
             println!("Tank models ready: downloaded={} cached={} failed={} ({:.2} GB) -> glb_cache/",
                 downloaded, cached, failed, bytes as f64 / 1024.0 / 1024.0 / 1024.0);
             if failed > 0 {
@@ -480,9 +473,9 @@ fn main() -> Result<()> {
                 .filter(|p| p.exists())
                 .and_then(|p| TankResolver::load_from_json_file(&p).ok());
             let parser = if let Some(ref r) = resolver {
-                crate::replay::parser::ReplayParser::with_resolver(r)
+                wotb_agent::replay::parser::ReplayParser::with_resolver(r)
             } else {
-                crate::replay::parser::ReplayParser::new()
+                wotb_agent::replay::parser::ReplayParser::new()
             };
             let summary = parser.parse_file(&file)?;
 
@@ -577,7 +570,7 @@ fn main() -> Result<()> {
                     }
                     let account_id = results[0].1;
                     let stats = client.get_player_stats(account_id)?;
-                    let snapshot = crate::wargaming::snapshot::Snapshot::from_player_stats(stats);
+                    let snapshot = wotb_agent::wargaming::snapshot::Snapshot::from_player_stats(stats);
                     let path = store.save(&snapshot)?;
                     eprintln!("Snapshot saved: {}", path.display());
                     eprintln!("  Player: {} (id={})", snapshot.player.nickname, snapshot.player.account_id);
@@ -613,7 +606,7 @@ fn main() -> Result<()> {
         }
         Commands::Chat { config: config_path, save, load } => {
             let _ = ctrlc::set_handler(|| {
-                crate::agent::set_interrupted();
+                wotb_agent::agent::set_interrupted();
                 eprintln!("\n[Interrupted] Finishing current step...");
             });
 
@@ -854,10 +847,10 @@ fn main() -> Result<()> {
             let client = WgApiClient::new(&app_id, &server);
 
             if let Some(ref rp) = replay {
-                let resolver = TankResolver::load_from_json_file(&crate::data::data_path("tank_cache.json")).ok();
+                let resolver = TankResolver::load_from_json_file(&wotb_agent::data::data_path("tank_cache.json")).ok();
                 let parser = match &resolver {
-                    Some(r) => crate::replay::parser::ReplayParser::with_resolver(r),
-                    None => crate::replay::parser::ReplayParser::new(),
+                    Some(r) => wotb_agent::replay::parser::ReplayParser::with_resolver(r),
+                    None => wotb_agent::replay::parser::ReplayParser::new(),
                 };
                 let summary = parser.parse_file(rp)?;
                 eprintln!("\n=== 回放: {} ===", summary.file_name);
@@ -869,15 +862,15 @@ fn main() -> Result<()> {
                     let pb = query_lineup_stats(&client,
                         summary.players.iter().filter(|p| p.team != 1).map(|p| p.nickname.as_str()), "敌方");
                     (
-                        crate::wargaming::prematch::analyze_lineup(pa)?,
-                        crate::wargaming::prematch::analyze_lineup(pb)?,
+                        wotb_agent::wargaming::prematch::analyze_lineup(pa)?,
+                        wotb_agent::wargaming::prematch::analyze_lineup(pb)?,
                     )
                 };
 
                 eprintln!("\n--- 我方阵容 ---");
-                crate::wargaming::prematch::print_report(&report_a);
+                wotb_agent::wargaming::prematch::print_report(&report_a);
                 eprintln!("\n--- 敌方阵容 ---");
-                crate::wargaming::prematch::print_report(&report_b);
+                wotb_agent::wargaming::prematch::print_report(&report_b);
 
                 let diff = report_a.avg_damage - report_b.avg_damage;
                 eprintln!("\n=== 阵容对比 ===");
@@ -928,8 +921,8 @@ fn main() -> Result<()> {
                 }
             }
 
-            let report = crate::wargaming::prematch::analyze_lineup(players)?;
-            crate::wargaming::prematch::print_report(&report);
+            let report = wotb_agent::wargaming::prematch::analyze_lineup(players)?;
+            wotb_agent::wargaming::prematch::print_report(&report);
         }
         Commands::FetchTanks { output } => {
             eprintln!("Building tank resolver from local BlitzKit data (no WG API)...");
@@ -944,7 +937,7 @@ fn main() -> Result<()> {
 
             // 路径风格兼容：Windows/WSL 任一风格输入按运行平台自动转换（C:\... ⇄ /mnt/c/...；path_translate=off 可关闭）
             let file = std::path::PathBuf::from(
-                crate::models::config::ReplayConfig::translate_with_mode(&file.to_string_lossy(), "auto"));
+                wotb_agent::models::config::ReplayConfig::translate_with_mode(&file.to_string_lossy(), "auto"));
 
             let mut replay = Replay::open(File::open(&file)?)
                 .map_err(|e| anyhow::anyhow!("Failed to open replay: {}", e))?;
@@ -977,20 +970,20 @@ fn main() -> Result<()> {
             // 缓存缺失时俯仰走回退路径并打质量标记）
             let br = replay.read_battle_results().ok();
             let author_nick = br.as_ref()
-                .map(|br| crate::replay::combat::author_nick_from_battle_results(br))
+                .map(|br| wotb_agent::replay::combat::author_nick_from_battle_results(br))
                 .or_else(|| replay.read_meta().ok().map(|m| m.player_name.clone()))
                 .unwrap_or_default();
             let pitch_limits = br.as_ref()
                 .and_then(|br| TankResolver::load_from_json_file(std::path::Path::new("data/tank_cache.json")).ok()
                     .map(|r| r.pitch_limits_from_battle_results(br)))
                 .unwrap_or_default();
-            let mut shot_replay = crate::replay::combat::extract_shot_replays_auto_with_limits(
+            let mut shot_replay = wotb_agent::replay::combat::extract_shot_replays_auto_with_limits(
                 &raw_packets, &author_nick, &pitch_limits)?;
             // 弹种回填：全局 shell_id → tanks.pb 原始弹种串（兜底链各级来源统一识别）
-            crate::replay::loadout::ShellKindTable::from_tanks_pb().annotate(&mut shot_replay);
+            wotb_agent::replay::loadout::ShellKindTable::from_tanks_pb().annotate(&mut shot_replay);
             // UpdateArena 竞技场状态流（子类型名表 + PERIOD 战局阶段时间线，报告 §4.5）
-            let arena_updates = crate::replay::combat::collect_arena_updates(&raw_packets);
-            let arena_periods = crate::replay::combat::parse_arena_periods(&arena_updates);
+            let arena_updates = wotb_agent::replay::combat::collect_arena_updates(&raw_packets);
+            let arena_periods = wotb_agent::replay::combat::parse_arena_periods(&arena_updates);
 
             if json {
                 let combined = serde_json::json!({
@@ -1015,7 +1008,7 @@ fn main() -> Result<()> {
                 }
             }
             if let Some(path) = streams_json {
-                std::fs::write(&path, serde_json::to_string(&crate::replay::combat::dump_replay_streams(&raw_packets))?)?;
+                std::fs::write(&path, serde_json::to_string(&wotb_agent::replay::combat::dump_replay_streams(&raw_packets))?)?;
                 eprintln!("Entity streams written: {}", path.display());
             }
         }
@@ -1025,7 +1018,7 @@ fn main() -> Result<()> {
 
             // 路径风格兼容：Windows/WSL 任一风格输入按运行平台自动转换（C:\... ⇄ /mnt/c/...；path_translate=off 可关闭）
             let file = std::path::PathBuf::from(
-                crate::models::config::ReplayConfig::translate_with_mode(&file.to_string_lossy(), "auto"));
+                wotb_agent::models::config::ReplayConfig::translate_with_mode(&file.to_string_lossy(), "auto"));
 
             let mut replay = Replay::open(File::open(&file)?)
                 .map_err(|e| anyhow::anyhow!("Failed to open replay: {}", e))?;
@@ -1045,7 +1038,7 @@ fn main() -> Result<()> {
                 })
                 .collect();
 
-            let loadouts = crate::replay::loadout::collect_player_loadouts(&raw_packets, &br);
+            let loadouts = wotb_agent::replay::loadout::collect_player_loadouts(&raw_packets, &br);
             if json {
                 println!("{}", serde_json::to_string_pretty(&loadouts)?);
             } else {
@@ -1227,8 +1220,8 @@ fn cmd_update_data(
     icons: bool,
     models: bool,
 ) -> Result<()> {
-    use crate::wargaming::data_version::{now_rfc3339, DataVersionManifest};
-    use crate::wargaming::game_extract as ge;
+    use wotb_agent::wargaming::data_version::{now_rfc3339, DataVersionManifest};
+    use wotb_agent::wargaming::game_extract as ge;
 
     let gdir = ge::resolve_game_dir(game_dir).ok();
     let current_version = gdir.as_deref().and_then(ge::game_version);
@@ -1275,7 +1268,7 @@ fn cmd_update_data(
     if !offline {
         eprintln!("Downloading BlitzKit definitions ...");
         let n = tokio::runtime::Runtime::new()?
-            .block_on(crate::wargaming::blitzkit::fetch_and_save(output))?;
+            .block_on(wotb_agent::wargaming::blitzkit::fetch_and_save(output))?;
         blitzkit_at = Some(now_rfc3339());
         tank_count = Some(n);
         println!("  BlitzKit: downloaded tanks.pb + models.pb ({} tanks)", n);
@@ -1303,14 +1296,14 @@ fn cmd_update_data(
     if icons {
         let dir = Path::new("tank_images");
         let (downloaded, cached, failed) =
-            crate::wargaming::blitzkit::download_all_icons(dir, false)?;
+            wotb_agent::wargaming::blitzkit::download_all_icons(dir, false)?;
         println!("  Icons: downloaded={} cached={} failed={} -> {}", downloaded, cached, failed, dir.display());
     }
 
     // 4.5 可选：GLB 模型全量预热（只补缺失项，已有缓存自动跳过）
     if models {
         let (downloaded, cached, failed, bytes) = tokio::runtime::Runtime::new()?
-            .block_on(crate::wargaming::model_fetch::fetch_all_models(false, 6))?;
+            .block_on(wotb_agent::wargaming::model_fetch::fetch_all_models(false, 6))?;
         println!("  Models: downloaded={} cached={} failed={} ({:.2} GB) -> glb_cache/",
             downloaded, cached, failed, bytes as f64 / 1024.0 / 1024.0 / 1024.0);
     }
@@ -1337,7 +1330,7 @@ fn cmd_update_data(
     Ok(())
 }
 
-fn print_single_replay(summary: &crate::models::battle::BattleSummary) {
+fn print_single_replay(summary: &wotb_agent::models::battle::BattleSummary) {
     println!();
     println!("========================================================");
     println!("  Single Replay: {}", summary.file_name);
@@ -1389,7 +1382,7 @@ fn query_lineup_stats<'a>(
     client: &WgApiClient,
     names: impl Iterator<Item = &'a str>,
     label: &str,
-) -> Vec<crate::wargaming::api_client::PlayerStats> {
+) -> Vec<wotb_agent::wargaming::api_client::PlayerStats> {
     let mut stats = Vec::new();
     for n in names {
         eprintln!("查询{}玩家 '{}'...", label, n);

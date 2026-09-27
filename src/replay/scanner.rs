@@ -145,6 +145,53 @@ impl<'a> ReplayScanner<'a> {
         results.sort_by_key(|b| b.timestamp);
         Ok(results)
     }
+
+    /// 扫描指定的回放文件列表（移动端导入后只分析用户实际选择的文件）。
+    pub fn scan_files(
+        &self,
+        files: &[std::path::PathBuf],
+        filter: &ScanFilter,
+        progress_callback: impl FnMut(ScanProgress),
+    ) -> Result<Vec<BattleSummary>> {
+        let total = files.len();
+        let mut results = Vec::with_capacity(total);
+        let mut callback = progress_callback;
+
+        for (i, path) in files.iter().enumerate() {
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+
+            match self.parser.parse_file(path) {
+                Ok(summary) => {
+                    if filter.matches(&summary) {
+                        results.push(summary);
+                    }
+                    callback(ScanProgress {
+                        current: i + 1,
+                        total,
+                        file_name,
+                        ok: true,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    callback(ScanProgress {
+                        current: i + 1,
+                        total,
+                        file_name,
+                        ok: false,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        results.sort_by_key(|b| b.timestamp);
+        Ok(results)
+    }
 }
 
 impl<'a> Default for ReplayScanner<'a> {

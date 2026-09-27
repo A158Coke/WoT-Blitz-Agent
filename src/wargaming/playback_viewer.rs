@@ -94,9 +94,15 @@ fn build_playback_json_uncached(path: &Path, key: &str) -> anyhow::Result<Vec<u8
     }
     let author_account_id = br.as_ref().map(|b| b.author.account_id).unwrap_or(0);
     let map_id = br.as_ref().map(|b| b.mode_map_id & 0xFFFF).unwrap_or(0);
-    let map_name = meta.as_ref()
-        .map(|m| format!("{:?}", m.map_id))
-        .unwrap_or_else(|| format!("map_{map_id}"));
+    // 显示名以客户端注册表为准（wotbreplay-parser 的 MapId 枚举个别判别值与
+    // 客户端数据不一致，见 map_assets 模块注释）；无注册表时退回解析器名
+    let map_name = crate::wargaming::map_assets::display_name(map_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            meta.as_ref()
+                .map(|m| format!("{:?}", m.map_id))
+                .unwrap_or_else(|| format!("map_{map_id}"))
+        });
 
     eprintln!("[playback] 构建全场时间线: {key}");
     let input = crate::replay::playback::PlaybackInput {
@@ -187,42 +193,109 @@ pub async fn playback_data_handler(Json(body): Json<serde_json::Value>) -> Respo
     playback_data_response(Path::new(&file)).await
 }
 
-/// GET /api/playback/map?name=WinterMalinovka —— 地图底图（提取/覆盖/缓存链路见
+/// 地图参数：?id=<回放数字 id>（首选，与客户端 arenaTypeID 同链）或 ?name=<显示名|键>。
+fn map_query_param(q: &HashMap<String, String>) -> String {
+    if let Some(id) = q.get("id").filter(|s| !s.trim().is_empty()) {
+        return id.trim().to_string();
+    }
+    q.get("name").cloned().unwrap_or_default()
+}
+
+/// GET /api/playback/map?id=19 —— 地图底图（提取/覆盖/缓存链路见
 /// [`crate::wargaming::map_assets`]；不可用时仍 404，前端回退程序生成网格）
 pub async fn playback_map_handler(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let name = q.get("name").cloned().unwrap_or_default();
-    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::map_image_response(&name))
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::map_image_response(&map))
         .await
         .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "map task failed").into_response())
 }
 
-/// GET /api/playback/terrain?name=WinterMalinovka —— 高度场地形（u16 LE + X-Terrain-Meta；
+/// GET /api/playback/terrain?id=19 —— 高度场地形（u16 LE + X-Terrain-Meta；
 /// 不可用 404，前端回退 2D 底图平面）
 pub async fn playback_terrain_handler(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let name = q.get("name").cloned().unwrap_or_default();
-    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::terrain_response(&name))
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::terrain_response(&map))
         .await
         .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "terrain task failed").into_response())
 }
 
-/// GET /api/playback/scenery?name=WinterMalinovka —— 静态场景 GLB（建筑等，离线预生成；
+/// GET /api/playback/grassdensity?id=19 —— 草地密度位图
+/// （tools/export_map_glb.py 预生成：优先 vegetationColorMap 的 alpha（512²，
+/// 1.17m/格），回退 flippedDensityMap（128²）；行0=南；缺失 404，前端跳过）
+pub async fn playback_grassdensity_handler(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || {
+        crate::wargaming::map_assets::grass_density_response(&map)
+    })
+    .await
+    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "grass task failed").into_response())
+}
+
+/// GET /api/playback/grasstint?id=19 —— 草地按位置染色图（客户端
+/// vegetationColorMap 的 RGB；缺失 404，前端跳过逐实例染色）
+pub async fn playback_grasstint_handler(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || {
+        crate::wargaming::map_assets::grass_tint_response(&map)
+    })
+    .await
+    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "grass tint task failed").into_response())
+}
+
+/// GET /api/playback/groundmeta?id=19 —— 地表分层合成参数（缺失 404，
+/// 前端回退整图烘焙）
+pub async fn playback_groundmeta_handler(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || {
+        crate::wargaming::map_assets::ground_layers_meta_response(&map)
+    })
+    .await
+    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "ground meta task failed").into_response())
+}
+
+/// GET /api/playback/groundtex?id=19&k=cm|tile|mask|hmap —— 地表分层贴图
+pub async fn playback_groundtex_handler(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let map = map_query_param(&q);
+    let layer = q.get("k").cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        crate::wargaming::map_assets::ground_layer_response(&map, &layer)
+    })
+    .await
+    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "ground tex task failed").into_response())
+}
+
+/// GET /api/playback/scenery?id=19 —— 静态场景 GLB（客户端管线离线导出；
 /// 缺失 404，前端静默跳过）
 pub async fn playback_scenery_handler(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let name = q.get("name").cloned().unwrap_or_default();
-    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::scenery_response(&name))
+    let map = map_query_param(&q);
+    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::scenery_response(&map))
         .await
         .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "scenery task failed").into_response())
 }
 
 /// 播放器页面（web 模式 asset prefix = /armor_view：GLB/vendor 复用 armor_view 路由）
-pub async fn playback_page_handler() -> Html<String> {
-    Html(playback_index_html("/armor_view"))
+pub async fn playback_page_handler() -> Response {
+    let mut resp = Html(playback_index_html("/armor_view")).into_response();
+    // 页面 JS 迭代后旧缓存会混用新旧数据（如草地铺设逻辑），一律禁止缓存
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::header::HeaderValue::from_static("no-cache"),
+    );
+    resp
 }
 
 // ---------- 独立服务（CLI `playback <replay>`） ----------
@@ -243,12 +316,23 @@ pub async fn serve_standalone(replay_path: &Path) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(move || {
             let html = index_html.clone();
-            async move { Html(html) }
+            async move {
+                let mut resp = Html(html).into_response();
+                resp.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::header::HeaderValue::from_static("no-cache"),
+                );
+                resp
+            }
         }))
         .route("/api/playback/data", post(playback_data_handler))
         .route("/api/playback/map", get(playback_map_handler))
         .route("/api/playback/terrain", get(playback_terrain_handler))
         .route("/api/playback/scenery", get(playback_scenery_handler))
+        .route("/api/playback/grassdensity", get(playback_grassdensity_handler))
+        .route("/api/playback/grasstint", get(playback_grasstint_handler))
+        .route("/api/playback/groundmeta", get(playback_groundmeta_handler))
+        .route("/api/playback/groundtex", get(playback_groundtex_handler))
         .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
         .route("/vendor/three/{*path}", get(crate::wargaming::viewer::vendor_handler))
         .route("/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
@@ -269,7 +353,7 @@ pub async fn serve_standalone(replay_path: &Path) -> anyhow::Result<()> {
 // ---------- 内嵌前端 ----------
 
 pub fn playback_index_html(base_prefix: &str) -> String {
-    let vendor_local = Path::new(VENDOR_DIR).join("three.module.js").exists();
+    let vendor_local = crate::data::app_path(VENDOR_DIR).join("three.module.js").exists();
     let importmap = if vendor_local {
         format!(
             r#"{{ "imports": {{ "three": "{base_prefix}/vendor/three/three.module.js", "three/addons/": "{base_prefix}/vendor/three/addons/" }} }}"#
@@ -287,6 +371,26 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// Tauri Android WebView 协议拦截拿不到 POST body：POST 全部改道 IPC 直达 Rust 路由
+if (window.__TAURI__ && window.__TAURI__.core) {
+  const T = window.__TAURI__.core;
+  const __origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init) {
+    init = init || {};
+    const method = (init.method || (input instanceof Request ? input.method : "GET") || "GET").toUpperCase();
+    if (method === "POST" && typeof init.body === "string") {
+      const url = new URL(typeof input === "string" ? input : input.url, location.href);
+      const r = await T.invoke("bridge_post", { path: url.pathname + url.search, body: init.body });
+      const bin = atob(r.body);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Response(bytes, { status: r.status, headers: { "Content-Type": r.contentType || "application/json" } });
+    }
+    return __origFetch(input, init);
+  };
+}
+</script>
 <title>实时回放 · wotb-agent</title>
 <style>
   :root { --panel: rgba(16,20,26,.82); --line: #2c3542; --fg: #d8dee7; --dim: #8a94a3;
@@ -416,6 +520,9 @@ let renderer, scene, camera, controls, clock, raycaster;
 let glbCache = new Map(), glbOn = false;
 let mapPlane = null, mapOpacity = 0.92;
 let mapTexture = null, mapMetaInfo = null;          // 底图贴图 + 铺设参数
+// 分层地表（客户端 tilemask-fp.sl 实时合成）：{layers: 合成参数, texs: {cm,tile,mask,hmap}}。
+// 缺失（未导出/404）时回退整图烘焙底图
+let groundLayers = null;
 let terrainMesh = null, heightField = null, heightMeta = null;  // 3D 地形
 let mapScenery = null;                              // 静态场景 GLB（建筑等）
 let terrainOn = true;
@@ -474,13 +581,17 @@ function initScene() {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // three r165+ 恒为物理光照单位（Lambert 除以 π），旧强度会让建筑/车模暗到发黑；
+  // 与装甲查看器（viewer.rs）一致：ACES 色调映射 + ×π 级别的光强
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
   $('scene').appendChild(renderer.domElement);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.maxPolarAngle = Math.PI / 2 - 0.02;
   clock = new THREE.Clock();
   raycaster = new THREE.Raycaster();
-  scene.add(new THREE.HemisphereLight(0xbfd4e8, 0x2a2f36, 0.9));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.1); sun.position.set(120, 260, 80); scene.add(sun);
+  scene.add(new THREE.HemisphereLight(0xbfd4e8, 0x2a2f36, 2.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 3.0); sun.position.set(120, 260, 80); scene.add(sun);
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
@@ -538,10 +649,14 @@ async function loadMapImage() {
   if (terrainMesh) { scene.remove(terrainMesh); terrainMesh = null; }
   if (mapScenery) { scene.remove(mapScenery); mapScenery = null; }
   mapTexture = null; mapMetaInfo = null; heightField = null; heightMeta = null;
+  groundLayers = null;
   $('terrainToggle').disabled = true;
-  const name = encodeURIComponent(DATA.meta.map_name || '');
+  // 地图端点用回放数字 id（与客户端 arenaTypeID → maps.yaml 同链）；
+  // 显示名可能与解析器枚举名不一致，仅作后备
+  const mid = DATA.meta.map_id || 0;
+  const mapq = mid ? ('id=' + mid) : ('name=' + encodeURIComponent(DATA.meta.map_name || ''));
   try {
-    const resp = await fetch('/api/playback/map?name=' + name);
+    const resp = await fetch('/api/playback/map?' + mapq);
     if (resp.ok) {
       mapMetaInfo = JSON.parse(resp.headers.get('X-Map-Meta') || '{}');
       const url = URL.createObjectURL(await resp.blob());
@@ -553,7 +668,7 @@ async function loadMapImage() {
     }
   } catch (e) { console.warn('底图加载失败（回退网格）:', e); }
   try {
-    const resp = await fetch('/api/playback/terrain?name=' + name);
+    const resp = await fetch('/api/playback/terrain?' + mapq);
     if (resp.ok) {
       const meta = JSON.parse(resp.headers.get('X-Terrain-Meta') || '{}');
       const n = meta.size || 512;
@@ -561,15 +676,50 @@ async function loadMapImage() {
       if (buf.byteLength === n * n * 2) {
         const u16 = new Uint16Array(buf);
         heightMeta = meta;
-        // 预转米制高度（行 0=南，行主序）
+        // 预转米制高度（行 0=南，行主序；zmin 缺省 0）
         heightField = new Float32Array(n * n);
-        const k = (meta.zmax || 100) / 65535;
-        for (let i = 0; i < u16.length; i++) heightField[i] = u16[i] * k;
+        const zmin = meta.zmin || 0;
+        const k = ((meta.zmax || 100) - zmin) / 65535;
+        for (let i = 0; i < u16.length; i++) heightField[i] = u16[i] * k + zmin;
       }
     }
   } catch (e) { console.warn('地形加载失败（回退 2D）:', e); }
   $('terrainToggle').disabled = !heightField;
   $('terrainToggle').checked = !!heightField && terrainOn;
+  // 客户端同款分层地表：colormap/lightmap/tile 细节/mask/(HeightBlend 高度图)，
+  // tile 纹理前端按 textureTiling 平铺全分辨率采样（texCoordTiled = texCoord ×
+  // textureTiling，30–120 次重复/全图）——清晰度等同客户端，不受整图烘焙
+  // 分辨率限制。任一分层缺失则整体回退烘焙底图。
+  // 注意分层一律无 alpha（Chrome 把带 alpha 的 webp 预乘解码，GPU 侧会压暗
+  // 近黑），第 4 通道在独立灰度图里（tile1/mask1/hmap1 的 R）。
+  try {
+    const mresp = await fetch('/api/playback/groundmeta?' + mapq);
+    if (mresp.ok) {
+      const L = await mresp.json();
+      const need = L.height_blend
+        ? ['cm', 'lm', 'tile0', 'tile1', 'mask0', 'mask1', 'hmap0', 'hmap1']
+        : ['cm', 'lm', 'tile0', 'tile1', 'mask0', 'mask1'];
+      const texs = {};
+      let ok = true;
+      for (const k of need) {
+        try {
+          const r = await fetch('/api/playback/groundtex?' + mapq + '&k=' + k);
+          if (!r.ok) { ok = false; break; }
+          const u = URL.createObjectURL(await r.blob());
+          texs[k] = await new THREE.TextureLoader().loadAsync(u);
+          URL.revokeObjectURL(u);
+        } catch { ok = false; break; }
+      }
+      if (ok) {
+        const ani = renderer.capabilities.getMaxAnisotropy();
+        for (const k of ['tile0', 'tile1', 'hmap0', 'hmap1']) if (texs[k]) {
+          texs[k].wrapS = texs[k].wrapT = THREE.RepeatWrapping;
+          texs[k].anisotropy = ani;
+        }
+        groundLayers = { layers: L, texs };
+      }
+    }
+  } catch (e) { console.warn('分层地表加载失败（回退烘焙底图）:', e); }
   rebuildGround();
   // 静态场景模型（建筑/桥/岩石，tools/export_map_glb.py 预生成；缺失静默跳过）。
   // GLB 为游戏系（z 上、+y 北），qFrame = Ry(π)·Rx(-π/2)（YXZ 序）转到回放场景系——
@@ -577,17 +727,57 @@ async function loadMapImage() {
   try {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
     const gltf = await new Promise((res) => {
-      new GLTFLoader().load('/api/playback/scenery?name=' + name,
+      new GLTFLoader().load('/api/playback/scenery?' + mapq,
         (g) => res(g), undefined, () => res(null));
     });
     if (gltf && gltf.scene) {
-      // 平直着色：建筑面片边界清晰，观感整洁（避免平滑法线导致的碎裂渐变）
-      gltf.scene.traverse((o) => { if (o.isMesh && o.material) o.material.flatShading = true; });
+      // GLTFLoader 默认 MeshStandardMaterial（PBR）比场景 Lambert 光照吃光得多，
+      // 建筑会渲染成近黑——统一降级为 Lambert 并保留贴图/透明/平直着色
+      const convMat = (mat) => {
+        // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
+        // 无场景光照——用不受光材质（染色值经 baseColorFactor→color 传入）
+        if ((mat.name || '').startsWith('ST|')) {
+          const bm = new THREE.MeshBasicMaterial({
+            map: mat.map || null,
+            color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
+            transparent: !!mat.transparent,
+            opacity: mat.opacity ?? 1,
+            side: THREE.DoubleSide,
+          });
+          if (mat.alphaMode === 'MASK') bm.alphaTest = mat.alphaCutoff || 0.5;
+          bm.toneMapped = false;
+          return bm;
+        }
+        const nm = new THREE.MeshLambertMaterial({
+          map: mat.map || null,
+          color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
+          transparent: !!mat.transparent,
+          opacity: mat.opacity ?? 1,
+          side: THREE.DoubleSide,
+        });
+        if (mat.alphaMode === 'MASK') nm.alphaTest = mat.alphaCutoff || 0.33;
+        nm.flatShading = true;
+        return nm;
+      };
+      gltf.scene.traverse((o) => {
+        if (o.isMesh && o.material) {
+          o.material = Array.isArray(o.material) ? o.material.map(convMat) : convMat(o.material);
+        }
+      });
       mapScenery = new THREE.Group();
       mapScenery.rotation.order = 'YXZ';
       mapScenery.rotation.set(-Math.PI / 2, Math.PI, 0);
       mapScenery.add(gltf.scene);
       scene.add(mapScenery);
+
+      // 铺地草已按需求移除（性能开销）：GLB 中的 grass_clump 模板直接隐藏，
+      // 不再实例化铺设；天空盒（SkyFlattenSphere 天穹）同样不显示
+      gltf.scene.traverse((o) => {
+        if (!o.isMesh) return;
+        const nm = o.name || '';
+        if (nm.startsWith('grass_clump_')) o.visible = false;
+        if (/sky/i.test(nm)) o.visible = false;
+      });
     }
   } catch (e) { console.warn('场景模型加载失败（忽略）:', e); }
 }
@@ -606,6 +796,129 @@ function sampleHeight(x, z) {
 }
 
 // 依据 mapTexture/heightField/terrainOn 重建地面（2D 平面或 3D 地形二选一）
+// 客户端 Landscape/tilemask-fp.sl 非 PBR 路径的实时合成材质（离线着色器解码
+// 逐分支核对）：GLOBAL_TINT（globalFlatColor×2 + lightmap 通道 brightness/
+// contrast/gamma 调整）、SCALED_TILES（每通道各自 tileScale）、HEIGHT_BLEND
+// （tilemaskWeight×(mask×2−1) + hMap×scale + offset，softness 归一加权）。
+// UV 在片元由世界坐标反推（colormap 原始空间，分层贴图行序未翻转：
+// u = 0.5−X/s、v = 0.5−Z/s）；tile/height 用 Repeat 平铺原生分辨率采样，
+// 清晰度等同客户端。伽马空间直出（客户端着色器同为 sRGB 纹理直采直写）。
+function groundShaderMaterial(L, texs, size, cx, cz) {
+  return new THREE.ShaderMaterial({
+    defines: {
+      GLOBAL_TINT: !!L.flatcolor,
+      SEPARATE_LM: !!L.separate_lm,
+      SCALED_TILES: !!L.scaled_tiles,
+      HEIGHT_BLEND: !!L.height_blend,
+    },
+    uniforms: {
+      uCM: { value: texs.cm }, uLM: { value: texs.lm },
+      uTile0: { value: texs.tile0 }, uTile1: { value: texs.tile1 },
+      uMask0: { value: texs.mask0 }, uMask1: { value: texs.mask1 },
+      uHMap0: { value: texs.hmap0 || texs.tile0 },
+      uHMap1: { value: texs.hmap1 || texs.tile1 },
+      uSize: { value: size }, uCenter: { value: new THREE.Vector2(cx, cz) },
+      uTiling: { value: new THREE.Vector2(L.tiling[0], L.tiling[1]) },
+      uTileScale: { value: new THREE.Vector4(L.tile_scale[0], L.tile_scale[1],
+                                             L.tile_scale[2], L.tile_scale[3]) },
+      uTC: { value: L.tile_colors.map((c) => new THREE.Vector3(c[0], c[1], c[2])) },
+      uFlatColor: { value: new THREE.Vector3(L.flat_color[0], L.flat_color[1], L.flat_color[2]) },
+      uLmAdjust: { value: new THREE.Vector3(L.lm_adjust[0], L.lm_adjust[1], L.lm_adjust[2]) },
+      uTmWeight: { value: L.tilemask_weight },
+      uHbScale: { value: new THREE.Vector4(L.hb_scale[0], L.hb_scale[1],
+                                           L.hb_scale[2], L.hb_scale[3]) },
+      uHbOffset: { value: new THREE.Vector4(L.hb_offset[0], L.hb_offset[1],
+                                            L.hb_offset[2], L.hb_offset[3]) },
+      uHbSoft: { value: new THREE.Vector4(L.hb_softness[0], L.hb_softness[1],
+                                          L.hb_softness[2], L.hb_softness[3]) },
+    },
+    vertexShader: `
+      varying vec2 vXZ;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vXZ = wp.xz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uCM;
+      uniform sampler2D uLM;
+      uniform sampler2D uTile0;
+      uniform sampler2D uTile1;
+      uniform sampler2D uMask0;
+      uniform sampler2D uMask1;
+      uniform sampler2D uHMap0;
+      uniform sampler2D uHMap1;
+      uniform float uSize;
+      uniform vec2 uCenter;
+      uniform vec2 uTiling;
+      uniform vec4 uTileScale;
+      uniform vec3 uTC[4];
+      uniform vec3 uFlatColor;
+      uniform vec3 uLmAdjust;
+      uniform float uTmWeight;
+      uniform vec4 uHbScale;
+      uniform vec4 uHbOffset;
+      uniform vec4 uHbSoft;
+      varying vec2 vXZ;
+
+      void main() {
+        vec2 tc = vec2(0.5 - (vXZ.x - uCenter.x) / uSize,
+                       0.5 - (vXZ.y - uCenter.y) / uSize);
+        vec3 colorAlbedo = texture2D(uCM, tc).rgb;
+        float lmA = texture2D(uLM, tc).r;
+        #ifdef GLOBAL_TINT
+        colorAlbedo *= uFlatColor * 2.0;
+        #ifdef SEPARATE_LM
+        lmA = pow(lmA, uLmAdjust.b);
+        lmA = (lmA - 0.5) * uLmAdjust.g + 0.5;
+        lmA += uLmAdjust.r;
+        #endif
+        #endif
+        #ifdef SEPARATE_LM
+        vec3 shadowColor = colorAlbedo * lmA;
+        #else
+        vec3 shadowColor = colorAlbedo;
+        #endif
+
+        vec4 mask = vec4(texture2D(uMask0, tc).rgb, texture2D(uMask1, tc).r);
+        vec2 tuv = tc * uTiling;
+        #ifdef SCALED_TILES
+        vec4 tileColor = vec4(
+          texture2D(uTile0, tuv * uTileScale.x).r,
+          texture2D(uTile0, tuv * uTileScale.y).g,
+          texture2D(uTile0, tuv * uTileScale.z).b,
+          texture2D(uTile1, tuv * uTileScale.w).r);
+        #else
+        vec4 tileColor = vec4(texture2D(uTile0, tuv).rgb, texture2D(uTile1, tuv).r);
+        #endif
+
+        #ifdef HEIGHT_BLEND
+        #ifdef SCALED_TILES
+        vec4 hMap = vec4(
+          texture2D(uHMap0, tuv * uTileScale.x).r,
+          texture2D(uHMap0, tuv * uTileScale.y).g,
+          texture2D(uHMap0, tuv * uTileScale.z).b,
+          texture2D(uHMap1, tuv * uTileScale.w).r);
+        #else
+        vec4 hMap = vec4(texture2D(uHMap0, tuv).rgb, texture2D(uHMap1, tuv).r);
+        #endif
+        vec4 mask2 = clamp(uTmWeight * (mask * 2.0 - 1.0)
+                           + hMap * uHbScale + uHbOffset, 0.0, 1.0);
+        float mx = max(max(mask2.x, mask2.y), max(mask2.z, mask2.w));
+        vec4 hb = max(mask2 - (vec4(mx) - uHbSoft), vec4(0.001));
+        vec3 detail = (tileColor.r * uTC[0] * hb.x + tileColor.g * uTC[1] * hb.y +
+                       tileColor.b * uTC[2] * hb.z + tileColor.a * uTC[3] * hb.w) /
+                      (hb.x + hb.y + hb.z + hb.w);
+        #else
+        vec3 detail = tileColor.r * mask.r * uTC[0] + tileColor.g * mask.g * uTC[1] +
+                      tileColor.b * mask.b * uTC[2] + tileColor.a * mask.a * uTC[3];
+        #endif
+
+        gl_FragColor = vec4(detail * shadowColor * 2.0, 1.0);
+      }`,
+  });
+}
+
 function rebuildGround() {
   if (mapPlane) { scene.remove(mapPlane); mapPlane = null; }
   if (terrainMesh) { scene.remove(terrainMesh); terrainMesh = null; }
@@ -617,15 +930,26 @@ function rebuildGround() {
     // 平面经 rotation(-π/2,0,π) 放置后：世界 x = −局部x（场景镜像系）、世界 z = 局部y、
     // 高度沿局部 +z。车辆/建筑全部位于场景系 → 采样必须用**世界 x（= −局部x）**。
     // 若误用局部 x（少取一次负），地形东西镜像，坦克会陷入地内或悬空。
-    const geo = new THREE.PlaneGeometry(size, size, 256, 256);
+    // 地形网格 512 段：与 512×512 高度场 1:1 采样（客户端高度图满精度，无信息损失）
+    const geo = new THREE.PlaneGeometry(size, size, 512, 512);
     const pos = geo.attributes.position;
     for (let k = 0; k < pos.count; k++) {
       pos.setZ(k, sampleHeight(-pos.getX(k), pos.getY(k)));
     }
     geo.computeVertexNormals();
-    const mat = new THREE.MeshLambertMaterial({
-      map: mapTexture, transparent: mapOpacity < 1, opacity: mapOpacity,
-    });
+    // 分层地表（客户端 tilemask-fp.sl 实时合成，tile 原生分辨率平铺）优先；
+    // 缺失时回退整图烘焙贴图（已含烘焙光照，不受光材质避免二次压暗；
+    // toneMapped=false 保持烘焙色彩逐像素对齐客户端）
+    let mat;
+    if (groundLayers) {
+      mat = groundShaderMaterial(groundLayers.layers, groundLayers.texs,
+        size, meta.x || 0, meta.z || 0);
+    } else {
+      mat = new THREE.MeshBasicMaterial({
+        map: mapTexture, transparent: mapOpacity < 1, opacity: mapOpacity,
+      });
+      mat.toneMapped = false;
+    }
     terrainMesh = new THREE.Mesh(geo, mat);
     terrainMesh.rotation.set(-Math.PI / 2, 0, Math.PI);
     terrainMesh.position.set(meta.x || 0, 0, meta.z || 0);
@@ -633,6 +957,7 @@ function rebuildGround() {
     scene.add(terrainMesh);
   } else if (mapTexture) {
     const mat = new THREE.MeshBasicMaterial({ map: mapTexture, transparent: true, opacity: mapOpacity, depthWrite: false });
+    mat.toneMapped = false;
     mapPlane = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
     mapPlane.rotation.set(-Math.PI / 2, 0, Math.PI + (meta.rot90 || 0) * Math.PI / 2);
     mapPlane.position.set(meta.x || 0, 0.04, meta.z || 0);
@@ -647,46 +972,129 @@ function teamColor(v) {
   return t === f ? 0x3fa66a : 0xc05046;
 }
 
+// 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
+// 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
+const LABEL_FRAC = 0.03;      // 标签高 ≈ 视口高度的 3%
+const LABEL_ASPECT = 4;       // 画布 512×128 = 4:1
+function updateLabels() {
+  const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
+  for (const v of V) {
+    if (!v.label) continue;
+    v.label.getWorldPosition(tmpV);
+    const d = camera.position.distanceTo(tmpV);
+    const s = Math.max(0.3, d * k);
+    v.label.scale.set(s * LABEL_ASPECT, s, 1);
+    // 悬浮高度随距离缩放（较此前整体减半），远处上限同步降半
+    v.label.position.y = Math.min(12, Math.max(3.25, d * 0.045));
+  }
+}
+
 function makeLabel(v) {
-  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
   v.labelCanvas = cv;
   const tex = new THREE.CanvasTexture(cv);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  tex.colorSpace = THREE.SRGBColorSpace;   // canvas 本身是 sRGB，颜色直出
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, depthTest: false, depthWrite: false,
+    transparent: true, opacity: 0.72,   // 整体半透明，弱化对场景的遮挡感
+  }));
+  sp.renderOrder = 999;   // 最后绘制：水面/半透明层不得覆盖标签；不写深度避免
+                          // 透明四边形裁掉后画的相邻标签（14 车聚簇时必现）
   sp.scale.set(10, 2.5, 1); sp.position.y = 6.2;
   v.label = sp; v.labelHp = null; v.labelDead = null;
   drawLabel(v);
   return sp;
 }
-// 昵称 + 实时血量条（当前/上限数字）+ 击毁状态。
+
+// 圆角矩形路径（血条卡片/进度条通用）
+function rrPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// #rrggbb → 亮度系数 k 的 css 颜色（血条渐变用）
+function shadeCss(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = (s) => Math.min(255, Math.max(0, Math.round(((n >> s) & 255) * k)));
+  return `rgb(${c(16)},${c(8)},${c(0)})`;
+}
+
+// 昵称（作者金星/击殁灰化）+ 渐变血量条（当前/上限数字）+ 队伍色描边卡片。
 // 变化检测必须在清空画布之前——先 clear 再早退会得到永久空白标签。
 function drawLabel(v) {
   const hp = hpAt(v, T), dead = deathAt(v, T);
   if (hp === v.labelHp && dead === v.labelDead) return;
   v.labelHp = hp; v.labelDead = dead;
   const cv = v.labelCanvas, ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, 256, 64);
-  ctx.fillStyle = 'rgba(8,11,15,.62)';
-  ctx.fillRect(14, 2, 228, 60);
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  // 昵称（击毁置灰）
-  ctx.font = '600 23px "Segoe UI", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = dead ? 'rgba(150,158,168,.72)' : '#e6ebf2';
-  ctx.fillText(dead ? '✝ ' + (v.def.nickname || 'Unknown') : (v.def.nickname || 'Unknown'), 128, 17, 208);
-  // 血量条
-  const frac = v.def.max_hp > 0 ? hp / v.def.max_hp : 0;
-  const bx = 34, bw = 188, by = 36, bh = 14;
-  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(bx, by, bw, bh);
-  const col = dead ? '#3a424c'
-    : v.def.team === 0 ? '#8a94a3'
-    : (v.def.team === DATA.meta.friendly_team ? '#3fa66a' : '#c05046');
-  ctx.fillStyle = col; ctx.fillRect(bx + 1, by + 1, Math.max(0, (bw - 2) * frac), bh - 2);
-  // 血量数字（描边保证条上可读）
-  ctx.font = '600 14px "Segoe UI", sans-serif';
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.85)';
-  const txt = v.def.max_hp > 0 ? (hp + ' / ' + v.def.max_hp) : '—';
-  ctx.strokeText(txt, bx + bw / 2, by + bh / 2 + 1);
-  ctx.fillStyle = '#fff';
-  ctx.fillText(txt, bx + bw / 2, by + bh / 2 + 1);
+  ctx.clearRect(0, 0, 512, 128);
+  const team = '#' + new THREE.Color(teamColor(v)).getHexString();
+  const base = dead ? '#5a636e' : team;
+  // 卡片：投影 + 纵向渐变底 + 队伍色描边 + 左侧队伍色竖条
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 5;
+  rrPath(ctx, 26, 6, 460, 116, 18);
+  ctx.fillStyle = 'rgba(15,20,28,.85)'; ctx.fill();
+  ctx.restore();
+  const bg = ctx.createLinearGradient(0, 6, 0, 122);
+  bg.addColorStop(0, 'rgba(24,31,43,.88)');
+  bg.addColorStop(1, 'rgba(12,17,24,.80)');
+  rrPath(ctx, 26, 6, 460, 116, 18);
+  ctx.fillStyle = bg; ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = dead ? 'rgba(122,130,140,.42)' : team + '99';
+  ctx.stroke();
+  ctx.save();
+  rrPath(ctx, 26, 6, 460, 116, 18); ctx.clip();
+  ctx.globalAlpha = dead ? .45 : .92; ctx.fillStyle = base;
+  ctx.fillRect(26, 6, 12, 116);
+  ctx.restore();
+  // 昵称行（描边保证浅色底上可读；过长自适应缩字号）
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.lineJoin = 'round';
+  const name = (dead ? '✝ ' : '') + (v.def.nickname || 'Unknown');
+  const starW = (v.def.is_author && !dead) ? 38 : 0;
+  let fs = 34;
+  ctx.font = `600 ${fs}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+  while (fs > 24 && starW + ctx.measureText(name).width > 420) {
+    fs -= 3;
+    ctx.font = `600 ${fs}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+  }
+  ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+  let tx = 262 - (starW + ctx.measureText(name).width) / 2;
+  if (starW) {
+    ctx.strokeText('★', tx, 40);
+    ctx.fillStyle = '#e8b23c'; ctx.fillText('★', tx, 40);
+    tx += starW;
+  }
+  ctx.strokeText(name, tx, 40);
+  ctx.fillStyle = dead ? 'rgba(160,168,178,.78)' : '#eef3f9';
+  ctx.fillText(name, tx, 40);
+  // 血量条：暗槽 + 队伍色纵向渐变填充
+  const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
+  const bx = 56, by = 66, bw = 400, bh = 36;
+  rrPath(ctx, bx, by, bw, bh, 11);
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.stroke();
+  if (frac > 0 && !dead) {
+    const fg = ctx.createLinearGradient(0, by + 3, 0, by + bh - 3);
+    fg.addColorStop(0, shadeCss(base, 1.35));
+    fg.addColorStop(.5, base);
+    fg.addColorStop(1, shadeCss(base, .68));
+    rrPath(ctx, bx + 3, by + 3, Math.max(16, (bw - 6) * frac), bh - 6, 8);
+    ctx.fillStyle = fg; ctx.fill();
+  }
+  // 血量数字（条上居中，描边保证低血量时可读；恒定屏幕占比下优先保证可读性）
+  const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
+  ctx.font = '700 28px "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.85)';
+  ctx.strokeText(txt, 256, by + bh / 2 + 1);
+  ctx.fillStyle = '#fff'; ctx.fillText(txt, 256, by + bh / 2 + 1);
   v.label.material.map.needsUpdate = true;
 }
 
@@ -876,6 +1284,9 @@ function setLowPoly(v, show) {
 
 // ---------- 弹道 ----------
 const TRACER_LEN = 9;
+// 全弹道轨迹线：纯色不透明（淡出阶段除外）；与弹着点特效同步（t1+2.2s 移除、最后 1.2s 淡出）
+const TRAJ_OPACITY = 1.0;
+let trajLines = [];
 function spawnShot(s) {
   const from = new THREE.Vector3(-s.from[0], s.from[1], s.from[2]);
   const to = new THREE.Vector3(-s.to[0], s.to[1], s.to[2]);
@@ -885,7 +1296,26 @@ function spawnShot(s) {
     new THREE.MeshBasicMaterial({ color }));
   scene.add(mesh);
   // WoTB 弹速高、交战近，直飞常 <0.3s——最小显示 0.22s 保证可见性
-  tracers.push({ mesh, from, to, t0: s.t_fire, t1: s.t_fire + Math.max(0.22, s.flight_secs), shot: s, color });
+  const t1 = s.t_fire + Math.max(0.22, s.flight_secs);
+  tracers.push({ mesh, from, to, t0: s.t_fire, t1, shot: s, color });
+  // 全弹道轨迹线（队伍色：友军蓝/敌军红，与飞行段的命中结果色区分）：
+  // 开火即显整条弹道；消失节奏与弹着点特效同步——t1+2.2s 移除、最后 1.2s 淡出
+  const traj = new THREE.Mesh(
+    new THREE.BoxGeometry(0.28, 0.28, from.distanceTo(to)),
+    new THREE.MeshBasicMaterial({
+      color: shotTeamColor(s), transparent: true, opacity: TRAJ_OPACITY, depthWrite: false,
+    }));
+  traj.position.copy(from.clone().add(to).multiplyScalar(0.5));
+  traj.lookAt(to);
+  scene.add(traj);
+  trajLines.push({ mesh: traj, until: t1 + 1.0, fadeEnd: t1 + 2.2, base: TRAJ_OPACITY });
+}
+// 射手阵营 → 轨迹颜色：深蓝（友）/ 深红（敌）；无法判断阵营时灰
+function shotTeamColor(s) {
+  const d = DATA.vehicles.find((x) => x.eid === s.shooter_eid);
+  const t = d ? d.team : 0;
+  if (!t || !DATA.meta.friendly_team) return 0x9aa5b1;
+  return t === DATA.meta.friendly_team ? 0x1e40af : 0x9b1c1c;
 }
 function spawnImpact(tr) {
   const s = tr.shot;
@@ -921,6 +1351,16 @@ function updateTracers() {
     const op = Math.min(1, left / 1.2);
     im.ball.material.opacity = op; im.ring.material.opacity = op * 0.8;
     im.ring.scale.setScalar(1 + (1 - Math.min(1, left / 2.2)) * 1.6);
+  }
+  // 全弹道轨迹线：命中后延迟停留，再线性淡出并释放
+  for (let i = trajLines.length - 1; i >= 0; i--) {
+    const tl = trajLines[i];
+    if (T >= tl.fadeEnd) {
+      scene.remove(tl.mesh); tl.mesh.geometry.dispose(); tl.mesh.material.dispose();
+      trajLines.splice(i, 1); continue;
+    }
+    tl.mesh.material.opacity = T <= tl.until ? tl.base
+      : tl.base * Math.max(0, 1 - (T - tl.until) / (tl.fadeEnd - tl.until));
   }
 }
 
@@ -993,6 +1433,7 @@ function updateRoster() {
 
 // ---------- 主循环 ----------
 const tmpV = new THREE.Vector3();
+let followAnchor = null;             // 跟随模式：上一帧坦克位置（位移增量基准）
 function applyPose(v) {
   const dead = deathAt(v, T);
   const vis = visibleAt(v, T);
@@ -1002,12 +1443,6 @@ function applyPose(v) {
   posAt(v, T, tmpV);
   v.group.position.copy(tmpV);
   if (v.glb) poseGlb(v);
-  // 标签随镜头距离自适应缩放（近处不遮车、远处仍可读）
-  if (v.label) {
-    const d = camera.position.distanceTo(v.group.position);
-    const s = Math.min(30, Math.max(6, d * 0.16));
-    v.label.scale.set(s, s * 0.25, 1);
-  }
   // 低模位姿（GLB 显示时保留低模位姿更新，切回低模无跳变）
   v.group.rotation.order = 'YXZ';
   v.group.rotation.y = -yawAt(v, T);
@@ -1038,20 +1473,25 @@ function animate() {
     tick();
   }
   // 相机
+  // 跟随模式：相机位置与视点目标按坦克逐帧位移整体平移——用户选好的方位/
+  // 距离/俯仰刚性保持，不会被拉回固定机位；旋转/缩放/平移始终自由
   if (DATA && CAM === 'follow' && FOLLOW_EID) {
     const v = V.find((x) => x.def.eid === FOLLOW_EID);
     if (v && v.group.visible) {
       posAt(v, T, tmpV);
-      const dir = camera.position.clone().sub(controls.target); dir.y = 0;
-      if (dir.lengthSq() < 1) dir.set(0, 0, 1);
-      dir.normalize().multiplyScalar(26);
-      const target = tmpV.clone();
-      controls.target.lerp(target, 0.18);
-      const want = target.clone().add(dir).add(new THREE.Vector3(0, 12, 0));
-      camera.position.lerp(want, 0.12);
-    }
-  }
+      if (!followAnchor) {
+        controls.target.copy(tmpV);          // 进入跟随：视点先对准车体
+      } else {
+        const dx = tmpV.x - followAnchor.x, dy = tmpV.y - followAnchor.y,
+              dz = tmpV.z - followAnchor.z;
+        camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+        controls.target.x += dx; controls.target.y += dy; controls.target.z += dz;
+      }
+      followAnchor = (followAnchor || new THREE.Vector3()).copy(tmpV);
+    } else followAnchor = null;
+  } else followAnchor = null;
   controls.update();
+  updateLabels();
   renderer.render(scene, camera);
 }
 
@@ -1090,6 +1530,10 @@ function seekTo(t) {
   tracers.length = 0;
   for (const im of impacts) scene.remove(im.g);
   impacts.length = 0;
+  for (const tl of trajLines) {
+    scene.remove(tl.mesh); tl.mesh.geometry.dispose(); tl.mesh.material.dispose();
+  }
+  trajLines.length = 0;
   shotPtr = 0;
   while (shotPtr < DATA.shots.length && DATA.shots[shotPtr].t_fire <= T) shotPtr++;
   rebuildFeed();

@@ -126,6 +126,17 @@ cargo run --release -- update-data --check  # 只查看版本状态与将要执�
 注意：`armor_cache.json` / `gun_angles.json` 是静态回退数据（仓库内无生成器），
 不随 `update-data` 刷新；它们仅在 `game_data/` 缺失时兜底，优先级更低。
 
+回放 3D 场景（建筑/树木真贴图 GLB、高清地面图、草地密度、地形尺度元数据）同样
+源自本机客户端，按客户端自身管线离线导出，游戏更新后建议重跑：
+
+```bash
+python tools/export_map_glb.py                    # 全部地图 → glb_cache/maps/<space>.*
+python tools/export_map_glb.py --map 19           # 只导指定图（回放数字 id / 显示名 / 键）
+```
+
+导出器与客户端同链：`maps.yaml` 数字 id → space 场景（`.sc2` 实体树 + `.scg` 几何 +
+NMaterial 材质树贴图），LOD/可见性/开关态语义镜像 DAVA `RenderObject` 批次规则。
+
 ### 4. 测试回放（可选）
 
 `replay_samples/` 提供 3 个示例 `.wotbreplay` 文件（无游戏也可测试）。
@@ -133,42 +144,90 @@ cargo run --release -- update-data --check  # 只查看版本状态与将要执�
 
 ## 打包分发（Windows）
 
-项目可打包成免安装的桌面端应用，三种形态按需选择（脚本：`scripts/package.ps1`，产物在 `dist/`）。
-**有代码改动后重新打包**，一条命令产出全部三种产物：
+项目可打包成免安装的桌面端应用，**轻量版与全量版两种压缩包**（脚本：`scripts/package.ps1`，产物在 `dist/`）。
+有代码改动后重新打包，一条命令产出全部产物：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -All
 ```
 
-也可以只产出某一种：
+也可以只产出一种：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1              # 轻量便携 zip（~18MB），模型首次查看自动联网下载
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Full        # 全量便携目录（~1.9GB），完全离线
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Bundled     # 单文件 exe（~29MB），首次运行自释放
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1        # 仅轻量便携 zip（~18MB），模型首次查看自动联网下载
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Full  # 仅全量：zip（~1.9GB）+ 同名目录，完全离线
 ```
 
-> `-SkipBuild` 可跳过 cargo 编译（只改了数据/文档时用；改了 Rust 代码不要加）。
-> 脚本最后一步会把 `target/release` 下的 exe 换成 bundle 版，日常开发建议再跑一次
-> `cargo build --release` 还原（不影响已打包产物）。
-
-| 形态 | 产物 | 适用场景 |
+| 产物 | 大小 | 说明 |
 |------|------|------|
-| 轻量便携 zip | `wotb-agent-portable-win64.zip` | 日常分发，解压即用，模型按需联网下载 |
-| 全量便携目录 | `wotb-agent-portable-win64\` | 无网/内网环境，完全离线 |
-| 单文件 exe | `wotb-agent-standalone-win64.exe` | 极简分发，双击首次运行自动释放数据到 exe 旁 |
+| `wotb-agent-portable-win64.zip` | ~18MB | 轻量便携包，解压后双击 `start-web.bat` 启动 |
+| `wotb-agent-portable-win64-full.zip` | ~1.9GB | 全量离线包，内置全部坦克模型/封面图，无网环境可用 |
+| `wotb-agent-portable-win64\` | ~1.9GB | 全量包的解压版目录，可直接使用 |
 
 说明：
 
-- 便携包双击 `start-web.bat` 启动（自动打开浏览器）；单文件版直接双击 exe 即可。
-- 三种形态均只带 `config.toml.example` 模板，**绝不含真实密钥**；首次运行自动生成
+- 两种包都只带 `config.toml.example` 模板，**绝不含真实密钥**；首次运行自动生成
   `config.toml`，LLM key 可在网页 Settings 页在线填写。
-- 单文件版实现在 `src/bundle.rs`（`cargo build --release --features bundle`）：
-  `data/`、`web/vendor/`、`replay_samples/`、`config.toml.example` 经 rust-embed 编译进
-  二进制，首次运行释放到 exe 所在目录（不可写时回退 `%APPDATA%\wotb-agent`），
-  之后 `update-data` 等数据维护照常可用；在数据完整的目录里运行则不做任何事，
-  不影响仓库内日常开发。
+- 全量 zip 由 `scripts/zipdir.py`（Python zipfile）压缩：ZIP64 无 2GB 上限、GLB/图片
+  直接存储不二次压缩（约 10 秒完成）；无 Python 时自动回退 `Compress-Archive`。
+- 打包前需关闭正在运行的 wotb-agent（含从 `dist\` 启动的实例），否则无法重建目录，
+  脚本会给出明确提示。
+- `-SkipBuild` 可跳过 cargo 编译（只改了数据/文档时用；改了 Rust 代码不要加）。
 - 未签名 exe 首次运行会触发 SmartScreen 提示，属正常现象（「仍要运行」即可）。
+- 另有实验性的单文件自包含构建（`src/bundle.rs`，`cargo build --release --features
+  bundle`），不在此脚本流程内，需要时可手动构建。
+
+## 移动端 App（Android）
+
+基于 Tauri 2 的 Android 版本（`mobile/` 目录）：Rust 后端原样复用，WebView 经自定义协议
+桥接到同一套 Web GUI——回放分析/全场回放/3D 装甲检视/模型库与桌面版完全一致。
+提供两种分发形态，同一工程产出：
+
+| 形态 | 产物 | 说明 |
+|------|------|------|
+| 在线轻量版 | `WOTB-Agent-Lite-v*.apk`（~58MB） | 内置全部数据/图标/地图底图；GLB 车模按需联网下载（点开 GLB 或仪表盘左下角「模型库」一键全量补齐，支持断点续跑） |
+| 离线全量版 | `WOTB-Agent-Full-v*.apk`（~2GB） | 全部 735 辆 GLB + 29 图地形/场景 GLB 内置 APK assets，**完全离线**；模型按需直读不落盘，不占额外存储 |
+
+### 移动端使用
+
+- 安装启动即进入仪表盘；回放文件点「📥 导入回放」（系统文件选择器）导入后 Scan 即可，
+  点击某场战斗用「全场回放」打开——与桌面浏览器操作一致。
+- 首次启动自动解包数据到应用私有目录，并生成移动端默认 `config.toml`
+  （WG API key 已内置；LLM key 可在 Settings 页填写，不填则 AI 对话不可用）。
+
+### 从源码构建 APK（Windows）
+
+环境准备（一次性；参考 `mobile/setup-toolchain.sh`，JDK 17 + Android SDK/NDK + rustup android targets），
+然后：
+
+```bash
+cd mobile
+source android-env.sh                                # 导出 JAVA_HOME/ANDROID_HOME/NDK
+
+cd src-tauri
+python prepare-assets.py                             # 生成小资产树 + 解包清单
+tauri android init                                   # 仅首次：生成 gen/android 工程
+bash ../sync-android-assets.sh                       # 资产同步进 app/src/main/assets/
+                                                     # （离线全量版加 --full：额外拷入全部 GLB）
+
+# 构建（arm64）：签名密钥见 mobile/wotb-release.keystore
+export TAURI_ANDROID_KEYSTORE_PATH=... TAURI_ANDROID_KEYSTORE_PASSWORD=...        TAURI_ANDROID_KEY_ALIAS=... TAURI_ANDROID_KEY_PRIVATE_PASSWORD=...
+tauri android build --apk --target aarch64           # 全量版追加 --config tauri.full.conf.json
+
+# 产物在 gen/android/app/build/outputs/apk/universal/release/*.apk
+# 用 build-tools 的 zipalign + apksigner 签名后分发（本仓库产物已签名，密钥单独保管）
+```
+
+实现要点（`mobile/src-tauri/src/lib.rs`）：
+
+- **协议桥接**：WebView 所有请求经 `register_asynchronous_uri_scheme_protocol` 转发进
+  axum `Router`（`web::build_router`），无真实端口，桌面/移动同一套路由与前端。
+- **路径层**：`data::set_base_dir()` 把 `data/`、`glb_cache/`、`tank_images/`、`web/vendor`
+  等运行时路径整体重定向到应用私有目录（桌面不设置，语义不变）。
+- **资产供给**：小资产首启经 JNI AssetManager 解包（清单 `resources-manifest.txt`）；
+  全量版 GLB 走 `data::set_embedded_asset_reader` 按需直读 APK assets，不落盘。
+- gen/android 工程有两处一次性本地改动（Gradle 走腾讯镜像、BuildTask 直呼 npm CLI 的
+  main.js），`tauri android init` 重新生成后需按 README 恢复。
 
 ## Web UI 使用
 

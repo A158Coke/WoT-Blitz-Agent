@@ -1,0 +1,34 @@
+[package]
+name = "wotb-agent-mobile"
+version = "0.1.0"
+description = "WOTB Agent — WoTB Blitz 回放分析/全场回放/装甲检视 移动端"
+edition = "2021"
+
+[lib]
+name = "wotb_agent_mobile"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+wotb-agent = { path = "../.." }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+flate2 = "1"
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

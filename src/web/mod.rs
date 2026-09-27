@@ -106,9 +106,11 @@ struct AppState {
     sessions: SessionManager,
 }
 
-pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
+/// 构建完整 Web GUI 路由（含共享 state）。桌面 `serve` 与移动端 Tauri 协议桥共用；
+/// 调用前须已完成 `data::set_base_dir`（若需要重定向运行目录）。
+pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::PathBuf) -> Router {
     let state = AppState {
-        sessions: SessionManager::new(config_path.clone(), std::path::PathBuf::from("data/sessions")),
+        sessions: SessionManager::new(config_path.clone(), sessions_dir),
         config: Arc::new(ConfigCache::new(config_path.clone())),
         tank_cache: Arc::new(TankCache::new(crate::data::data_path("tank_cache.json"))),
         config_path,
@@ -121,7 +123,7 @@ pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
     .unwrap_or_default();
     crate::wargaming::viewer::set_global_resolver(viewer_resolver);
 
-    let app = Router::new()
+    Router::new()
         .route("/", get(index_handler))
         .route("/tank/{tank_id}", get(tank_detail_page_handler))
         .route("/api/chat", post(chat_handler))
@@ -136,11 +138,14 @@ pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
         .route("/api/player/{nickname}", get(player_handler))
         .route("/api/scan", post(scan_handler))
         .route("/api/replay/shots", post(replay_shots_handler))
+        .route("/api/replay/upload", post(replay_upload_handler))
         .route("/playback", get(crate::wargaming::playback_viewer::playback_page_handler))
         .route("/api/playback/data", post(playback_data_handler))
         .route("/api/playback/map", get(crate::wargaming::playback_viewer::playback_map_handler))
         .route("/api/playback/terrain", get(crate::wargaming::playback_viewer::playback_terrain_handler))
         .route("/api/playback/scenery", get(crate::wargaming::playback_viewer::playback_scenery_handler))
+        .route("/api/playback/grassdensity", get(crate::wargaming::playback_viewer::playback_grassdensity_handler))
+        .route("/api/playback/grasstint", get(crate::wargaming::playback_viewer::playback_grasstint_handler))
         .route("/api/snapshot", post(snapshot_handler))
         .route("/api/prematch", post(prematch_handler))
         .route("/api/tanks", get(tanks_handler))
@@ -158,8 +163,13 @@ pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
         .route("/armor_view/api/shells/{tank_id}", get(crate::wargaming::viewer::shells_handler))
         .route("/armor_view/api/penetrate", post(crate::wargaming::viewer::penetrate_handler))
         .route("/armor_view/api/replay_shot", get(replay_shots_embedded_handler))
-        .with_state(state);
+        .route("/api/models/status", get(models_status_handler))
+        .route("/api/models/download_all", post(models_download_all_handler))
+        .with_state(state)
+}
 
+pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
+    let app = build_router(config_path.clone(), crate::data::data_path("sessions"));
     let addr = SocketAddr::from(([0, 0, 0, 0], 18999));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
@@ -365,7 +375,7 @@ async fn usage_get(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Response {
     let usage = crate::models::config::TokenUsage::load_from_file(
-        std::path::Path::new("token_usage.json")).unwrap_or_default();
+        crate::data::app_path("token_usage.json").as_path()).unwrap_or_default();
     Json(json!({
         "total_input_tokens": usage.total_input_tokens,
         "total_output_tokens": usage.total_output_tokens,
@@ -429,6 +439,11 @@ async fn scan_handler(
     let mode = req["mode"].as_str().unwrap_or("all").to_string();
     let days = req["days"].as_i64();
 
+    // 可选：显式文件列表（移动端导入后只分析用户实际选择的文件）
+    let files: Vec<String> = req["files"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
     // 坦克缓存：mtime 未变时复用 AppState 缓存（原每次请求重新读盘解析）
     let resolver = state.tank_cache.resolver();
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
@@ -437,7 +452,12 @@ async fn scan_handler(
             Some(r) => crate::replay::scanner::ReplayScanner::with_resolver(r),
             None => crate::replay::scanner::ReplayScanner::new(),
         };
-        let battles = scanner.scan_dir(std::path::Path::new(&replay_dir), &filter, |_| {})?;
+        let battles = if files.is_empty() {
+            scanner.scan_dir(std::path::Path::new(&replay_dir), &filter, |_| {})?
+        } else {
+            let paths: Vec<std::path::PathBuf> = files.iter().map(std::path::PathBuf::from).collect();
+            scanner.scan_files(&paths, &filter, |_| {})?
+        };
         let report = crate::models::report::AggregatedReport::from_battles(battles, &mode);
         Ok(serde_json::to_value(&report).unwrap_or(Value::Null))
     }).await;
@@ -461,7 +481,7 @@ async fn snapshot_handler(
     let server = config.wg_api.server.clone();
     let nickname = req["nickname"].as_str().unwrap_or("").to_string();
     let action = req["action"].as_str().unwrap_or("take").to_string();
-    let dir = req["dir"].as_str().unwrap_or("snapshots").to_string();
+    let dir = crate::data::app_path(req["dir"].as_str().unwrap_or("snapshots")).to_string_lossy().to_string();
 
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let client = crate::wargaming::api_client::WgApiClient::new(&app_id, &server);
@@ -949,7 +969,7 @@ async fn tank_detail_handler(
 
 /// 坦克封面图代理：`tank_images/` 缓存优先，回退 BlitzKit CDN 并落盘（与 3D 查看器共用缓存目录）。
 async fn tank_image_handler(axum::extract::Path(tank_id): axum::extract::Path<u64>) -> Response {
-    let dir = std::path::Path::new("tank_images");
+    let dir = crate::data::app_path("tank_images");
     let cache_path = dir.join(format!("{}.webp", tank_id));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         return image_response(bytes);
@@ -984,7 +1004,7 @@ async fn screenshots_handler(axum::extract::Path(path): axum::extract::Path<Stri
     if path.contains("..") || path.contains('/') || path.contains('\\') {
         return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let full = std::path::Path::new("screenshots/").join(&path);
+    let full = crate::data::app_path("screenshots").join(&path);
     match std::fs::read(&full) {
         Ok(bytes) => {
             let ct = if path.ends_with(".png") { "image/png" }
@@ -1001,7 +1021,7 @@ async fn vendor_handler(axum::extract::Path(path): axum::extract::Path<String>) 
     if path.contains("..") {
         return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let full = std::path::Path::new("web/vendor/").join(&path);
+    let full = crate::data::app_path("web/vendor").join(&path);
     match std::fs::read(&full) {
         Ok(bytes) => {
             let ct = if path.ends_with(".js") { "application/javascript" }
@@ -1013,5 +1033,73 @@ async fn vendor_handler(axum::extract::Path(path): axum::extract::Path<String>) 
             ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
         }
         Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("not found: {}", path)).into_response(),
+    }
+}
+
+// ---------- 模型库（GLB）状态与批量下载 ----------
+
+/// 模型库状态：批量下载进度（PROGRESS 全局原子量）+ 车辆就绪度
+/// （models.pb 清单内 glb_cache 两文件齐全的数量；一次目录枚举，轻量）。
+async fn models_status_handler() -> Response {
+    let (running, total, done, downloaded, cached, failed, bytes) =
+        crate::wargaming::model_fetch::PROGRESS.snapshot();
+    let (ready_tanks, total_tanks) = tokio::task::spawn_blocking(|| {
+        let ids = crate::wargaming::blitzkit::load_model_ids();
+        let ready = ids.iter().filter(|&&id| {
+            crate::wargaming::viewer::glb_cache_path(id, "model.glb").exists()
+                && crate::wargaming::viewer::glb_cache_path(id, "collision.glb").exists()
+        }).count();
+        (ready, ids.len())
+    }).await.unwrap_or((0, 0));
+    Json(json!({
+        "running": running,
+        "total_files": total, "done_files": done,
+        "downloaded": downloaded, "cached": cached, "failed": failed,
+        "bytes": bytes,
+        "ready_tanks": ready_tanks, "total_tanks": total_tanks,
+    })).into_response()
+}
+
+/// 启动全量模型预下载（非阻塞；进度轮询 /api/models/status；已在校验下载中则忽略）。
+async fn models_download_all_handler() -> Response {
+    if crate::wargaming::model_fetch::PROGRESS.running() {
+        return Json(json!({ "status": "already_running" })).into_response();
+    }
+    tokio::spawn(async {
+        if let Err(e) = crate::wargaming::model_fetch::fetch_all_models(false, 8).await {
+            eprintln!("[models-download] failed: {e:#}");
+        }
+    });
+    Json(json!({ "status": "started" })).into_response()
+}
+
+/// 浏览器端文件导入：接收 .wotbreplay 原始字节（?name=文件名），保存到配置的回放目录，
+/// 返回落盘路径。Tauri 移动端走 dialog + import_replay 命令，不经过此端点。
+async fn replay_upload_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> Response {
+    if body.is_empty() {
+        return (axum::http::StatusCode::BAD_REQUEST, "empty upload").into_response();
+    }
+    let raw = q.get("name").cloned().unwrap_or_else(|| "imported.wotbreplay".into());
+    let mut name = raw.rsplit(['/', '\\']).next().unwrap_or("imported.wotbreplay").to_string();
+    if !name.ends_with(".wotbreplay") {
+        name.push_str(".wotbreplay");
+    }
+    let config = match state.config.load() {
+        Ok(c) => c,
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    };
+    let dir = config.replay.translate(&config.replay.replay_dir);
+    let dir = std::path::PathBuf::from(dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir failed: {e}")).into_response();
+    }
+    let path = dir.join(&name);
+    match std::fs::write(&path, &body) {
+        Ok(_) => Json(json!({ "path": path.to_string_lossy(), "bytes": body.len() })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("save failed: {e}")).into_response(),
     }
 }

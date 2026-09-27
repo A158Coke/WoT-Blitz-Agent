@@ -25,7 +25,6 @@
     <space>.ground.{cm,tile,mask,hmap}.webp + .layers.json
                           分层地表（原始行序）：前端按客户端着色器实时合成，
                           tile 原生分辨率平铺——清晰度对齐客户端
-    <space>.grass.bin     草地密度位图（128×128，0/1）
     <space>.json          元数据（注册表 + 地形尺度 + 统计）
 前端用 qFrame（Ry(π)·Rx(-π/2)）旋到回放场景系，与坦克 GLB 同一约定。
 
@@ -294,12 +293,10 @@ def collect_renderables(scene: dict) -> dict:
     返回 {
       instances: [(entity_name, world_transform, datasource, material_id, path, cls)],
       landscape: {...} | None,      # bbox/heightmap/matname
-      grass: {...} | None,          # 模板几何 + 密度位图
     }
     """
     instances: list = []
     landscape = None
-    grass = None
     lod_batch_dropped = 0
 
     for entity_path, entity in iter_entities_recursive(scene):
@@ -342,20 +339,6 @@ def collect_renderables(scene: dict) -> dict:
             if isinstance(matname, int):
                 entry["matname"] = matname
             landscape = entry or None
-            continue
-
-        if cls == "VegetationRenderObject":
-            candidate = _collect_grass(ro)
-            if candidate:
-                if grass is None:
-                    grass = candidate
-                else:
-                    # 模板取最高精细度档（顶点数最多，如 500k HIGH 档）；密度位图取首个可用值
-                    old_t = grass.get("template")
-                    new_t = candidate.get("template")
-                    if new_t and (not old_t or len(new_t["positions"]) > len(old_t["positions"])):
-                        grass["template"] = new_t
-                    grass.setdefault("density", candidate.get("density"))
             continue
 
         if cls not in ("Mesh", "SpeedTreeObject"):
@@ -422,52 +405,9 @@ def collect_renderables(scene: dict) -> dict:
             instances.append((name, transform, datasource,
                               material_id if isinstance(material_id, int) else None,
                               entity_path, cls, lod, sh_l0))
-    return {"instances": instances, "landscape": landscape, "grass": grass,
+    return {"instances": instances, "landscape": landscape,
             "lod_batches_dropped": lod_batch_dropped}
 
-
-def _collect_grass(ro: dict) -> dict | None:
-    """VegetationRenderObject：内嵌草丛模板几何（cgd 全部 variation × 最高档
-    lod.0）+ 密度位图。
-
-    客户端草系统按 cgd.variationsCount 个变体轮换密集铺设（每变体取 lod.0
-    即最高精细档，posCount 沿 lod 序递减实测）；静态导出全部变体供前端
-    实例化时轮换，避免单一变体重复铺出的机械感。
-    """
-    out: dict = {}
-    gd = ro.get("vro.geometryData")
-    chunk = gd.get("cgd.chunkSet") if isinstance(gd, dict) else None
-    templates = []
-    if isinstance(chunk, dict):
-        for vkey in sorted(chunk.keys()):
-            if not vkey.startswith("cgd.variation."):
-                continue
-            var = chunk[vkey]
-            lod0 = var.get("cgd.lod.0") if isinstance(var, dict) else None
-            if not isinstance(lod0, dict):
-                continue
-            pc, ic = lod0.get("cgd.lod.posCount"), lod0.get("cgd.lod.indexCount")
-            if isinstance(pc, int) and isinstance(ic, int) and pc > 0 and ic > 0:
-                positions = [[float(x) for x in lod0.get(f"cgd.lod.pos.{i}", (0, 0, 0))] for i in range(pc)]
-                uvs = [[float(x) for x in lod0.get(f"cgd.lod.tex.{i}", (0, 0))]
-                       for i in range(lod0.get("cgd.lod.texCoordCount") or 0)]
-                indices = [int(lod0.get(f"cgd.lod.index.{i}", 0)) for i in range(ic)]
-                templates.append({"positions": positions, "uvs": uvs, "indices": indices})
-    if templates:
-        out["templates"] = templates
-        out["template"] = max(templates, key=lambda t: len(t["positions"]))
-    dm = ro.get("vro.flippedDensityMap")
-    if isinstance(dm, dict) and isinstance(dm.get("$bytes"), str):
-        data = bytes.fromhex(dm["$bytes"])
-        side = int(math.isqrt(len(data)))
-        if side * side == len(data) and side >= 16:
-            out["density"] = np.frombuffer(data, dtype=np.uint8).reshape(side, side).copy()
-    # 草材质参数（grass-fp.sl：albedo × lightmap × baseColorMultiplier，isLit=false）
-    if isinstance(ro.get("vro.lightmap"), str):
-        out["lightmap"] = ro["vro.lightmap"]
-    if isinstance(ro.get("vro.baseColorMultilplier"), (int, float)):
-        out["color_mult"] = float(ro["vro.baseColorMultilplier"])
-    return out or None
 
 
 # 顶点布局（SCG 交错顶点，实测 7 种 vertexFormat 反推，bit 求和 == stride）
@@ -1148,94 +1088,6 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
         mesh_by_ds[mesh_key] = mesh_index
         glb.add_node(mesh_index, transform, name)
 
-    # ---- 草丛模板（客户端内嵌 customGeometry；实例铺设由前端按密度位图完成）----
-    grass_info = renderables["grass"]
-    density_written = False
-    if grass_info:
-        template = grass_info.get("template")
-        if template and template["indices"]:
-            # 客户端草材质（grass-fp.sl，vro.isLit=false 不受光）：
-            # 可见色 = albedo × lightmap × baseColorMultiplier(默认 2.0)。
-            # albedo = 草目录中非 lightmap 的贴图（如 0_grass_test.tex）；
-            # 两张均为 DDS 源时按行序规则翻回 authored 方向再相乘烘焙。
-            grass_mat = {"name": "grass_template",
-                         "pbrMetallicRoughness": {"metallicFactor": 0.0,
-                                                  "roughnessFactor": 1.0},
-                         "doubleSided": True}
-            lm_path = grass_info.get("lightmap")
-            alb_img = None
-            alb_tex_path = None
-            if lm_path:
-                lm_dir = pathlib.Path(lm_path).parent
-                lm_stem = pathlib.Path(lm_path).stem
-                # albedo = 草目录中除 lightmap 外的贴图（如 0_grass_test.tex）
-                for member in sorted((directory / lm_dir).iterdir()):
-                    name = member.name
-                    for ext in (".dx11.dds.dvpl", ".dds.dvpl", ".dx11.pvr.dvpl", ".pvr.dvpl"):
-                        if name.endswith(ext) and name[: -len(ext)] != lm_stem:
-                            alb_tex_path = f"{lm_dir.as_posix()}/{name[:-len(ext)]}.tex"
-                            alb_img, _ = textures.get(alb_tex_path)
-                            break
-                    if alb_img is not None:
-                        break
-            # vegetationColorMap（= vro.lightmap，如 Im.tex，grass-vp.sl）：
-            # RGB = 按世界位置给草染色（前端逐实例 setColorAt），A = 密度
-            # （densityScale=vegetationColorSample.a，比 128² flippedDensityMap
-            # 精度高一个量级）。材质贴图只乘 baseColorMultiplier，不再乘 Im。
-            lm_img = textures.get(lm_path)[0] if lm_path else None
-            if alb_img is not None:
-                mult = grass_info.get("color_mult", 2.0)
-                canvas = np.asarray(alb_img.convert("RGBA"), np.float32) / 255.0
-                canvas[..., :3] = np.clip(canvas[..., :3] * mult, 0, 1)
-                baked = Image.fromarray((np.clip(canvas, 0, 1) * 255).astype(np.uint8), "RGBA")
-                # DDS 源：翻回 authored 方向（glTF v=0 ↔ 首行）
-                if textures.from_dds.get(alb_tex_path):
-                    baked = baked.transpose(Image.FLIP_TOP_BOTTOM)
-                buf = io.BytesIO()
-                baked.save(buf, "PNG")
-                tex_idx = glb.add_texture(("grass", space), buf.getvalue(), "image/png")
-                grass_mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": tex_idx}
-                grass_mat["alphaMode"] = "MASK"
-                grass_mat["alphaCutoff"] = 0.33
-            mat_index = len(glb.materials)
-            glb.materials.append(grass_mat)
-            # 全部变体逐个导出（grass_clump_0..N）：客户端按变体轮换密集铺设，
-            # 前端实例化时轮换取用；节点名前缀 grass_clump_ 供前端识别后隐藏
-            for vi, tpl in enumerate(grass_info.get("templates") or [template]):
-                mesh_index = glb.add_shared_mesh(f"grass_template_{vi}", tpl["positions"],
-                                                 tpl["indices"],
-                                                 tpl["uvs"] or None,
-                                                 compute_normals(tpl["positions"],
-                                                                 tpl["indices"]),
-                                                 mat_index)
-                glb.nodes.append({"mesh": mesh_index, "translation": [0, 0, 0],
-                                  "rotation": [0, 0, 0, 1], "scale": [1, 1, 1],
-                                  "name": f"grass_clump_{vi}"})
-        density = grass_info.get("density")
-        # 密度与染色优先取 vegetationColorMap（vro.lightmap，如 Im.tex）：
-        # grass-vp.sl 里 densityScale=其 alpha、vegetationColor=其 rgb（按世界位置）。
-        # 采样坐标链（VP：uv=0.5-pivot/worldSize，uvColor=(1-u,v)）等价于
-        # "图像行0=南、列0=西"，与高度场契约一致，无需再翻转。密度网格取 512²
-        # （1.17m/格，较旧 128² 密度图精细 4 倍/面积 16 倍）；染色图另存 webp。
-        if lm_img is not None:
-            GSIZE = 512
-            lm_full = np.asarray(lm_img.convert("RGBA"), np.float32) / 255.0
-            # 1024→512 2x2 块均值；行序：解码图行0=南（VP 采样链推得）
-            h = w = lm_full.shape[0]
-            f = h // GSIZE
-            if f >= 1 and h == w:
-                blk = lm_full.reshape(GSIZE, f, GSIZE, f, 4).mean((1, 3))
-                dens = np.round(blk[..., 3] * 255).astype(np.uint8)
-                (output_dir / f"{space}.grass.bin").write_bytes(dens.tobytes())
-                tint = Image.fromarray((np.clip(blk[..., :3], 0, 1) * 255).astype(np.uint8), "RGB")
-                tint.save(output_dir / f"{space}.grasstint.webp", "WEBP", quality=85)
-                density_written = True
-        if not density_written and density is not None:
-            # 回退：flippedDensityMap（存储行0=北，flipud 后行0=南）
-            (output_dir / f"{space}.grass.bin").write_bytes(
-                np.flipud(density).copy().tobytes())
-            density_written = True
-
     # ---- GLB + sidecar + 地面贴图 ----
     (output_dir / f"{space}.glb").write_bytes(
         glb.finish("wotb-agent export_map_glb (client-aligned)"))
@@ -1266,8 +1118,7 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
         meta["ground"] = {"source": color_tex, "tile": tile_tex,
                           "tiling": tiling[0], "size": ground["size"]}
     (output_dir / f"{space}.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    return {"meta": meta, "bytes": (output_dir / f"{space}.glb").stat().st_size,
-            "density": density_written}
+    return {"meta": meta, "bytes": (output_dir / f"{space}.glb").stat().st_size}
 
 
 def _prop_floats(mat_desc: dict, key: str, default) -> tuple:

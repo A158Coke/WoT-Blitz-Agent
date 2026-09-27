@@ -223,33 +223,6 @@ pub async fn playback_terrain_handler(
         .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "terrain task failed").into_response())
 }
 
-/// GET /api/playback/grassdensity?id=19 —— 草地密度位图
-/// （tools/export_map_glb.py 预生成：优先 vegetationColorMap 的 alpha（512²，
-/// 1.17m/格），回退 flippedDensityMap（128²）；行0=南；缺失 404，前端跳过）
-pub async fn playback_grassdensity_handler(
-    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
-) -> Response {
-    let map = map_query_param(&q);
-    tokio::task::spawn_blocking(move || {
-        crate::wargaming::map_assets::grass_density_response(&map)
-    })
-    .await
-    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "grass task failed").into_response())
-}
-
-/// GET /api/playback/grasstint?id=19 —— 草地按位置染色图（客户端
-/// vegetationColorMap 的 RGB；缺失 404，前端跳过逐实例染色）
-pub async fn playback_grasstint_handler(
-    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
-) -> Response {
-    let map = map_query_param(&q);
-    tokio::task::spawn_blocking(move || {
-        crate::wargaming::map_assets::grass_tint_response(&map)
-    })
-    .await
-    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "grass tint task failed").into_response())
-}
-
 /// GET /api/playback/groundmeta?id=19 —— 地表分层合成参数（缺失 404，
 /// 前端回退整图烘焙）
 pub async fn playback_groundmeta_handler(
@@ -329,8 +302,6 @@ pub async fn serve_standalone(replay_path: &Path) -> anyhow::Result<()> {
         .route("/api/playback/map", get(playback_map_handler))
         .route("/api/playback/terrain", get(playback_terrain_handler))
         .route("/api/playback/scenery", get(playback_scenery_handler))
-        .route("/api/playback/grassdensity", get(playback_grassdensity_handler))
-        .route("/api/playback/grasstint", get(playback_grasstint_handler))
         .route("/api/playback/groundmeta", get(playback_groundmeta_handler))
         .route("/api/playback/groundtex", get(playback_groundtex_handler))
         .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
@@ -837,13 +808,10 @@ async function loadMapImage() {
       mapScenery.add(gltf.scene);
       scene.add(mapScenery);
 
-      // 铺地草已按需求移除（性能开销）：GLB 中的 grass_clump 模板直接隐藏，
-      // 不再实例化铺设；天空盒（SkyFlattenSphere 天穹）同样不显示
+      // 天空盒（SkyFlattenSphere 天穹）不显示；草地已整体移除（GLB 无草地网格）
       gltf.scene.traverse((o) => {
         if (!o.isMesh) return;
-        const nm = o.name || '';
-        if (nm.startsWith('grass_clump_')) o.visible = false;
-        if (/sky/i.test(nm)) o.visible = false;
+        if (/sky/i.test(o.name || '')) o.visible = false;
       });
     }
   } catch (e) { console.warn('场景模型加载失败（忽略）:', e); }

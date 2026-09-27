@@ -14,7 +14,7 @@
 //!   高度尺度 zmax 来自 `glb_cache/maps/<space>.json` sidecar 的 Landscape 世界
 //!   包围盒（tools/export_map_glb.py 按客户端数据写出），sidecar 缺失则不伺服
 //!   ——不再维护硬编码 zmax 表；
-//! - 场景 GLB / 草地密度：`glb_cache/maps/<space>.{glb,grass.bin}`，同由导出器预生成。
+//! - 场景 GLB：`glb_cache/maps/<space>.glb`，同由导出器预生成。
 //!
 //! 对齐：底图覆盖世界 [-300,+300]²（600×600 米、原点居中、图上边=+z、图右边=+x）。
 //! 个别地图可用 `data/maps/<key>.json`（`{"size_m":..,"x":..,"z":..,"rot90":..}`）微调。
@@ -515,46 +515,6 @@ pub fn scenery_response(map_param: &str) -> Response {
     }
 }
 
-/// GET /api/playback/grassdensity：草地密度位图（导出器从 VegetationRenderObject
-/// 的 flippedDensityMap 提取；行0=南、列0=西，0/1=无草/有草）。
-pub fn grass_density_response(map_param: &str) -> Response {
-    let Some(entry) = resolve_map(map_param.trim()) else {
-        return (axum::http::StatusCode::NOT_FOUND, "grass density not available").into_response();
-    };
-    let bytes = match crate::data::read_shareable(&format!("glb_cache/maps/{}.grass.bin", entry.space)) {
-        Some(bytes) if bytes.len().is_power_of_two() => bytes,
-        _ => return (axum::http::StatusCode::NOT_FOUND, "grass density not available").into_response(),
-    };
-    let side = (bytes.len() as f64).sqrt() as u32;
-    let meta = format!(r#"{{"size":{side},"span":{DEFAULT_SIZE_M:.1}}}"#);
-    (
-        [
-            (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string()),
-            (axum::http::header::HeaderName::from_static("x-grass-meta"), meta),
-            (axum::http::header::CACHE_CONTROL, "no-cache".to_string()),
-        ],
-        bytes,
-    ).into_response()
-}
-
-/// GET /api/playback/grasstint：草地按位置染色图（客户端 vegetationColorMap 的
-/// RGB，如 malinovka 的 grass/Im.tex；行0=南、列0=西，与密度图同向）。
-pub fn grass_tint_response(map_param: &str) -> Response {
-    let Some(entry) = resolve_map(map_param.trim()) else {
-        return (axum::http::StatusCode::NOT_FOUND, "grass tint not available").into_response();
-    };
-    match crate::data::read_shareable(&format!("glb_cache/maps/{}.grasstint.webp", entry.space)) {
-        Some(bytes) => (
-            [
-                (axum::http::header::CONTENT_TYPE, "image/webp".to_string()),
-                (axum::http::header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            bytes,
-        ).into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "grass tint not available").into_response(),
-    }
-}
-
 /// GET /api/playback/groundmeta?id=19 —— 地表分层合成参数（tools/export_map_glb.py
 /// 的 <space>.ground.layers.json：textureTiling/tileScale/tileColor/HeightBlend 等，
 /// 前端按客户端 tilemask-fp.sl 实时合成）。缺失 404，前端回退整图烘焙。
@@ -738,7 +698,6 @@ mod tests {
         assert_eq!(map_image_response("19").status(), 200);
         assert_eq!(terrain_response("19").status(), 200);
         assert_eq!(scenery_response("19").status(), 200);
-        assert_eq!(grass_density_response("19").status(), 200);
         assert_eq!(scenery_response("no_such_map").status(), 404);
     }
 }

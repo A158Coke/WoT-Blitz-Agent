@@ -13,6 +13,7 @@
 //! 坐标换算（前端 applyPose）：
 //!   pos = (−x, y, z)；hull.rotation = (pitch, −yaw, 0) 'YXZ'；
 //!   turret.rotation.y = −(turret_abs − hull_yaw)；gunPivot.rotation.x = −gun_pitch。
+//!   hull_yaw/turret_yaw 为后端解卷绕连续域（可超 ±π），直接线性插值即物理正确。
 
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -1636,23 +1637,9 @@ function initControls() {
   });
 }
 
-// ---------- 姿态抖动修复 ----------
-// 滤波层输出的 yaw 落盘在 ±π 内回绕：真实朝向连续越过 ±π 时，相邻网格样本会出现
-// ≈2π 的数值跳变，线性插值会让车身在 0.1s 内反方向甩 300°+（飞天/翻车事件前后
-// 尤其剧烈）。加载后按最短弧原则去缠绕，使插值全程连续。
-function unwrapAngleArray(arr) {
-  let shift = 0;
-  let prev = arr[0];
-  for (let i = 1; i < arr.length; i++) {
-    const d = arr[i] + shift - prev;
-    if (d > Math.PI) shift -= 2 * Math.PI;
-    else if (d < -Math.PI) shift += 2 * Math.PI;
-    arr[i] += shift;
-    prev = arr[i];
-  }
-}
-
 // ---------- 数据加载 ----------
+// 注：hull_yaw/turret_yaw 由后端相位解卷绕（连续域）后落盘，朴素线性插值即物理正确，
+// 前端不再二次去缠绕（旧版前端 unwrapAngleArray 已由后端数据契约取代）。
 async function loadData(file) {
   $('err').textContent = '';
   const btn = $('loadBtn'); btn.disabled = true; btn.textContent = '解析中…';
@@ -1665,10 +1652,6 @@ async function loadData(file) {
     });
     if (!resp.ok) throw new Error(await resp.text());
     DATA = await resp.json();
-    for (const v of DATA.vehicles) {
-      unwrapAngleArray(v.hull_yaw);
-      unwrapAngleArray(v.turret_yaw);
-    }
     startPlayback();
     $('loader').style.display = 'none';
   } catch (e) {

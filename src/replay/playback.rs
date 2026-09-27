@@ -5,6 +5,9 @@
 //! - 位姿 = [`FilteredTimeline`]（filter.rs，客户端 AvatarFilter 移植）60Hz 输出的 0.1s 降采样；
 //! - 炮塔角 = [`combat::prop2_at`]（客户端 0x1440C70 时间线语义：0.1s 前瞻/短弧插值/clamp 不外推）
 //!   的相对角 + **同网格刻**车体 yaw 合成绝对角（与 combat.rs ⑩/⑪ 步 `rel + hullYaw` 同式）；
+//! - 角度序列（hull_yaw/turret_yaw）落盘前做**相位解卷绕**（[`unwrap_angle`]）：相邻网格
+//!   物理角差 ≪ π（0.1s 车体/炮塔极限转速远低于 90°/格），解卷绕后序列连续——消费方
+//!   朴素线性插值即物理正确，±π 边界不出现 ≈2π 数值跳变（跳变会让插值反甩 ~360°）；
 //! - 炮管俯仰 = prop2 frac 按车型极限解码（[`combat::decode_prop2_gun_pitch`]）；
 //! - 射击 = 作者严格路径 + 他人宽松路径合并（与 web `replay_shots_handler` 同构）；
 //! - 血量 = type=5 满血锚点 + method1 事件链；死亡 = type=7 sub=1（击杀者取 hp==0 事件 source）。
@@ -14,7 +17,8 @@
 //! 保留为 team=0/tank_id=0 的"未知"车，不丢战局画面。
 //!
 //! 序列化约定：位姿为列式 flat 数组（`pos` = [x,y,z]×N，其余各 N 项），时刻 `t_i = t_start + i*0.1`；
-//! 前端线性插值即可（滤波器输出本身平滑）。`coverage` = 有效数据区段（原始采样间隙 >2s 视为
+//! 前端线性插值即可（滤波器输出本身平滑；hull_yaw/turret_yaw 为解卷绕连续域，见上）。
+//! `coverage` = 有效数据区段（原始采样间隙 >2s 视为
 //! AoI 空洞——滤波器在无输入期会原地站住，前端按此隐藏车辆避免"幽灵车停在过期位置"）。
 
 use std::collections::{BTreeMap, HashMap};
@@ -88,13 +92,13 @@ pub struct VehicleTrack {
     pub max_hp: u16,
     /// 车体位置 flat [x,y,z] × N（回放世界系，米）
     pub pos: Vec<f32>,
-    /// 车体偏航（弧度）× N
+    /// 车体偏航（弧度，解卷绕连续域，可超 ±π）× N
     pub hull_yaw: Vec<f32>,
     /// 车体俯仰（弧度）× N
     pub hull_pitch: Vec<f32>,
-    /// 炮塔绝对朝向（弧度）= prop2 相对角 + 同刻车体 yaw × N
+    /// 炮塔绝对朝向（弧度，解卷绕连续域）= prop2 相对角 + 同刻车体 yaw 再解卷绕 × N
     pub turret_yaw: Vec<f32>,
-    /// 炮管俯仰（弧度，正=仰角；prop2/极限锚定缺失时 = 车体 pitch 兜底）× N
+    /// 炮管俯仰（弧度，正=仰角；无俯仰极限锚定时 = 车体 pitch 兜底）× N
     pub gun_pitch: Vec<f32>,
     /// HP 变化点 [(t, hp)]（含满血锚点）
     pub hp: Vec<(f32, u16)>,
@@ -244,7 +248,7 @@ pub struct PlaybackData {
 fn r2(x: f32) -> f32 { (x * 100.0).round() / 100.0 }
 fn r3(x: f32) -> f32 { (x * 1000.0).round() / 1000.0 }
 
-/// 归一化到 [−π, π]（prop2 相对角 + 车体 yaw 的和可到 ±2π；数据契约统一短弧表示）
+/// 归一化到 [−π, π]（合成角规范化 + 解卷绕差值短弧化；落盘契约 = 解卷绕连续域，非短弧）
 fn wrap_pi(x: f32) -> f32 {
     const PI: f32 = std::f32::consts::PI;
     const TAU: f32 = std::f32::consts::TAU;
@@ -252,6 +256,16 @@ fn wrap_pi(x: f32) -> f32 {
     while v > PI { v -= TAU; }
     while v < -PI { v += TAU; }
     v
+}
+
+/// 相位解卷绕：相对前值走短弧（相邻 0.1s 网格物理角差 ≪ π，连续性由探针 P3 哨兵守护）。
+/// 滤波器 yaw 在 waypoint 对切换处、prop2 合成角在 ±π 边界都会出现 ≈2π 的数值跳变
+/// （sin/cos 等价、逐帧渲染无害，但落盘后朴素线性插值会反甩 ~360°），解卷绕后序列连续。
+fn unwrap_angle(prev: Option<f32>, v: f32) -> f32 {
+    match prev {
+        Some(p) => p + wrap_pi(v - p),
+        None => v,
+    }
 }
 
 /// 原始采样时刻 → coverage 闭区间对（间隙 > [`COVERAGE_GAP`] 断开）
@@ -424,35 +438,45 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         let limits = input.pitch_limits.get(nickname.as_str())
             .or_else(|| input.pitch_limits.get(author_nickname.as_str()).filter(|_| is_author));
 
-        // 逐网格采样：渲染位姿 + prop2 炮塔/俯仰（同刻合成绝对角）
+        // prop2 流在收录条件（st10 ∧ prop2 双流交集）下必然存在——缺流即内部不变量破坏
+        let Some(prop2_series) = prop2.get(eid) else {
+            bail!("车辆 {eid} 缺 prop2 流（收录条件 = st10 ∧ prop2 双流交集，不应发生）");
+        };
+
+        // 逐网格采样：渲染位姿 + prop2 炮塔/俯仰（同刻合成绝对角）；角度序列解卷绕落盘。
+        // 列式数组与网格严格同长——任何跳过都会静默错位（pos[3i+k] 不再对齐 t_i），fail-fast。
         let mut pos = Vec::with_capacity(samples_n * 3);
         let mut hull_yaw = Vec::with_capacity(samples_n);
         let mut hull_pitch = Vec::with_capacity(samples_n);
         let mut turret_yaw = Vec::with_capacity(samples_n);
         let mut gun_pitch = Vec::with_capacity(samples_n);
-        let prop2_series = prop2.get(eid);
+        let mut prev_hull_yaw = None;
+        let mut prev_turret_yaw = None;
         for i in 0..samples_n {
             let t = meta.t_start + i as f32 * GRID_DT;
-            let pose = tl.pose_at(t as f64, false);
-            let Some(pose) = pose else { continue };
+            let Some(pose) = tl.pose_at(t as f64, false) else {
+                bail!("车辆 {eid} 位姿网格 t={t} 无帧（FilteredTimeline 恒可求值，不应发生）");
+            };
+            let yaw = unwrap_angle(prev_hull_yaw, pose.ang[0]);
+            prev_hull_yaw = Some(yaw);
             pos.push(r2(pose.pos[0]));
             pos.push(r2(pose.pos[1]));
             pos.push(r2(pose.pos[2]));
-            hull_yaw.push(r3(pose.ang[0]));
+            hull_yaw.push(r3(yaw));
             hull_pitch.push(r3(pose.ang[1]));
-            match combat::prop2_at(prop2_series, t) {
-                Some((rel, frac)) => {
-                    turret_yaw.push(r3(wrap_pi(rel + pose.ang[0])));
-                    gun_pitch.push(match limits {
-                        Some(lim) => r3(combat::decode_prop2_gun_pitch(frac, lim, rel)),
-                        None => r3(pose.ang[1]),
-                    });
-                }
-                None => {
-                    turret_yaw.push(r3(pose.ang[0]));
-                    gun_pitch.push(r3(pose.ang[1]));
-                }
-            }
+            // 非空 prop2 序列恒可求值（AoI 前回退初值包 / 末帧保持）
+            let Some((rel, frac)) = combat::prop2_at(Some(prop2_series), t) else {
+                bail!("车辆 {eid} prop2 网格 t={t} 无采样（非空序列恒可求值，不应发生）");
+            };
+            let turret_abs = unwrap_angle(prev_turret_yaw, wrap_pi(rel + pose.ang[0]));
+            prev_turret_yaw = Some(turret_abs);
+            turret_yaw.push(r3(turret_abs));
+            gun_pitch.push(match limits {
+                Some(lim) => r3(combat::decode_prop2_gun_pitch(frac, lim, rel)),
+                // 无俯仰极限锚定（匿名车/空锚定表）：车体 pitch 兜底（type10 pitch 正向
+                // 与"正=仰角"相反，仅近似——锚定表由 battle_results 全量构建，正常场次不触发）
+                None => r3(pose.ang[1]),
+            });
         }
 
         // HP 链：满血锚点 + method1 事件（同值去重）；击杀者 = hp==0 事件 source
@@ -623,7 +647,8 @@ mod tests {
     //   P1 车辆收录：候选实体数 ∈ [10, 16]（14 车 ± 解析边界；KineticObject 等被双流过滤）；
     //   P2 位姿一致性：开火时刻的网格采样位 ≈ ShotReplayData.shooter_render（同为滤波器输出，
     //      仅 0.1s 网格舍入差，≤0.6m）；
-    //   P3 角度值域：turret_yaw ∈ [-π−0.1, π+0.1]、gun_pitch ∈ [-0.7, 0.7] rad；
+    //   P3 角度连续性/值域：解卷绕后 hull_yaw/turret_yaw 相邻网格 |Δ| ≤ π/2（0.1s 物理极限，
+//      wrap 跳变 ≈2π 在此拦截）、gun_pitch ∈ [-1.575, 1.575] rad；
     //   P4 血量链：max_hp>0、HP 单调不增、死亡车末值 0。
     #[test]
     #[ignore = "端到端探针：WOTB_PLAYBACK_PROBE=<path|dir> cargo test playback_probe -- --ignored --nocapture"]
@@ -727,14 +752,29 @@ mod tests {
             assert!(checked > 0, "P2 无可校验射击（无 shooter_render 锚点）");
             eprintln!("    P2 位姿一致性 {checked} 发，最大偏差 {worst:.3}m");
 
-            // P3 角度值域 + P4 血量链
+            // P3 角度连续性/值域 + P4 血量链
             for v in &pb.vehicles {
                 let n = pb.meta.samples;
                 assert_eq!(v.hull_yaw.len(), n, "{} 网格长度", v.eid);
                 for i in 0..n {
-                    assert!(v.turret_yaw[i] >= -std::f32::consts::PI - 0.1
-                        && v.turret_yaw[i] <= std::f32::consts::PI + 0.1,
-                        "P3 turret_yaw 越域 {} {}", v.eid, v.turret_yaw[i]);
+                    // 解卷绕契约哨兵：解卷绕后相邻网格差恒 = 短弧 ∈ [-π,π]（r3 舍入余量 0.01），
+                    // 修复前 ±π 边界 wrap 跳变的 rawΔ≈±2π 在此拦截（防落盘逻辑改动漏掉解卷绕）。
+                    // |Δ|>π/2 的事件性跳变（AoI 断流重续朝向真实改变/死亡重置）为合法数据，
+                    // 仅信息打印——它们或落在 coverage 空洞边界（前端不渲染），或本就是信息缺口。
+                    if i + 1 < n {
+                        let dh = v.hull_yaw[i + 1] - v.hull_yaw[i];
+                        assert!(dh.abs() <= std::f32::consts::PI + 0.01,
+                            "P3 hull_yaw 存在未解卷绕跳变 {} @{} Δ={dh:.3}", v.eid, i);
+                        let d_tw = v.turret_yaw[i + 1] - v.turret_yaw[i];
+                        assert!(d_tw.abs() <= std::f32::consts::PI + 0.01,
+                            "P3 turret_yaw 存在未解卷绕跳变 {} @{} Δ={d_tw:.3}", v.eid, i);
+                        let t = pb.meta.t_start + i as f32 * GRID_DT;
+                        if dh.abs() > std::f32::consts::FRAC_PI_2
+                            || d_tw.abs() > std::f32::consts::FRAC_PI_2 {
+                            eprintln!("    P3 大角变 {} t={t:.1} Δhull={dh:+.3} Δturret={d_tw:+.3}（death={:?}）",
+                                v.eid, v.death_t);
+                        }
+                    }
                     assert!(v.gun_pitch[i] >= -1.575 && v.gun_pitch[i] <= 1.575,
                         // 值域仅为量纲哨兵（度→弧度错开会到 ±57）：解码值域 = 车型俯仰极限
                         // （SPG 仰角 ~75°=1.31rad），兜底值 = 车体 pitch（跌落/翻滚可近 ±π/2）

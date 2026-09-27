@@ -204,17 +204,18 @@ pub fn extract_all(
                     .or_else(|| m.turrets.last())
             });
             if let Some(tur) = top_turret {
-                if c.turret_bbox.is_none() {
-                    c.turret_bbox = c.turret_bboxes.iter().find(|n| n.node == tur.model_node)
-                        .map(|n| n.bbox.clone());
+                // 节点号对号段**覆盖**直解值：直解（首次字面量 + 400 字符窗口）会被
+                // averageThickness 厚度引用行（turret_01: 186.08）带偏，抓到后续段
+                // （常为 chassis）的包围盒——曾有 178 辆车的炮塔 bbox 因此污染
+                if let Some(n) = c.turret_bboxes.iter().find(|n| n.node == tur.model_node) {
+                    c.turret_bbox = Some(n.bbox.clone());
                 }
                 // 顶级主炮：同炮塔下按模块 id 匹配，缺失取末位
                 let top_gun = tur.guns.iter().find(|g| g.gun_module_id == tank.top_gun_module)
                     .or_else(|| tur.guns.last());
                 if let Some(g) = top_gun {
-                    if c.gun_bbox.is_none() {
-                        c.gun_bbox = c.gun_bboxes.iter().find(|n| n.node == g.model_node)
-                            .map(|n| n.bbox.clone());
+                    if let Some(n) = c.gun_bboxes.iter().find(|n| n.node == g.model_node) {
+                        c.gun_bbox = Some(n.bbox.clone());
                     }
                 }
             }

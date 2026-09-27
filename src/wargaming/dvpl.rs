@@ -423,8 +423,11 @@ fn parse_section_bbox(text: &str, section_name: &str) -> Option<BoundingBox> {
 }
 
 /// 从 `from` 偏移起找段名并解析 min/max 包围盒（供同段名多处出现时按位置区分）。
+/// 段名必须命中**真段头**（见 [`find_section_header`]）——否则 averageThickness 块的
+/// 厚度引用行（`turret_01: 186.08`）会抢先命中，400 字符窗口抓到后续段
+/// （常为 chassis）的包围盒（game_data 曾有 178 辆炮塔 bbox 因此污染）。
 fn parse_section_bbox_from(text: &str, from: usize, section_name: &str) -> Option<BoundingBox> {
-    let section_idx = text.get(from..)?.find(section_name)? + from;
+    let section_idx = find_section_header(text.get(from..)?, section_name)? + from;
     // 固定 400 字节窗口可能落在多字节 UTF-8 字符中间：向左回退到安全边界再切片
     let mut end = (section_idx + 400).min(text.len());
     while end > section_idx && !text.is_char_boundary(end) {
@@ -441,7 +444,29 @@ fn parse_section_bbox_from(text: &str, from: usize, section_name: &str) -> Optio
     let min = parse_float_array(min_str)?;
     let max = parse_float_array(max_str)?;
 
+    // 退化盒（全零）：部分 TD（如 AT-7）的炮塔段在源文件里就是零盒——视为缺失，
+    // 让上层回退（game_extract 节点兜底 / 前端网格紧致盒），与 models.pb 的省略一致
+    if min == [0.0, 0.0, 0.0] && max == [0.0, 0.0, 0.0] {
+        return None;
+    }
+
     Some(BoundingBox { min, max })
+}
+
+/// `name`（含冒号）首次作为**真段头**出现的偏移：冒号后仅空白直至行尾。
+/// 排除 averageThickness 块里的厚度引用行（`turret_01: 186.08`——冒号后跟数值）；
+/// 与 [`parse_numbered_section_bboxes`] 的头行判定同规则。
+fn find_section_header(text: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(name) {
+        let idx = from + rel;
+        let tail = text[idx + name.len()..].trim_start_matches([' ', '\t']);
+        if tail.starts_with('\n') || tail.starts_with("\r\n") {
+            return Some(idx);
+        }
+        from = idx + name.len();
+    }
+    None
 }
 
 /// 收集 collision 段内全部 `turret_NN:` / `gun_NN:` 部件头及其包围盒。
@@ -474,7 +499,7 @@ pub(crate) fn parse_numbered_section_bboxes(text: &str, prefix: &str) -> Vec<Num
 
 /// 解析某部件的 `points:` 数组（部件定位偏移）。
 fn parse_section_points(text: &str, section_name: &str) -> Option<[f32; 3]> {
-    let section_idx = text.find(section_name)?;
+    let section_idx = find_section_header(text, section_name)?;
     // 固定 400 字节窗口可能落在多字节 UTF-8 字符中间：向左回退到安全边界再切片
     let mut end = (section_idx + 400).min(text.len());
     while end > section_idx && !text.is_char_boundary(end) {
@@ -500,6 +525,66 @@ fn parse_float_array(s: &str) -> Option<[f32; 3]> {
         Some([nums[0], nums[1], nums[2]])
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// averageThickness 块的厚度引用行（`turret_01: 55.0`）先于真段头出现时，
+    /// 包围盒/points 解析必须跳到真段头——否则首次字面量匹配 + 400 字符窗口
+    /// 会抓到后续段（常为 chassis）的包围盒（game_data 178 辆炮塔 bbox 污染根源）。
+    #[test]
+    fn section_parse_skips_thickness_reference_lines() {
+        let yaml = "\
+collision:
+  averageThickness:
+    hull: 34.2
+    turret_01: 55.0
+  chassis:
+    min: [-1.0, -2.0, 0.0]
+    max: [1.0, 2.0, 1.0]
+  turret_01:
+    min: [-0.5, -0.5, -0.5]
+    max: [0.5, 0.5, 0.6]
+    points: [0.1, 0.2, 0.3]
+";
+        let c = CollisionData::parse_from_yaml(yaml).expect("parse");
+
+        // turret_01 引用行被跳过，bbox/points 来自真段头
+        let tb = c.turret_bbox.expect("turret bbox");
+        assert!((tb.min[0] + 0.5).abs() < 1e-4, "min.x = {}", tb.min[0]);
+        assert!((tb.max[2] - 0.6).abs() < 1e-4, "max.z = {}", tb.max[2]);
+        let tp = c.turret_points.expect("turret points");
+        assert!((tp[2] - 0.3).abs() < 1e-4, "points.z = {}", tp[2]);
+
+        // hull 只有引用行、无真段 → 不再误抓 chassis 段，返回 None
+        assert!(c.hull_bbox.is_none(), "hull 引用行不应解析出包围盒");
+        assert!(c.hull_points.is_none());
+
+        // chassis 直解不受影响
+        let cb = c.chassis_bbox.expect("chassis bbox");
+        assert!((cb.max[1] - 2.0).abs() < 1e-4);
+    }
+
+    /// 真段头在前、引用行在后的常规布局不受影响（向后兼容）。
+    #[test]
+    fn section_parse_normal_layout_unchanged() {
+        let yaml = "\
+collision:
+  turret_01:
+    min: [-0.5, -0.5, -0.5]
+    max: [0.5, 0.5, 0.6]
+  averageThickness:
+    hull: 34.2
+    turret_01: 55.0
+";
+        let c = CollisionData::parse_from_yaml(yaml).expect("parse");
+        let tb = c.turret_bbox.expect("turret bbox");
+        assert!((tb.min[0] + 0.5).abs() < 1e-4);
+        // averageThickness（hull 均厚 = turret_01: 引用行后的数值）解析不变
+        assert!((c.average_thickness_hull.unwrap() - 55.0).abs() < 1e-4);
     }
 }
 

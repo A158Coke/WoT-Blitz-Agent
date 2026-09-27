@@ -146,6 +146,12 @@ enum Commands {
         #[arg(long, default_value = "6")]
         concurrency: usize,
     },
+    /// Pre-extract heightmap terrain cache for all maps into data/maps/_cache/
+    FetchTerrain {
+        /// Re-extract even if already cached
+        #[arg(long)]
+        force: bool,
+    },
     /// One-click update of all derived game data after a game patch
     /// (BlitzKit pb -> tank_cache.json -> game_data/), game-version aware
     UpdateData {
@@ -458,6 +464,18 @@ fn main() -> Result<()> {
                 downloaded, cached, failed, bytes as f64 / 1024.0 / 1024.0 / 1024.0);
             if failed > 0 {
                 eprintln!("Warning: {} model files failed (rerun `fetch-models` to retry only the failures).", failed);
+            }
+            return Ok(());
+        }
+        Commands::FetchTerrain { force } => {
+            let (total, extracted, cached, failed) =
+                wotb_agent::wargaming::map_assets::cache_all_terrain(force);
+            println!("=== Terrain cache (data/maps/_cache) ===");
+            println!("  Maps in registry: {}", total);
+            println!("  Extracted:        {}", extracted);
+            println!("  Already cached:   {} (use --force to re-extract)", cached);
+            if !failed.is_empty() {
+                eprintln!("  Failed ({}): {:?}", failed.len(), failed);
             }
             return Ok(());
         }

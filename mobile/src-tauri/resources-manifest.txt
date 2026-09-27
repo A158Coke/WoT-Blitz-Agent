@@ -728,7 +728,6 @@ data/game_data/9809.json
 data/game_data/9841.json
 data/game_data/9857.json
 data/game_data/9985.json
-data/gun_angles.json
 data/maps/_cache/BlackGoldville.hm.u16.bin
 data/maps/_cache/BlackGoldville.webp
 data/maps/_cache/Copperfield.hm.u16.bin

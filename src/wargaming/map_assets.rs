@@ -3,13 +3,12 @@
 //! 数据全部来自本机 WoTB 客户端（Data/，DVPL 壳）：
 //! - 注册表：`Data/maps.yaml`（回放数字 id → localName = "space/space.sc2"）联查
 //!   `Data/Strings/en.yaml` 的 `"#maps:<dir>:<space>/<space>.sc2": "<显示名>"` 条目，
-//!   得到 id → {键名, space 目录, minimap 目录, 本地化显示名}。这条链与客户端
+//!   得到 id → {键名, space 目录, 本地化显示名}。这条链与客户端
 //!   处理 arenaTypeID 完全同源（battle_results 的 mode_map_id 低 16 位即 maps.yaml
 //!   的 id 字段）；wotbreplay-parser 的 MapId 枚举个别判别值与客户端数据不一致
 //!   （Alpenstadt/FallsCreek 互换），因此一律以数字 id 解析，不信任枚举名；
-//! - 底图：优先 `glb_cache/maps/<space>.ground.webp`（离线导出的 colormap 高清地面），
-//!   其次 `Gfx/UI/BattleScreenHUD/minimap/<dir>/MiniMapSmall[@2x].packed.webp.dvpl`
-//!   （去 20 字节 DVPL footer 即 WebP）；
+//! - 底图：`glb_cache/maps/<space>.ground.webp`（离线导出的 colormap 高清地面；
+//!   全图已导出，缺失即 404）；
 //! - 地形：`3d/Maps/<space>/landscape/*heightmap*.dvpl`（8 字节头 + 512² u16）；
 //!   高度尺度 zmax 来自 `glb_cache/maps/<space>.json` sidecar 的 Landscape 世界
 //!   包围盒（tools/export_map_glb.py 按客户端数据写出），sidecar 缺失则不伺服
@@ -24,10 +23,9 @@ use crate::wargaming::game_extract::resolve_game_dir;
 use crate::data::data_path;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::OnceLock;
 
-/// 覆盖图/标定文件目录（data/maps/），提取缓存在其下 _cache/。
+/// 地形高度场提取缓存目录（data/maps/_cache/）。
 pub const MAP_DIR: &str = "maps";
 /// 底图默认边长（米）：客户端 SC2 Landscape worldBounds 统一 [-300,+300]。
 const DEFAULT_SIZE_M: f32 = 600.0;
@@ -43,8 +41,6 @@ pub struct MapEntry {
     pub sc2: String,
     /// 3d/Maps 下的 space 目录（sc2 路径首段）
     pub space: String,
-    /// minimap 贴图目录名（Gfx/UI/BattleScreenHUD/minimap/<dir>，en.yaml #maps）
-    pub minimap_dir: Option<String>,
     /// 客户端本地化显示名（如 "Winter Malinovka"）
     pub display: String,
 }
@@ -130,19 +126,18 @@ fn load_registry() -> Vec<MapEntry> {
 
     let mut out = Vec::new();
     for (id, key, sc2) in parse_maps_yaml(&maps_text) {
-        // 显示名/minimap 目录：优先 dir == maps.yaml 键的基础变体，否则取首条
-        let mut pick: Option<(String, String)> = None;
+        // 显示名：优先 dir == maps.yaml 键的基础变体，否则取首条
+        let mut pick: Option<String> = None;
         for (path, dir, display) in &en_entries {
             if path != &sc2 {
                 continue;
             }
             let base = pick.take();
             pick = match base {
-                Some((d, s)) if d == key => Some((d, s)),
-                Some((d, s)) => {
-                    if dir == &key { Some((dir.clone(), display.clone())) } else { Some((d, s)) }
+                Some(s) => {
+                    if dir == &key { Some(display.clone()) } else { Some(s) }
                 }
-                None => Some((dir.clone(), display.clone())),
+                None => Some(display.clone()),
             };
         }
         let entry = MapEntry {
@@ -150,8 +145,7 @@ fn load_registry() -> Vec<MapEntry> {
             key,
             sc2: sc2.clone(),
             space: sc2.split('/').next().unwrap_or_default().to_string(),
-            minimap_dir: pick.as_ref().map(|(d, _)| d.clone()),
-            display: pick.map(|(_, s)| s).unwrap_or_default(),
+            display: pick.unwrap_or_default(),
         };
         if entry.is_safe() {
             out.push(entry);
@@ -263,23 +257,6 @@ pub fn map_image_response(map_param: &str) -> Response {
         return map_response(bytes, "image/webp", Some(entry));
     }
 
-    // 3) 小地图提取缓存 + 游戏客户端提取
-    if let Some(dir) = entry.minimap_dir.clone() {
-        let cache = data_path(MAP_DIR).join("_cache").join(format!("{}.webp", entry.key));
-        let bytes = match std::fs::read(&cache) {
-            Ok(bytes) => Some(bytes),
-            Err(_) => extract_minimap(&dir).inspect(|bytes| {
-                if let Some(parent) = cache.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&cache, bytes);
-                eprintln!("[map-assets] extracted minimap {dir} -> {}", cache.display());
-            }),
-        };
-        if let Some(bytes) = bytes {
-            return map_response(bytes, "image/webp", Some(entry));
-        }
-    }
     (axum::http::StatusCode::NOT_FOUND, "map image not available").into_response()
 }
 
@@ -298,23 +275,6 @@ fn map_response(bytes: Vec<u8>, content_type: &str, entry: Option<&MapEntry>) ->
         ],
         bytes,
     ).into_response()
-}
-
-/// 从游戏目录解出 MiniMapSmall WebP 字节（优先 @2x，退基础版）。
-fn extract_minimap(internal: &str) -> Option<Vec<u8>> {
-    let game = resolve_game_dir(None).ok()?;
-    let base = Path::new("Gfx/UI/BattleScreenHUD/minimap").join(internal);
-    for file in ["MiniMapSmall@2x.packed.webp.dvpl", "MiniMapSmall.packed.webp.dvpl"] {
-        let p = game.join(&base).join(file);
-        if !p.exists() {
-            continue;
-        }
-        match DvplFile::read(&p) {
-            Ok(dv) => return Some(dv.data),
-            Err(e) => eprintln!("[map-assets] DVPL 解码失败 {}: {e:?}", p.display()),
-        }
-    }
-    None
 }
 
 // ---------- 高度场地形（GET /api/playback/terrain） ----------
@@ -420,6 +380,37 @@ fn terrain_bytes(t: &TerrainGrid) -> Vec<u8> {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
     bytes
+}
+
+/// 预提取全部注册表地图的高度场到 `_cache/`（`fetch-terrain` 命令）：
+/// 已有缓存且未 `--force` 时跳过。返回 (总数, 新提取, 已缓存, 失败键名列表)。
+pub fn cache_all_terrain(force: bool) -> (usize, usize, usize, Vec<String>) {
+    let registry = load_registry();
+    let mut extracted = 0usize;
+    let mut cached = 0usize;
+    let mut failed = Vec::new();
+    for entry in &registry {
+        let cache = data_path(MAP_DIR).join("_cache").join(format!("{}.hm.u16.bin", entry.key));
+        if cache.exists() && !force {
+            cached += 1;
+            continue;
+        }
+        match extract_heightmap(&entry.space) {
+            Some(t) => {
+                let bytes = terrain_bytes(&t);
+                if let Some(parent) = cache.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&cache, &bytes).is_ok() {
+                    extracted += 1;
+                } else {
+                    failed.push(entry.key.clone());
+                }
+            }
+            None => failed.push(entry.key.clone()),
+        }
+    }
+    (registry.len(), extracted, cached, failed)
 }
 
 /// GET /api/playback/terrain?name=<...>|?id=<n>：覆盖 → 缓存 → 游戏提取。

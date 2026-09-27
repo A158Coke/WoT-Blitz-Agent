@@ -619,6 +619,24 @@ def decode_pvr3(d: bytes, max_dim: int = 1024) -> Image.Image | None:
             ch = max(1, ch // 2)
         return total
 
+    # 标准 PVR3 容器（52B 头 + metaSize 元数据，无 DAVA CRC 包装）的 RGB565
+    # 无 alpha 格式（如 env_kr_cactus）：mip0 在元数据之后，解码为不透明
+    if bits == (5, 6, 5, 0) and fmt[:3] == b"rgb":
+        meta_size = struct.unpack_from("<I", d, 48)[0] if len(d) >= 52 else 0
+        total0 = w0 * h0 * 2
+        start = 52 + meta_size
+        if start < 0 or start + total0 > len(d):
+            return None
+        arr16 = np.frombuffer(d[start:start + total0], dtype="<u2").reshape(h0, w0)
+        r = (((arr16 >> 11) & 0x1F) * 255 + 15) // 31
+        g = (((arr16 >> 5) & 0x3F) * 255 + 31) // 63
+        b = ((arr16 & 0x1F) * 255 + 15) // 31
+        rgba = np.stack([r, g, b, np.full_like(r, 255)], axis=-1).astype(np.uint8)
+        img = Image.frombytes("RGBA", (w0, h0), rgba.tobytes()).transpose(Image.FLIP_TOP_BOTTOM)
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        return img
+
     starts = []
     marker = d.rfind(b"PVRCRC_")
     if marker != -1:
@@ -911,6 +929,18 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
     if not instances:
         raise RuntimeError(f"{space}: 无可见网格实例")
 
+    # 00_global_content 装饰贴图索引（stem → 路径）：env_*/dec_* 装饰材质的
+    # albedo 按约定与实体同名存放在全局内容目录（如 env_kr_cactus.pvr）
+    global_tex_index: dict[str, str] = {}
+    maps_root = game_data / "3d" / "Maps"
+    gc_root = maps_root / "00_global_content"
+    if gc_root.exists():
+        for p in gc_root.rglob("*.dvpl"):
+            rel = p.relative_to(maps_root)
+            stem_path = (rel.parent / rel.name.split(".")[0]).as_posix() + ".tex"
+            stem = rel.name.split(".")[0].lower()
+            global_tex_index.setdefault(stem, stem_path)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     # `.tex` 相对路径解析根：地图目录（landscape/... 等）与 3d/Maps 根
     # （`../00_global_content/...` 去掉 ../ 后即相对此根）
@@ -1005,6 +1035,15 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
 
         mat_desc = materials.resolve(material_id)
         albedo_path = mat_desc["textures"].get("albedo")
+        # env_*/dec_* 装饰材质可能只有 lightmap 泛型槽——其 albedo 按约定与
+        # 实体同名存放在 00_global_content（如 env_kr_cactus.pvr），按名回退
+        if albedo_path is None and cls in ("Mesh", "SpeedTreeObject"):
+            stem = name.split(":")[0].strip().lower()
+            if stem.endswith(".sc2"):
+                stem = stem[:-4]
+            albedo_path = global_tex_index.get(stem)
+            if albedo_path is not None:
+                stats["env_albedo_fallback"] = stats.get("env_albedo_fallback", 0) + 1
         if albedo_path and uvs is not None:
             img, has_alpha = textures.get(albedo_path)
         else:

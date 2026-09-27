@@ -48,8 +48,8 @@ Flutter/RN + FFI（前端整套重写）。
 |---|---|---|
 | pb/tank_cache/game_data/图标/vendor | ~8MB | 随包只读资源 |
 | 地图底图 26 张 @2x | 2.0MB | 随包（已导出，见 §7）|
-| GLB 车模 ~735 辆 | ~2.1GB | **首启全量下载**到应用私有 glb_cache/（复用 glb_handler 下载链路 + 并发/续传/进度页）；运行时 `/glb/...` 缓存优先、CDN 兜底逻辑不变，跳过预下载也能用 |
-| 可写数据 | — | 应用私有目录：glb_cache、sessions、config.toml、replays 导入 |
+| GLB 车模 ~735 辆 | ~2.1GB | **首启全量下载**到应用私有 data/cache/models/（复用 glb_handler 下载链路 + 并发/续传/进度页）；运行时 `/glb/...` 缓存优先、CDN 兜底逻辑不变，跳过预下载也能用 |
+| 可写数据 | — | 应用私有目录：data/（含 data/cache）、sessions、config.toml、replays 导入 |
 
 GLB 下载源做成可插拔（CDN / PC 局域网同步 / 打进安装包为后续可选）。
 

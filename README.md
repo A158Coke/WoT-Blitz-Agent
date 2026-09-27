@@ -19,7 +19,7 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
 | BlitzKit 数据集成 | tanks.pb 735 辆（弹种/穿深/血量）+ models.pb（spaced 权威）+ GLB 几何 |
 | LLM Agent | 自然语言对话，10 个工具自主获取数据并生成分析（含热力图截图） |
 | 射击复现（实验性） | 从回放提取射击事件链，3D 查看器按射手视角复现弹道与判定；**游戏弹孔解码点**（服务器 segment 按游戏 `DecodeShotSegment` 同构公式解出的部件 AABB 量化点，橙色 ◆ 标记，与本地 raycast 弹着点对照）；目标/射手模型按**实际搭载配置**选炮塔/主炮变体 |
-| 全场实时回放 | 14 车连续播放整场战斗：客户端滤波位姿（AvatarFilter 移植，60Hz→0.1s 网格）+ prop2 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流/计分板；播放/暂停/0.5~16x 倍速/进度拖拽，自由/俯视/跟随镜头，可选 GLB 真实车模。多配置坦克按 **实际搭载**（ARENA_INFO 组成 blob → 发射弹种 → 初始血量 三级证据）自动选炮塔/主炮变体 |
+| 全场实时回放 | 14 车连续播放整场战斗：客户端滤波位姿（AvatarFilter 移植，60Hz→0.1s 网格）+ prop2 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流/计分板；播放/暂停/0.5~16x 倍速/进度拖拽，自由/俯视/跟随镜头，可选 GLB 真实车模。多配置坦克按 **实际搭载**（ARENA_INFO 组成 blob → 发射弹种 → 初始血量 三级证据）自动选炮塔/主炮变体。3D 场景叠加（离线导出真贴图场景 + 分层地表实时合成）；场上标签（昵称+血量条，恒定屏幕占比/半透明）；队伍色弹道轨迹线 |
 
 ## 功能依赖一览
 
@@ -126,16 +126,36 @@ cargo run --release -- update-data --check  # 只查看版本状态与将要执�
 注意：`armor_cache.json` / `gun_angles.json` 是静态回退数据（仓库内无生成器），
 不随 `update-data` 刷新；它们仅在 `game_data/` 缺失时兜底，优先级更低。
 
-回放 3D 场景（建筑/树木真贴图 GLB、高清地面图、草地密度、地形尺度元数据）同样
+回放 3D 场景（建筑/树木真贴图 GLB、分层地表、草地密度、地形尺度元数据）同样
 源自本机客户端，按客户端自身管线离线导出，游戏更新后建议重跑：
 
 ```bash
-python tools/export_map_glb.py                    # 全部地图 → glb_cache/maps/<space>.*
-python tools/export_map_glb.py --map 19           # 只导指定图（回放数字 id / 显示名 / 键）
+python tools/export_map_glb.py                       # 全部地图 → glb_cache/maps/<space>.*
+python tools/export_map_glb.py --map 19              # 只导指定图（回放数字 id / 显示名 / 键）
+python tools/export_map_glb.py --ground-only         # 只重导地面（整图烘焙+分层），跳过场景 GLB
+python tools/export_map_glb.py --jobs 8              # 并行进程数（默认 4；进度见 _export_status.json）
 ```
 
 导出器与客户端同链：`maps.yaml` 数字 id → space 场景（`.sc2` 实体树 + `.scg` 几何 +
-NMaterial 材质树贴图），LOD/可见性/开关态语义镜像 DAVA `RenderObject` 批次规则。
+NMaterial 材质树贴图），LOD/可见性/开关态语义镜像 DAVA `RenderObject` 批次规则；
+地表着色逐分支复刻客户端 `Landscape/tilemask-fp.sl`（GLOBAL_TINT / SEPARATE_LM /
+SCALED_TILES / HEIGHT_BLEND）。
+
+#### 地图资产清单（`glb_cache/maps/<space>.*`，运行时缓存）
+
+| 文件 | 说明 |
+|------|------|
+| `<space>.glb` | 静态场景（建筑/桥/岩石/树木真贴图；客户端 LOD0 批次语义，天空盒不导出） |
+| `<space>.ground.webp` | 整图烘焙地面 4096²（客户端着色公式逐像素；前端回退与 2D 模式用） |
+| `<space>.ground.cm/lm/tile0/tile1/mask0/mask1[/hmap0/hmap1].webp` | 分层地表贴图（全部无 alpha——Chrome 把带 alpha 的 webp 预乘解码会压暗 GPU 侧权重） |
+| `<space>.ground.layers.json` | 分层合成参数（textureTiling/tileScale/tileColor/HeightBlend 等逐图旗标） |
+| `<space>.grass.bin` / `<space>.grasstint.webp` | 草地密度位图 / 按位置染色图 |
+| `<space>.json` | 地图元数据（世界包围盒/地形尺度/导出统计） |
+
+前端 3D 地形优先用分层贴图按客户端同款公式实时合成（tile 细节纹理以原生分辨率
+按 `textureTiling` 平铺，清晰度等同客户端、不受整图分辨率限制），分层缺失时回退
+整图烘焙。个别图铺设参数异常时可用 `data/maps/<key>.json`
+（`{"size_m":..,"x":..,"z":..,"rot90":..}`）微调，不动代码。
 
 ### 4. 测试回放（可选）
 
@@ -271,8 +291,12 @@ WG API 玩家战绩查询。输入昵称搜索，返回随机/排位累计数据
 - **实时回放**：同一路径输入旁的「▶ 实时回放」按钮（或 CLI `playback <file>`），
   新窗口整场连续播放：14 车按客户端滤波位姿实时移动、炮塔/炮管随动、弹道飞行
   与命中标记、实时血量/击杀流/计分板。播放/暂停/0.5~16x 倍速/进度条拖拽；
-  镜头：自由环绕 / 全局俯视 / 点击名册或场上车辆跟随；「真实车模」开关懒加载
-  GLB 模型。未侦察车辆（回放数据不含其位置流，即作者客户端当时看不到的车）
+  镜头：自由环绕 / 全局俯视 / 点击名册或场上车辆跟随（跟随模式相机位置随车
+  刚性平移，方位/距离/俯仰完全由鼠标控制）；「真实车模」开关懒加载
+  GLB 模型。场上每车悬浮昵称+血量条（恒定屏幕占比、半透明、不被场景遮挡，
+  悬浮高度随距离自适应）；开火显示全弹道轨迹线（友军蓝/敌军红纯色，与弹着点
+  特效同步淡出）；3D 地形叠加离线导出的真贴图场景与分层地表（天空盒不渲染）。
+  未侦察车辆（回放数据不含其位置流，即作者客户端当时看不到的车）
   在获得数据前自动隐藏。
 
 ### Compare
@@ -327,6 +351,24 @@ update-data    # 游戏版本更新后一键刷新全部数据（版本感知增
 config         # 查看/编辑配置
 usage          # Token 用量统计
 ```
+
+## 仓库结构
+
+| 路径 | 说明 |
+|------|------|
+| `src/main.rs` / `src/lib.rs` | 入口：桌面 CLI 与库形态（移动端壳路径依赖本 crate，共用全部业务模块） |
+| `src/agent/` | LLM Agent：工具编排与自然语言对话 |
+| `src/replay/` | 回放二进制解析（single/scan/combat/实时回放时间线 `playback.rs`） |
+| `src/wargaming/` | WG API、坦克/模型/地图资产、3D 装甲查看器与实时回放前端 |
+| `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
+| `src/models/`、`src/data.rs` | BlitzKit 数据模型；运行时路径层（桌面/移动私有目录重定向） |
+| `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
+| `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
+| `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
+| `data/maps/` | 地图底图手动微调（可选）+ 运行时提取缓存 `_cache/`（gitignore） |
+| `glb_cache/` `tank_images/` | 运行时缓存（坦克/地图资产，gitignore，可重建） |
+| `replay_samples/` | 示例回放（仓库内置 3 个） |
+| `scripts/` | 打包脚本（`package.ps1` + `zipdir.py`） |
 
 ## 环境要求
 

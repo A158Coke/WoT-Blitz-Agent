@@ -146,6 +146,8 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/api/playback/scenery", get(crate::wargaming::playback_viewer::playback_scenery_handler))
         .route("/api/playback/grassdensity", get(crate::wargaming::playback_viewer::playback_grassdensity_handler))
         .route("/api/playback/grasstint", get(crate::wargaming::playback_viewer::playback_grasstint_handler))
+        .route("/api/playback/groundmeta", get(crate::wargaming::playback_viewer::playback_groundmeta_handler))
+        .route("/api/playback/groundtex", get(crate::wargaming::playback_viewer::playback_groundtex_handler))
         .route("/api/snapshot", post(snapshot_handler))
         .route("/api/prematch", post(prematch_handler))
         .route("/api/tanks", get(tanks_handler))

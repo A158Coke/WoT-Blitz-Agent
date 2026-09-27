@@ -521,6 +521,54 @@ def decode_group_uvs(group: dict):
     return None
 
 
+SPEEDTREE_CARD_STRIDE = 56
+
+
+def decode_speedtree_card(group: dict):
+    """解 SpeedTree 叶卡批次（56B/顶点）为客户端 billboard 重建数据。
+
+    客户端 speedtree-materials-vp.sl：POSITION 是"锚点 pivot + 角点偏移"的展开态。
+    pivot.w=1 时渲染完全锚定 pivot——角点偏移（position−pivot）旋转风摆相位后在
+    【视空间】加回，叶卡恒面向相机（billboard）；COLOR0 是烘焙遮挡（灰度，
+    alpha=255）。56B 布局（fir/bush 等叶卡实测；树干 40B 常规布局返回 None）：
+        [0]pos(12) [12]COLOR0(UBYTE4) [16]uv0(8) [24]jointIndex(4)
+        [28]pivot.xyz(12) [40]pivot.w(4) [44]flexibility(4) [48]angleSinCos(8)
+    返回 dict(anchors/corners/colors/uvs/indices)；非卡片布局 → None。
+    """
+    vc = group.get("vertexCount")
+    payload = decode_bytes(group.get("vertices"))
+    if not isinstance(vc, int) or vc <= 0 or payload is None:
+        return None
+    if len(payload) != vc * SPEEDTREE_CARD_STRIDE:
+        return None
+    arr = np.frombuffer(payload, dtype=np.uint8).reshape(vc, SPEEDTREE_CARD_STRIDE)
+    f = arr.view("<f4")
+    # 守卫：pivot.w 列应全 ≈1（叶卡恒 1；常规几何不会满足）
+    wcol = f[:, 10]
+    if not bool(((wcol > 0.9) & (wcol < 1.1)).all()):
+        return None
+    # 有限性检查跳过 f3（COLOR0 字节的 float 视图，可为 NaN）
+    if not (np.isfinite(f[:, 0:3]).all() and np.isfinite(f[:, 4:6]).all()
+            and np.isfinite(f[:, 7:11]).all()):
+        return None
+    pos = f[:, 0:3]
+    piv = f[:, 7:10]
+    anchor = pos * (1.0 - wcol[:, None]) + piv * wcol[:, None]
+    corner = pos - anchor
+    indices = group_triangles(group, decode_polygon_indices(group))
+    if not indices:
+        return None
+    colors = arr[:, 12:16].astype(np.float32) / 255.0
+    return {
+        "anchors": anchor.tolist(),
+        "corners": np.concatenate([corner, wcol[:, None]], axis=1).reshape(-1).tolist(),
+        "colors": colors.reshape(-1).tolist(),
+        "occ_mean": round(float(colors[:, 0].mean()), 4),
+        "uvs": f[:, 4:6].tolist(),
+        "indices": indices,
+    }
+
+
 def strip_to_triangles(seq: list[int]) -> list[int]:
     """三角条带 → 三角形列表（标准交替绕序；退化三角形剔除）。"""
     out: list[int] = []
@@ -800,8 +848,10 @@ class GlbBuilder:
         self._tex_by_key[key] = len(self.images) - 1
         return self._tex_by_key[key]
 
-    def add_shared_mesh(self, key, positions, indices, uvs, normals, material_index) -> int | None:
-        """共享几何（按 datasource 去重）；key=datasource。"""
+    def add_shared_mesh(self, key, positions, indices, uvs, normals, material_index,
+                        extra_attrs=None) -> int | None:
+        """共享几何（按 datasource 去重）；key=datasource。
+        extra_attrs: [{"name","type":"VEC4","data":[flat floats]}]（如叶卡 _CORNER/COLOR_0）。"""
         pos_view = self.add_view(struct.pack(f"<{len(positions) * 3}f", *[v for p in positions for v in p]))
         mins = [min(p[i] for p in positions) for i in range(3)]
         maxs = [max(p[i] for p in positions) for i in range(3)]
@@ -820,6 +870,13 @@ class GlbBuilder:
                                    "min": [min(p[0] for p in uvs), min(p[1] for p in uvs)],
                                    "max": [max(p[0] for p in uvs), max(p[1] for p in uvs)]})
             attrs["TEXCOORD_0"] = len(self.accessors) - 1
+        for attr in (extra_attrs or []):
+            flat = attr["data"]
+            ncomp = 4 if attr["type"] == "VEC4" else 3
+            view = self.add_view(struct.pack(f"<{len(flat)}f", *flat))
+            self.accessors.append({"bufferView": view, "componentType": 5126,
+                                   "count": len(flat) // ncomp, "type": attr["type"]})
+            attrs[attr["name"]] = len(self.accessors) - 1
         idx_view = self.add_view(struct.pack(f"<{len(indices)}I", *indices))
         self.accessors.append({"bufferView": idx_view, "componentType": 5125,
                                "count": len(indices), "type": "SCALAR"})
@@ -926,7 +983,7 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
     alpha_bake_cache: dict[tuple, Image.Image] = {}
     material_index_by_albedo: dict[tuple, int] = {}
     stats = {"decode_fail": 0, "no_group": 0, "no_uv": 0, "uv1": 0, "no_texture": 0,
-             "impostor": 0, "flatcard": 0, "tree_lod_batch": 0,
+             "impostor": 0, "flatcard": 0, "tree_lod_batch": 0, "st_cards": 0,
              "lod_batch_dropped": renderables.get("lod_batches_dropped", 0)}
 
     # SpeedTree 实体的批次按 rbN.lodIndex 分 LOD 组（客户端按距离切组渲染）：
@@ -997,6 +1054,14 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
             uvs, uvs1, channel = decoded
             if channel == 4:
                 stats["uv1"] += 1
+        # SpeedTree 叶卡 billboard 数据（客户端 speedtree-materials-vp.sl 同构）：
+        # SCG 的 POSITION 是"锚点 pivot + 角点偏移"的展开态——pivot.w=1 时客户端
+        # 渲染完全锚定 pivot，角点偏移每帧旋转风摆相位后在视空间加回（叶卡恒
+        # 面向相机）。导出锚点为 POSITION、角点偏移/烘焙遮挡为自定义属性，
+        # 前端着色器逐帧重建；非卡片布局（树干等）返回 None 走静态路径
+        card = decode_speedtree_card(group) if cls == "SpeedTreeObject" else None
+        if card is not None:
+            stats["st_cards"] = stats.get("st_cards", 0) + 1
 
         mat_desc = materials.resolve(material_id)
         albedo_path = mat_desc["textures"].get("albedo")
@@ -1046,15 +1111,16 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
         # 随朝向乱变，与客户端的均匀叶色完全不符）
         is_st = cls == "SpeedTreeObject" and sh_l0 is not None
         st_tint = min(sh_l0, 2.0) if is_st else None
+        card_occ = card["occ_mean"] if card is not None else None
         mat_key = (albedo_path, decal_path, mask_path, flat_rgb, has_alpha,
                    bool(img is not None), anim_layer and mask_path is not None,
-                   is_water, st_tint)
+                   is_water, st_tint, card_occ)
         if mat_key not in material_index_by_albedo:
             material_index_by_albedo[mat_key] = _build_material(
                 glb, textures, albedo_path, mat_desc, img, has_alpha,
                 blend=(anim_layer and mask_path is not None) or is_water,
                 opacity=0.7 if is_water else None,
-                st_tint=st_tint)
+                st_tint=st_tint, occ_mean=card_occ)
         material_index = material_index_by_albedo[mat_key]
 
         # 网格按 (datasource, 材质) 去重：同型物体共享几何，但不同材质的
@@ -1065,20 +1131,18 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
             glb.add_node(mesh_by_ds[mesh_key], transform, name)
             continue
 
-        # SpeedTree 叶片卡致密化（大卡 → 子卡网格 + 随机图集叶簇块）：
-        # 客户端近景的加密叶簇几何不在盘上（SCG 已含全部组，无更高精度），
-        # 这里按 SpeedTree 的卡片+叶簇图集方式重建密度。仅对带 alpha 的
-        # 叶簇材质批处理；子卡双线性覆盖原卡区域，小卡片原样保留——直接
-        # 替换本批几何（不与原卡叠加）。
-        if cls == "SpeedTreeObject" and has_alpha and uvs is not None:
-            d_pos, d_uv, d_idx = densify_speedtree_cards(
-                positions, uvs, indices, seed=datasource & 0xFFFF)
-            if len(d_idx) > len(indices):
-                positions, uvs, indices = d_pos, d_uv, d_idx
-                stats["densified"] = stats.get("densified", 0) + 1
-
-        mesh_index = glb.add_shared_mesh(datasource, positions, indices, uvs,
-                                         compute_normals(positions, indices), material_index)
+        if card is not None:
+            # 叶卡：POSITION=锚点（树冠内固定点），_CORNER=角点偏移(+pivot.w)，
+            # COLOR_0=烘焙遮挡（灰度）——前端视空间重建叶卡朝向
+            mesh_index = glb.add_shared_mesh(
+                datasource, card["anchors"], card["indices"], card["uvs"], None,
+                material_index, extra_attrs=[
+                    {"name": "_CORNER", "type": "VEC4", "data": card["corners"]},
+                    {"name": "COLOR_0", "type": "VEC4", "data": card["colors"]},
+                ])
+        else:
+            mesh_index = glb.add_shared_mesh(datasource, positions, indices, uvs,
+                                             compute_normals(positions, indices), material_index)
         if mesh_index is None:
             continue
         mesh_by_ds[mesh_key] = mesh_index
@@ -1225,124 +1289,6 @@ def _prop_floats(mat_desc: dict, key: str, default) -> tuple:
 
 
 
-def densify_speedtree_cards(positions, uvs, indices, seed=1, card=(0.26, 0.40),
-                            tile=0.25, per_area=0.09, cap=520):
-    """SpeedTree 叶簇卡云重建（对齐客户端近景的 billboard-cloud 观感）。
-
-    静态 SCG 的叶片/灌木卡片每张只采样叶簇图集（如 bush02.tex 的 4×4 块）
-    的一块，且各卡共面排布——近距离是几层大平面"贴纸"；客户端 SpeedTree
-    运行时以体积内大量随机朝向的小叶簇卡渲染（加密几何不在盘上）。
-    做法：以原卡面为采样域（面积加权随机取点 + 微法向偏移），生成随机
-    朝向、随机图集叶簇块的小卡云替换原几何——轮廓由原卡面保形，观感
-    对齐游戏的叶团。返回新 (positions, uvs, indices)。
-    """
-    if uvs is None or not indices:
-        return positions, uvs, indices
-    rng = random.Random(seed)
-
-    # 三角形配对成四边形卡片
-    tris = [tuple(indices[i:i + 3]) for i in range(0, len(indices), 3)]
-    quads = []
-    used = [False] * len(tris)
-    for i, t1 in enumerate(tris):
-        if used[i]:
-            continue
-        for j in range(i + 1, len(tris)):
-            if used[j]:
-                continue
-            if len(set(t1) & set(tris[j])) == 2:
-                quads.append((t1, tris[j]))
-                used[i] = used[j] = True
-                break
-        if not used[i]:
-            quads.append((t1, None))
-            used[i] = True
-
-    # 面积累积表（世界面积近似：两三角形法和）
-    areas = []
-    total = 0.0
-    for t1, t2 in quads:
-        def tarea(t):
-            (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (positions[v] for v in t)
-            ux, uy, uz = bx - ax, by - ay, bz - az
-            vx, vy, vz = cx - ax, cy - ay, cz - az
-            return 0.5 * math.sqrt((uy * vz - uz * vy) ** 2 + (uz * vx - ux * vz) ** 2
-                                   + (ux * vy - uy * vx) ** 2)
-        a = tarea(t1) + (tarea(t2) if t2 else 0.0)
-        total += a
-        areas.append(total)
-    if total <= 0:
-        return positions, uvs, indices
-
-    # 平均卡片边长（粗卡组才重建：灌木卡 ~1m；细卡组如 fir 冠层 ~0.25m
-    # 本身已足够致密，随机化反而破坏原生的锥形排布）
-    mean_edge = 0.0
-    for t1, t2 in quads:
-        a, b = positions[t1[0]], positions[t1[1]]
-        mean_edge += math.dist(a, b)
-    mean_edge /= max(1, len(quads))
-    if mean_edge < 0.30:
-        return positions, uvs, indices
-
-    n_cards = min(cap, max(80, int(total / per_area)))
-    out_pos: list = []
-    out_uv: list = []
-    out_idx: list = []
-    tiles = int(1 / tile)
-    for _ in range(n_cards):
-        # 面积加权随机卡片 + 面上随机点
-        r = rng.random() * total
-        qi = bisect.bisect_left(areas, r)
-        t1, t2 = quads[min(qi, len(quads) - 1)]
-        tri = t1 if rng.random() < 0.5 else (t2 or t1)
-        w1, w2 = rng.random(), rng.random()
-        if w1 + w2 > 1:
-            w1, w2 = 1 - w1, 1 - w2
-        w0 = 1 - w1 - w2
-        px = [positions[tri[0]][k] * w0 + positions[tri[1]][k] * w1
-              + positions[tri[2]][k] * w2 for k in range(3)]
-        # 沿卡片法向散布（±60% 卡片尺寸）+ 切向微扰：把大卡的采样点撑出
-        # 原平面、真正填充体积，避免共面云形成板条
-        a, b, c0 = (positions[v] for v in tri)
-        nx = (b[1] - a[1]) * (c0[2] - a[2]) - (b[2] - a[2]) * (c0[1] - a[1])
-        ny = (b[2] - a[2]) * (c0[0] - a[0]) - (b[0] - a[0]) * (c0[2] - a[2])
-        nz = (b[0] - a[0]) * (c0[1] - a[1]) - (b[1] - a[1]) * (c0[0] - a[0])
-        nl = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
-        s = rng.uniform(*card)
-        dn = rng.uniform(-0.6, 0.6) * s / nl
-        for k in range(3):
-            px[k] += (nx, ny, nz)[k] * dn + rng.uniform(-0.15, 0.15) * s
-        # 随机朝向：随机旋转矩阵（正交基）
-        ax = rng.uniform(-1, 1); ay = rng.uniform(-1, 1); az = rng.uniform(-1, 1)
-        al = math.sqrt(ax * ax + ay * ay + az * az) or 1.0
-        ax, ay, az = ax / al, ay / al, az / al
-        ang = rng.random() * math.pi * 2
-        ca, sa = math.cos(ang), math.sin(ang)
-        # Rodrigues 旋转矩阵作用于两个正交基 u/v（法向 = ax,ay,az）
-        def rot(v):
-            dot = ax * v[0] + ay * v[1] + az * v[2]
-            return [v[0] * ca + (ay * v[2] - az * v[1]) * sa + ax * dot * (1 - ca),
-                    v[1] * ca + (az * v[0] - ax * v[2]) * sa + ay * dot * (1 - ca),
-                    v[2] * ca + (ax * v[1] - ay * v[0]) * sa + az * dot * (1 - ca)]
-        # 与法向正交的起始基
-        ref = [0.0, 0.0, 1.0] if abs(az) < 0.9 else [1.0, 0.0, 0.0]
-        ex = [ay * ref[2] - az * ref[1], az * ref[0] - ax * ref[2], ax * ref[1] - ay * ref[0]]
-        el = math.sqrt(sum(c * c for c in ex)) or 1.0
-        ex = [c / el for c in ex]
-        ey = [az * ex[1] - ay * ex[2], ax * ex[2] - az * ex[0], ay * ex[0] - ax * ex[1]]
-        u = rot(ex); v = rot(ey)
-        h = s * rng.uniform(0.7, 1.0)
-        corners = []
-        for (du, dv) in ((-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)):
-            corners.append([px[k] + u[k] * du * s + v[k] * dv * h for k in range(3)])
-        tu = rng.randrange(tiles) * tile
-        tv = rng.randrange(tiles) * tile
-        base = len(out_pos)
-        out_pos.extend(corners)
-        out_uv.extend([(tu, tv), (tu + tile, tv), (tu + tile, tv + tile), (tu, tv + tile)])
-        out_idx.extend([base, base + 1, base + 2, base, base + 2, base + 3])
-    return out_pos, out_uv, out_idx
-
 
 def bake_uv1_overlays(base_img: Image.Image, decal_img, mask_img,
                        tint, mult, uvs, uvs1, idx: list) -> Image.Image:
@@ -1422,7 +1368,7 @@ def bake_uv1_overlays(base_img: Image.Image, decal_img, mask_img,
 def _build_material(glb: GlbBuilder, textures: TextureStore, albedo_path: str | None,
                     mat_desc: dict, img: Image.Image | None, has_alpha: bool,
                     blend: bool = False, opacity: float | None = None,
-                    st_tint: float | None = None) -> int:
+                    st_tint: float | None = None, occ_mean: float | None = None) -> int:
     """albedo 贴图（含透明）→ GLB 材质；无贴图时用贴图均值色兜底。
 
     blend=True（TEXTURE0_ANIMATION_SHIFT 效果层：瀑布/波纹/烟雾）：客户端在
@@ -1435,6 +1381,8 @@ def _build_material(glb: GlbBuilder, textures: TextureStore, albedo_path: str | 
             "doubleSided": True}
     if st_tint is not None:
         base["pbrMetallicRoughness"]["baseColorFactor"] = [st_tint, st_tint, st_tint, 1.0]
+    if occ_mean is not None:
+        base["extras"] = {"occMean": occ_mean}   # 前端按均值归一化遮挡，保留纵深不整体压暗
     if img is not None:
         # DDS 源贴图翻回 authored 方向（row0=top）再嵌入——glTF v=0 ↔ 图像首行，
         # 与客户端 D3D 采样约定对齐；PVR 源解码即对齐，不翻

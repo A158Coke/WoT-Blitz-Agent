@@ -576,11 +576,13 @@ function gameTimerLabel(t) {
 function initScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x11161d);
+  window.__scene = scene;   // 诊断钩子
   camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 4000);
   camera.position.set(0, 180, 220);
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(innerWidth, innerHeight);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  window.__renderer = renderer;   // 诊断钩子（renderer 创建后才可引用）
   // three r165+ 恒为物理光照单位（Lambert 除以 π），旧强度会让建筑/车模暗到发黑；
   // 与装甲查看器（viewer.rs）一致：ACES 色调映射 + ×π 级别的光强
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -644,6 +646,56 @@ let WORLD_CENTER = { cx: 0, cz: 0, ext: 300 };
 // terrain 端点返回 u16 LE 高度场（行 0=南，行主序）+ X-Terrain-Meta（size/zmax/span）；
 // 有高度场时用起伏地形替换 2D 平面（MeshLambert + 场景光照自然成阴影），404 时保持 2D。
 // 个别图不对时用 data/maps/<MapName>.json 微调，不动代码。
+// SpeedTree 叶卡 billboard 材质（客户端 speedtree-materials-vp.sl 同构）：
+// POSITION=锚点 pivot，_corner=(角点偏移, pivot.w)。客户端每帧在【视空间】把
+// 角点偏移（旋转风摆相位后）加回锚点——叶卡恒面向相机，这是其树丛立体感的
+// 来源；静态渲染的展开角点则是"片层堆叠"观感的根因。COLOR_0=烘焙遮挡灰度：
+// 输出 = albedo × SH(标定 1.77) × (遮挡/遮挡均值)——按均值归一化保留内暗外亮
+// 的纵深变化，又不会把整体亮度压到校准水平之下（各图贴图明暗差异大，固定
+// 系数会把暗色贴图的灌木压成黑色）。风摆为动态效果，静态导出不参与。
+function makeBillboardMaterial(m) {
+  const occMean = (m.userData && m.userData.extras && m.userData.extras.occMean) || 0.8;
+  // 客户端着色器为伽马空间直采直写：关闭 sRGB 纹理解码（自定义着色器无输出
+  // 重编码，sRGB 采样得到的线性值直出会整体发黑）
+  if (m.map) { m.map.colorSpace = THREE.NoColorSpace; m.map.needsUpdate = true; }
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      map: { value: m.map || null },
+      uSH: { value: 1.77 },
+      uOccMean: { value: occMean },
+    },
+    vertexShader: `
+      attribute vec4 _corner;
+      attribute vec4 color;
+      varying vec2 vUv;
+      varying float vOcc;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vec3 vp = (viewMatrix * wp).xyz;
+        float ws = length(vec3(modelMatrix[0][0], modelMatrix[1][0], modelMatrix[2][0]));
+        vp += _corner.xyz * ws;
+        gl_Position = projectionMatrix * vec4(vp, 1.0);
+        vUv = uv;
+        vOcc = color.r;
+      }`,
+    transparent: true,           // 客户端 SpeedTree 为 AlphaBlend 通道：
+    depthWrite: true,            // 软边缘半透明混合，近全透明才裁剪
+    fragmentShader: `
+      uniform sampler2D map;
+      uniform float uSH;
+      uniform float uOccMean;
+      varying vec2 vUv;
+      varying float vOcc;
+      void main() {
+        vec4 c = texture2D(map, vUv);
+        if (c.a < 0.05) discard;
+        float occ = min(vOcc / max(uOccMean, 0.001), 1.25);
+        gl_FragColor = vec4(c.rgb * min(occ * uSH, 1.35), c.a);
+      }`,
+    side: THREE.DoubleSide,
+  });
+}
+
 async function loadMapImage() {
   if (mapPlane) { scene.remove(mapPlane); mapPlane = null; }
   if (terrainMesh) { scene.remove(terrainMesh); terrainMesh = null; }
@@ -716,10 +768,17 @@ async function loadMapImage() {
           texs[k].wrapS = texs[k].wrapT = THREE.RepeatWrapping;
           texs[k].anisotropy = ani;
         }
+        // colormap/mask 也开各向异性：掠射角（坦克视角）下不糊
+        for (const k of ['cm', 'lm', 'mask0', 'mask1']) if (texs[k]) {
+          texs[k].anisotropy = ani;
+        }
         groundLayers = { layers: L, texs };
       }
     }
   } catch (e) { console.warn('分层地表加载失败（回退烘焙底图）:', e); }
+  // 诊断钩子：window.__gdbg 查看地表实际走的路径与已加载分层
+  window.__gdbg = { layers: !!groundLayers, texs: groundLayers ? Object.keys(groundLayers.texs) : [],
+                    meta: !!mapMetaInfo, sizeM: mapMetaInfo?.size_m ?? null };
   rebuildGround();
   // 静态场景模型（建筑/桥/岩石，tools/export_map_glb.py 预生成；缺失静默跳过）。
   // GLB 为游戏系（z 上、+y 北），qFrame = Ry(π)·Rx(-π/2)（YXZ 序）转到回放场景系——
@@ -732,36 +791,44 @@ async function loadMapImage() {
     });
     if (gltf && gltf.scene) {
       // GLTFLoader 默认 MeshStandardMaterial（PBR）比场景 Lambert 光照吃光得多，
-      // 建筑会渲染成近黑——统一降级为 Lambert 并保留贴图/透明/平直着色
-      const convMat = (mat) => {
+      // 建筑会渲染成近黑——统一降级为 Lambert 并保留贴图/透明/平直着色。
+      // 几何含 _CORNER 属性的叶卡走 billboard 材质（见 makeBillboardMaterial）
+      const convMat = (m, isCard) => (isCard ? makeBillboardMaterial(m) : (() => {
         // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
         // 无场景光照——用不受光材质（染色值经 baseColorFactor→color 传入）
-        if ((mat.name || '').startsWith('ST|')) {
+        if ((m.name || '').startsWith('ST|')) {
           const bm = new THREE.MeshBasicMaterial({
-            map: mat.map || null,
-            color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
-            transparent: !!mat.transparent,
-            opacity: mat.opacity ?? 1,
+            map: m.map || null,
+            color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+            transparent: true,          // 客户端 SpeedTree = AlphaTest+AlphaBlend
+            opacity: m.opacity ?? 1,    // 双通道；此处混合渲染软边缘
             side: THREE.DoubleSide,
+            depthWrite: true,
           });
-          if (mat.alphaMode === 'MASK') bm.alphaTest = mat.alphaCutoff || 0.5;
+          bm.alphaTest = 0.05;          // 仅剔近全透明像素
           bm.toneMapped = false;
           return bm;
         }
         const nm = new THREE.MeshLambertMaterial({
-          map: mat.map || null,
-          color: mat.color ? mat.color.clone() : new THREE.Color(0xffffff),
-          transparent: !!mat.transparent,
-          opacity: mat.opacity ?? 1,
+          map: m.map || null,
+          color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+          transparent: !!m.transparent,
+          opacity: m.opacity ?? 1,
           side: THREE.DoubleSide,
         });
-        if (mat.alphaMode === 'MASK') nm.alphaTest = mat.alphaCutoff || 0.33;
+        if (m.alphaMode === 'MASK') nm.alphaTest = m.alphaCutoff || 0.33;
         nm.flatShading = true;
         return nm;
-      };
+      })());
       gltf.scene.traverse((o) => {
-        if (o.isMesh && o.material) {
-          o.material = Array.isArray(o.material) ? o.material.map(convMat) : convMat(o.material);
+        if (!o.isMesh || !o.material) return;
+        // GLTFLoader 会把自定义属性名转小写：GLB 里的 _CORNER → geometry._corner
+        const isCard = !!o.geometry.attributes._corner;
+        o.material = Array.isArray(o.material) ? o.material.map((m) => convMat(m, isCard))
+                                               : convMat(o.material, isCard);
+        if (isCard) {
+          // 包围球按锚点计算，角点向外超出——扩 2m 防视锥剔除边缘闪没
+          if (o.geometry.boundingSphere) o.geometry.boundingSphere.radius += 2;
         }
       });
       mapScenery = new THREE.Group();

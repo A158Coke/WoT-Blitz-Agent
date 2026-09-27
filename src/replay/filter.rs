@@ -452,8 +452,8 @@ fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
 
 // ---------- 裁判探针（逆向文档 §7.4 三层判定协议的第二层：真实回放分布证据） ----------
 //
-// 运行：WOTB_FILTER_PROBE=replay_samples cargo test referee_probe -- --ignored --nocapture
-// （env 给单个 .wotbreplay 路径或目录；缺省 replay_samples/）
+// 运行：WOTB_FILTER_PROBE=data/replay_samples cargo test referee_probe -- --ignored --nocapture
+// （env 给单个 .wotbreplay 路径或目录；缺省 data/replay_samples/）
 //
 // 判定项（预期已预登记，判据 = 分布形态而非单点）：
 //   R1 隐含滞后：对机动目标（≥1.5 m/s），argmin_t' |render(t') − judgment| 的 t' − t
@@ -496,7 +496,7 @@ mod referee {
     #[test]
     #[ignore = "裁判探针：WOTB_FILTER_PROBE=<path|dir> cargo test referee_probe -- --ignored --nocapture"]
     fn referee_probe() {
-        let root = std::env::var("WOTB_FILTER_PROBE").unwrap_or_else(|_| "replay_samples".into());
+        let root = std::env::var("WOTB_FILTER_PROBE").unwrap_or_else(|_| "data/replay_samples".into());
         let files = collect_replay_files(Path::new(&root));
         assert!(!files.is_empty(), "未找到回放文件：{root}");
         eprintln!("=== 渲染层锚点裁判实验（{} 个回放）===", files.len());

@@ -28,9 +28,9 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
 | 模块 | 数据文件依赖 | 外部服务 |
 |------|------|------|
 | 回放解析（single/scan/combat/loadout/playback） | 仅 `.wotbreplay` 文件本身 | 无 |
-| 射击复现（3D 查看器） | `tanks.pb`（comp blob 局部 id→配置对号）· `models.pb`（俯仰极限/部件盒/原点，按实际搭载 comp 对号）· `game_data/`（炮管/底盘碰撞盒）· `glb_cache/`（模型）★ | 无（模型缓存后离线可用） |
+| 射击复现（3D 查看器） | `tanks.pb`（comp blob 局部 id→配置对号）· `models.pb`（俯仰极限/部件盒/原点，按实际搭载 comp 对号）· `game_data/`（炮管/底盘碰撞盒）· `data/cache/models/`（模型）★ | 无（模型缓存后离线可用） |
 | 全场实时回放 | 同射击复现（真实车模开关关闭时仅需 `.wotbreplay`） | 同上（仅 GLB 开关） |
-| 3D 装甲查看器 / 穿透热力图 | `models.pb`（逐板装甲/车体炮塔碰撞盒/原点/变体映射）· `game_data/`（炮管/底盘碰撞盒）· `glb_cache/` ★ | 无（缓存后离线可用） |
+| 3D 装甲查看器 / 穿透热力图 | `models.pb`（逐板装甲/车体炮塔碰撞盒/原点/变体映射）· `game_data/`（炮管/底盘碰撞盒）· `data/cache/models/` ★ | 无（缓存后离线可用） |
 | WG API 集成（Player/Compare/Prematch/Snapshot） | `tank_cache.json`（昵称→tank_id 联表） | WG API（application_id） |
 | LLM Agent | `tank_cache.json` + 各工具自身依赖 | LLM API 端点 |
 
@@ -40,7 +40,7 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
   ① ARENA_INFO 组成 blob（回放内嵌，确定性）；② 发射弹种 ⊆ 炮弹表；③ 初始血量 = 车体+炮塔
   health（×1.125 改进耐久）。依次回退，均不命中 → 顶级配置。prop2 俯仰 frac 按锚定
   范围解码（扇区化：随炮塔朝向 front/back 分段）。
-- `glb_cache/` 首次访问自动从 BlitzKit CDN 下载（reqwest 失败自动回退系统 curl）；
+- `data/cache/models/` 首次访问自动从 BlitzKit CDN 下载（reqwest 失败自动回退系统 curl）；
   下载完成后离线可用。
 - 非调试模式下射击复现常显内容：入射延长射线（900m）+ 命中点标记 + 轨迹管；
   P1/P2 解码标记与移动标注归调试层（`debug=1`）。
@@ -84,12 +84,12 @@ budget = 10.0                        # 预算上限（美元），超过自动�
 [replay]
 # 回放目录：填入真实的 .wotbreplay 所在目录即可。
 #   也可以直接用项目自带的测试回放（3 个示例文件，无需额外准备）:
-# replay_dir = "replay_samples"
+# replay_dir = "data/replay_samples"
 # Linux/WSL 回放目录示例:
 # replay_dir = "/mnt/c/Users/你的用户名/AppData/Local/wotblitz/DAVAProject/replays"
 # Windows 回放目录示例:
 # replay_dir = "C:/Users/你的用户名/AppData/Local/wotblitz/DAVAProject/replays"
-replay_dir = "replay_samples"
+replay_dir = "data/replay_samples"
 tank_cache_path = "data/tank_cache.json"
 ```
 
@@ -105,8 +105,9 @@ tank_cache_path = "data/tank_cache.json"
 | 装甲/碰撞数据 | `data/game_data/`（700+ 个 JSON） | 从游戏 DVPL 提取：primaryArmor 装甲摘要、炮管/底盘碰撞盒（BlitzKit 缺项）及调试字段 |
 | 数据版本清单 | `data/data_version.json` | 各数据文件对应的游戏版本与更新时间（`update-data` 维护） |
 
-其他按需缓存（首次访问自动下载，无需手动准备）：3D 模型 `glb_cache/`、
-坦克封面图 `tank_images/`、前端依赖 `web/vendor/`（Three.js/Chart.js，离线可用）。
+其他按需缓存（首次访问自动下载，无需手动准备，均在 `data/cache/` 下）：3D 模型
+`data/cache/models/`、坦克封面图 `data/cache/tank_images/`、地形高度场
+`data/cache/terrain/`（`fetch-terrain` 预提取）；前端依赖 `web/vendor/`（Three.js/Chart.js，离线可用）。
 如需**完全离线**（查看器/回放不再联网拉模型），运行 `fetch-models` 一次性全量预下载
 全部坦克 GLB（约 2 GB，可断点续跑）。
 
@@ -131,7 +132,7 @@ cargo run --release -- update-data --check  # 只查看版本状态与将要执�
 源自本机客户端，按客户端自身管线离线导出，游戏更新后建议重跑：
 
 ```bash
-python tools/export_map_glb.py                       # 全部地图 → glb_cache/maps/<space>.*
+python tools/export_map_glb.py                       # 全部地图 → data/cache/maps/<space>.*
 python tools/export_map_glb.py --map 19              # 只导指定图（回放数字 id / 显示名 / 键）
 python tools/export_map_glb.py --ground-only         # 只重导地面（整图烘焙+分层），跳过场景 GLB
 python tools/export_map_glb.py --jobs 8              # 并行进程数（默认 4；进度见 _export_status.json）
@@ -142,7 +143,7 @@ NMaterial 材质树贴图），LOD/可见性/开关态语义镜像 DAVA `RenderO
 地表着色逐分支复刻客户端 `Landscape/tilemask-fp.sl`（GLOBAL_TINT / SEPARATE_LM /
 SCALED_TILES / HEIGHT_BLEND）。
 
-#### 地图资产清单（`glb_cache/maps/<space>.*`，运行时缓存）
+#### 地图资产清单（`data/cache/maps/<space>.*`，运行时缓存）
 
 | 文件 | 说明 |
 |------|------|
@@ -159,8 +160,8 @@ SCALED_TILES / HEIGHT_BLEND）。
 
 ### 4. 测试回放（可选）
 
-`replay_samples/` 提供 3 个示例 `.wotbreplay` 文件（无游戏也可测试）。
-把 `config.toml` 的 `replay_dir` 设为 `replay_samples` 即可。
+`data/replay_samples/` 提供 3 个示例 `.wotbreplay` 文件（无游戏也可测试）。
+把 `config.toml` 的 `replay_dir` 设为 `data/replay_samples` 即可。
 
 ## 打包分发（Windows）
 
@@ -242,7 +243,7 @@ tauri android build --apk --target aarch64           # 全量版追加 --config 
 
 - **协议桥接**：WebView 所有请求经 `register_asynchronous_uri_scheme_protocol` 转发进
   axum `Router`（`web::build_router`），无真实端口，桌面/移动同一套路由与前端。
-- **路径层**：`data::set_base_dir()` 把 `data/`、`glb_cache/`、`tank_images/`、`web/vendor`
+- **路径层**：`data::set_base_dir()` 把 `data/`（含 `data/cache/`）、`web/vendor`
   等运行时路径整体重定向到应用私有目录（桌面不设置，语义不变）。
 - **资产供给**：小资产首启经 JNI AssetManager 解包（清单 `resources-manifest.txt`）；
   全量版 GLB 走 `data::set_embedded_asset_reader` 按需直读 APK assets，不落盘。
@@ -347,7 +348,7 @@ extract-game   # 批量提取装甲/碰撞数据到 game_data/
 fetch-blitzkit # 重新下载 BlitzKit 数据源
 fetch-tanks    # 重建 tank_cache.json
 fetch-icons    # 批量下载坦克封面图
-fetch-models   # 全量预下载坦克 GLB 模型到 glb_cache/（约 2GB，完全离线）
+fetch-models   # 全量预下载坦克 GLB 模型到 data/cache/models/（约 2GB，完全离线）
 update-data    # 游戏版本更新后一键刷新全部数据（版本感知增量更新）
 config         # 查看/编辑配置
 usage          # Token 用量统计
@@ -366,9 +367,8 @@ usage          # Token 用量统计
 | `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
 | `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
-| `data/maps/` | 地图底图手动微调（可选）+ 运行时提取缓存 `_cache/`（gitignore） |
-| `glb_cache/` `tank_images/` | 运行时缓存（坦克/地图资产，gitignore，可重建） |
-| `replay_samples/` | 示例回放（仓库内置 3 个） |
+| `data/cache/` | 运行时缓存（gitignore）：`models/` 坦克 GLB、`maps/` 地图资产、`tank_images/` 封面、`terrain/` 地形高度场、`screenshots/` 截图 |
+| `data/replay_samples/` | 示例回放（仓库内置 3 个） |
 | `scripts/` | 打包脚本（`package.ps1` + `zipdir.py`） |
 
 ## 环境要求

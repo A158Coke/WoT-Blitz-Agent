@@ -1,6 +1,6 @@
 # 把目录打包成 zip（package.ps1 的全量包压缩后端）。
 # 为什么不用 PowerShell 的 Compress-Archive：
-#   1. PS 5.1 的 Compress-Archive 有 2GB 上限，glb_cache 随游戏更新会突破；
+#   1. PS 5.1 的 Compress-Archive 有 2GB 上限，data/cache 随游戏更新会突破；
 #   2. GLB/图片本身已是压缩格式，逐字节 deflate 九分钟只省约 6% 体积，
 #      本脚本对这些扩展名直接 ZIP_STORED 存储，只压缩文本/JSON/EXE，快一个量级；
 #   3. 自动 ZIP64，中文文件名按 UTF-8 标记写入（Windows 11 资源管理器与主流解压工具均正常）。

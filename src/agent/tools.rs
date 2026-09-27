@@ -737,9 +737,9 @@ impl AgentTools {
             return Ok("Chrome/Chromium not found (required for headless screenshots). Install Google Chrome, or set the CHROME_PATH environment variable to the browser executable.".to_string());
         };
 
-        std::fs::create_dir_all(crate::data::app_path("screenshots"))?;
+        std::fs::create_dir_all(crate::data::data_path("cache/screenshots"))?;
         let shell_txt = shell_filter.as_deref().unwrap_or("default").to_uppercase();
-        let fname = crate::data::app_path("screenshots")
+        let fname = crate::data::data_path("cache/screenshots")
             .join(format!(
                 "heatmap_{}_vs_{}_{}_{}.png",
                 sanitize_name(&target_name), sanitize_name(&shooter_name), sanitize_name(&shell_txt), view
@@ -834,7 +834,7 @@ impl AgentTools {
         };
 
         let resolver = self.load_resolver()?;
-        let fname2 = crate::data::app_path("screenshots").join(format!("replay_shot_{:02}.png", shot_no)).to_string_lossy().to_string();
+        let fname2 = crate::data::data_path("cache/screenshots").join(format!("replay_shot_{:02}.png", shot_no)).to_string_lossy().to_string();
 
         let handle = std::thread::spawn(move || -> Result<String> {
             let rt = tokio::runtime::Runtime::new()?;
@@ -1136,7 +1136,7 @@ mod tests {
     #[test]
     fn replay_shot_smoke() {
         let tools = tools();
-        let f = "replay_samples/20260902_2104__Anonyme_A116_XM551_Exp_3355505117896350.wotbreplay";
+        let f = "data/replay_samples/20260902_2104__Anonyme_A116_XM551_Exp_3355505117896350.wotbreplay";
         if !std::path::Path::new(f).exists() { eprintln!("replay sample missing, skip"); return; }
         let args = json!({"replay_file": f, "shot_no": 1});
         match tools.execute_replay_shot(&args) {

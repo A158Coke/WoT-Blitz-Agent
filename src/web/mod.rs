@@ -375,7 +375,7 @@ async fn usage_get(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Response {
     let usage = crate::models::config::TokenUsage::load_from_file(
-        crate::data::app_path("token_usage.json").as_path()).unwrap_or_default();
+        crate::data::data_path("token_usage.json").as_path()).unwrap_or_default();
     Json(json!({
         "total_input_tokens": usage.total_input_tokens,
         "total_output_tokens": usage.total_output_tokens,
@@ -481,7 +481,7 @@ async fn snapshot_handler(
     let server = config.wg_api.server.clone();
     let nickname = req["nickname"].as_str().unwrap_or("").to_string();
     let action = req["action"].as_str().unwrap_or("take").to_string();
-    let dir = crate::data::app_path(req["dir"].as_str().unwrap_or("snapshots")).to_string_lossy().to_string();
+    let dir = crate::data::app_path(req["dir"].as_str().unwrap_or("data/snapshots")).to_string_lossy().to_string();
 
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let client = crate::wargaming::api_client::WgApiClient::new(&app_id, &server);
@@ -969,9 +969,9 @@ async fn tank_detail_handler(
     })).into_response()
 }
 
-/// 坦克封面图代理：`tank_images/` 缓存优先，回退 BlitzKit CDN 并落盘（与 3D 查看器共用缓存目录）。
+/// 坦克封面图代理：`data/cache/tank_images/` 缓存优先，回退 BlitzKit CDN 并落盘（与 3D 查看器共用缓存目录）。
 async fn tank_image_handler(axum::extract::Path(tank_id): axum::extract::Path<u64>) -> Response {
-    let dir = crate::data::app_path("tank_images");
+    let dir = crate::data::data_path("cache/tank_images");
     let cache_path = dir.join(format!("{}.webp", tank_id));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         return image_response(bytes);
@@ -1006,7 +1006,7 @@ async fn screenshots_handler(axum::extract::Path(path): axum::extract::Path<Stri
     if path.contains("..") || path.contains('/') || path.contains('\\') {
         return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let full = crate::data::app_path("screenshots").join(&path);
+    let full = crate::data::data_path("cache/screenshots").join(&path);
     match std::fs::read(&full) {
         Ok(bytes) => {
             let ct = if path.ends_with(".png") { "image/png" }
@@ -1041,15 +1041,15 @@ async fn vendor_handler(axum::extract::Path(path): axum::extract::Path<String>) 
 // ---------- 模型库（GLB）状态与批量下载 ----------
 
 /// 模型库状态：批量下载进度（PROGRESS 全局原子量）+ 车辆就绪度
-/// （models.pb 清单内 glb_cache 两文件齐全的数量；一次目录枚举，轻量）。
+/// （models.pb 清单内 data/cache/models 两文件齐全的数量；一次目录枚举，轻量）。
 async fn models_status_handler() -> Response {
     let (running, total, done, downloaded, cached, failed, bytes) =
         crate::wargaming::model_fetch::PROGRESS.snapshot();
     let (ready_tanks, total_tanks) = tokio::task::spawn_blocking(|| {
         let ids = crate::wargaming::blitzkit::load_model_ids();
         let ready = ids.iter().filter(|&&id| {
-            crate::wargaming::viewer::glb_cache_path(id, "model.glb").exists()
-                && crate::wargaming::viewer::glb_cache_path(id, "collision.glb").exists()
+            crate::wargaming::viewer::model_cache_path(id, "model.glb").exists()
+                && crate::wargaming::viewer::model_cache_path(id, "collision.glb").exists()
         }).count();
         (ready, ids.len())
     }).await.unwrap_or((0, 0));

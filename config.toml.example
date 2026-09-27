@@ -30,9 +30,9 @@ budget = 10.0                            # 总预算(美元), 超预算自动中
 # 回放文件所在目录(.wotbreplay)。填入真实回放目录即可:
 #   Linux/WSL:   /mnt/c/Users/你的用户名/AppData/Local/wotblitz/DAVAProject/replays
 #   Windows:     C:/Users/你的用户名/AppData/Local/wotblitz/DAVAProject/replays
-#   或直接用项目自带测试回放: replay_dir = "replay_samples"
-#   (replay_samples/ 内含 3 个示例 .wotbreplay, 可直接用于测试 scan / single / compare)
-replay_dir = "replay_samples"
+#   或直接用项目自带测试回放: replay_dir = "data/replay_samples"
+#   (data/replay_samples/ 内含 3 个示例 .wotbreplay, 可直接用于测试 scan / single / compare)
+replay_dir = "data/replay_samples"
 # 路径风格转换。回放路径两种风格都接受:
 #   auto(默认) = 按运行平台自动转成本地形式(Windows 版把 /mnt/c/... → C:/..., WSL 版反之)
 #   windows / wsl = 强制转成对应风格

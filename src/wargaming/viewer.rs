@@ -7,7 +7,7 @@ use crate::wargaming::tank_resolver::TankResolver;
 use crate::wargaming::dvpl::ArmorModel;
 use crate::wargaming::penetration::{self, PenetrationRequest};
 
-const GLB_CACHE_DIR: &str = "glb_cache";
+const GLB_CACHE_DIR: &str = "cache/models";
 const VENDOR_DIR: &str = "web/vendor/three";
 const GLB_FILES: [&str; 2] = ["collision.glb", "model.glb"];
 
@@ -139,17 +139,17 @@ pub fn build_viewer_router(
         .with_state(())
 }
 
-/// 单个 GLB 的缓存路径（glb_cache/{tank_id}/{filename}），按需服务与 fetch-models 全量预热共用。
-pub(crate) fn glb_cache_path(tank_id: u32, filename: &str) -> std::path::PathBuf {
-    crate::data::app_path(GLB_CACHE_DIR).join(tank_id.to_string()).join(filename)
+/// 单个 GLB 的缓存路径（data/cache/models/{tank_id}/{filename}），按需服务与 fetch-models 全量预热共用。
+pub(crate) fn model_cache_path(tank_id: u32, filename: &str) -> std::path::PathBuf {
+    crate::data::data_path(GLB_CACHE_DIR).join(tank_id.to_string()).join(filename)
 }
 
 pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec<u8>, String> {
     if !GLB_FILES.contains(&filename) {
         return Err(format!("invalid GLB filename: {}", filename));
     }
-    let cache_path = glb_cache_path(tank_id, filename);
-    let cache_dir = cache_path.parent().map(Path::to_path_buf).unwrap_or_else(|| crate::data::app_path(GLB_CACHE_DIR));
+    let cache_path = model_cache_path(tank_id, filename);
+    let cache_dir = cache_path.parent().map(Path::to_path_buf).unwrap_or_else(|| crate::data::data_path(GLB_CACHE_DIR));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         // 损坏自愈：无 glTF magic（截断/HTML 错误页）视作未命中，走重下覆盖
         if bytes.starts_with(b"glTF") {
@@ -158,7 +158,7 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
         eprintln!("[glb-cache] 缓存文件损坏（缺 glTF magic），重新下载: {}", cache_path.display());
     }
     // APK 内置资产兜底（移动端离线全量版）：直读不落盘，避免 1.9GB 复制
-    if let Some(bytes) = crate::data::read_embedded(&format!("glb_cache/{tank_id}/{filename}")) {
+    if let Some(bytes) = crate::data::read_embedded(&format!("data/cache/models/{tank_id}/{filename}")) {
         if bytes.starts_with(b"glTF") {
             return Ok(bytes);
         }
@@ -246,7 +246,7 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
         Err(e) => last_err = format!("curl 回退不可用: {}", e),
     }
     let _ = std::fs::remove_file(&tmp_path);
-    Err(format!("BlitzKit CDN unreachable: {last_err} (model not in glb_cache/)"))
+    Err(format!("BlitzKit CDN unreachable: {last_err} (model not in data/cache/models/)"))
 }
 
 pub async fn start_viewer_server(tank_resolver: TankResolver, tank_id: u32, shooter_id: u32) -> anyhow::Result<u16> {
@@ -423,10 +423,10 @@ fn glb_response(bytes: Vec<u8>) -> Response {
     ).into_response()
 }
 
-const TANK_IMAGE_DIR: &str = "tank_images";
+const TANK_IMAGE_DIR: &str = "cache/tank_images";
 
 pub(crate) async fn tank_image_handler(axum::extract::Path(tank_id): axum::extract::Path<u32>) -> Response {
-    let cache_path = crate::data::app_path(TANK_IMAGE_DIR).join(format!("{}.webp", tank_id));
+    let cache_path = crate::data::data_path(TANK_IMAGE_DIR).join(format!("{}.webp", tank_id));
     if let Ok(bytes) = std::fs::read(&cache_path) {
         return image_response(bytes);
     }
@@ -437,7 +437,7 @@ pub(crate) async fn tank_image_handler(axum::extract::Path(tank_id): axum::extra
             match resp.bytes().await {
                 Ok(bytes) => {
                     let vec = bytes.to_vec();
-                    let _ = std::fs::create_dir_all(crate::data::app_path(TANK_IMAGE_DIR));
+                    let _ = std::fs::create_dir_all(crate::data::data_path(TANK_IMAGE_DIR));
                     if std::fs::write(&cache_path, &vec).is_ok() {
                         eprintln!("[image-cache] cached {} ({} bytes)", cache_path.display(), vec.len());
                     }
@@ -647,7 +647,7 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
 fn model_config_nodes(tank_id: u32) -> (Vec<String>, Vec<String>) {
     let mut guns = Vec::new();
     let mut turrets = Vec::new();
-    let path = crate::data::app_path(GLB_CACHE_DIR).join(tank_id.to_string()).join("model.glb");
+    let path = crate::data::data_path(GLB_CACHE_DIR).join(tank_id.to_string()).join("model.glb");
     if let Ok(bytes) = std::fs::read(&path) {
         if let Some(names) = parse_glb_top_nodes(&bytes) {
             for nm in names {

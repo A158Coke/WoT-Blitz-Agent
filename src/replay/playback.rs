@@ -641,7 +641,7 @@ mod tests {
 
     // ---------- 端到端探针（真实回放分布证据） ----------
     //
-    // 运行：WOTB_PLAYBACK_PROBE=replay_samples cargo test playback_probe -- --ignored --nocapture
+    // 运行：WOTB_PLAYBACK_PROBE=data/replay_samples cargo test playback_probe -- --ignored --nocapture
     //
     // 判定项：
     //   P1 车辆收录：候选实体数 ∈ [10, 16]（14 车 ± 解析边界；KineticObject 等被双流过滤）；
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     #[ignore = "端到端探针：WOTB_PLAYBACK_PROBE=<path|dir> cargo test playback_probe -- --ignored --nocapture"]
     fn playback_probe() {
-        let root = std::env::var("WOTB_PLAYBACK_PROBE").unwrap_or_else(|_| "replay_samples".into());
+        let root = std::env::var("WOTB_PLAYBACK_PROBE").unwrap_or_else(|_| "data/replay_samples".into());
         let path = std::path::Path::new(&root);
         let files: Vec<std::path::PathBuf> = if path.is_file() {
             vec![path.to_path_buf()]

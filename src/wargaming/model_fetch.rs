@@ -1,5 +1,5 @@
 //! GLB 模型全量预热（`fetch-models` 命令）：从 data/models.pb 枚举全部有模型的
-//! 坦克 id，并发下载 model.glb + collision.glb 到 glb_cache/，完成后查看器/回放
+//! 坦克 id，并发下载 model.glb + collision.glb 到 data/cache/models/，完成后查看器/回放
 //! 完全离线可用。单文件下载复用 viewer 的按需缓存逻辑（重试 + curl 回退 +
 //! glTF magic 校验），本模块只做枚举、并发调度与进度汇总。
 //!
@@ -121,7 +121,7 @@ async fn fetch_all_models_inner(
         set.spawn(async move {
             let _permit = permit;
 
-            let path = crate::wargaming::viewer::glb_cache_path(tank_id, filename);
+            let path = crate::wargaming::viewer::model_cache_path(tank_id, filename);
             if force && path.exists() {
                 let _ = std::fs::remove_file(&path);
             }

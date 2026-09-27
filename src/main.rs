@@ -98,7 +98,7 @@ enum Commands {
         #[arg(short, long, default_value = "take")]
         action: String,
         /// Snapshot storage directory
-        #[arg(long, default_value = "snapshots")]
+        #[arg(long, default_value = "data/snapshots")]
         dir: PathBuf,
     },
     /// Parse game data files (DVPL format) for armor/collision data
@@ -127,17 +127,17 @@ enum Commands {
         #[arg(long, default_value = "data/tanks.pb")]
         output: PathBuf,
     },
-    /// Batch-download all tank preview icons from BlitzKit into tank_images/
+    /// Batch-download all tank preview icons from BlitzKit into data/cache/tank_images/
     FetchIcons {
         /// Output directory for tank icons
-        #[arg(long, default_value = "tank_images")]
+        #[arg(long, default_value = "data/cache/tank_images")]
         dir: PathBuf,
         /// Re-download icons even if already present
         #[arg(long)]
         force: bool,
     },
     /// Batch-download ALL tank GLB models (model.glb + collision.glb) into
-    /// glb_cache/ so the viewer/playback work fully offline (~2 GB total)
+    /// data/cache/models/ so the viewer/playback work fully offline (~2 GB total)
     FetchModels {
         /// Re-download models even if already cached
         #[arg(long)]
@@ -176,10 +176,10 @@ enum Commands {
         /// Only report version status and planned actions, change nothing
         #[arg(long)]
         check: bool,
-        /// Also download missing tank icons into tank_images/
+        /// Also download missing tank icons into data/cache/tank_images/
         #[arg(long)]
         icons: bool,
-        /// Also pre-download missing tank GLB models into glb_cache/ (~2 GB)
+        /// Also pre-download missing tank GLB models into data/cache/models/ (~2 GB)
         #[arg(long)]
         models: bool,
     },
@@ -224,7 +224,7 @@ enum Commands {
     /// Show token usage statistics (R6)
     Usage {
         /// Usage file path
-        #[arg(short, long, default_value = "token_usage.json")]
+        #[arg(short, long, default_value = "data/token_usage.json")]
         file: PathBuf,
     },
     /// Query player stats from WG API
@@ -329,7 +329,7 @@ fn main() -> Result<()> {
 
             let name = resolver.resolve(tank_id).unwrap_or_else(|| format!("tank_{}", tank_id));
             eprintln!("Starting 3D viewer for {} (id={})...", name, tank_id);
-            eprintln!("Models served via local cache proxy (/glb/{}/...), first fetch cached to glb_cache/.", tank_id);
+            eprintln!("Models served via local cache proxy (/glb/{}/...), first fetch cached to data/cache/models/.", tank_id);
             eprintln!("Tip: run `fetch-models` once to pre-download ALL tank models for full offline use.");
 
             wotb_agent::wargaming::viewer::serve(resolver, tank_id, None).await
@@ -460,7 +460,7 @@ fn main() -> Result<()> {
         Commands::FetchModels { force, concurrency } => {
             let (downloaded, cached, failed, bytes) = tokio::runtime::Runtime::new()?
                 .block_on(wotb_agent::wargaming::model_fetch::fetch_all_models(force, concurrency))?;
-            println!("Tank models ready: downloaded={} cached={} failed={} ({:.2} GB) -> glb_cache/",
+            println!("Tank models ready: downloaded={} cached={} failed={} ({:.2} GB) -> data/cache/models/",
                 downloaded, cached, failed, bytes as f64 / 1024.0 / 1024.0 / 1024.0);
             if failed > 0 {
                 eprintln!("Warning: {} model files failed (rerun `fetch-models` to retry only the failures).", failed);
@@ -470,7 +470,7 @@ fn main() -> Result<()> {
         Commands::FetchTerrain { force } => {
             let (total, extracted, cached, failed) =
                 wotb_agent::wargaming::map_assets::cache_all_terrain(force);
-            println!("=== Terrain cache (data/maps/_cache) ===");
+            println!("=== Terrain cache (data/cache/terrain) ===");
             println!("  Maps in registry: {}", total);
             println!("  Extracted:        {}", extracted);
             println!("  Already cached:   {} (use --force to re-extract)", cached);
@@ -1317,9 +1317,9 @@ fn cmd_update_data(
 
     // 4. 可选：补缺失的坦克图标
     if icons {
-        let dir = Path::new("tank_images");
+        let dir = wotb_agent::data::data_path("cache/tank_images");
         let (downloaded, cached, failed) =
-            wotb_agent::wargaming::blitzkit::download_all_icons(dir, false)?;
+            wotb_agent::wargaming::blitzkit::download_all_icons(&dir, false)?;
         println!("  Icons: downloaded={} cached={} failed={} -> {}", downloaded, cached, failed, dir.display());
     }
 
@@ -1327,7 +1327,7 @@ fn cmd_update_data(
     if models {
         let (downloaded, cached, failed, bytes) = tokio::runtime::Runtime::new()?
             .block_on(wotb_agent::wargaming::model_fetch::fetch_all_models(false, 6))?;
-        println!("  Models: downloaded={} cached={} failed={} ({:.2} GB) -> glb_cache/",
+        println!("  Models: downloaded={} cached={} failed={} ({:.2} GB) -> data/cache/models/",
             downloaded, cached, failed, bytes as f64 / 1024.0 / 1024.0 / 1024.0);
     }
 

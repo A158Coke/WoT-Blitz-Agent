@@ -7,13 +7,13 @@
 //!   处理 arenaTypeID 完全同源（battle_results 的 mode_map_id 低 16 位即 maps.yaml
 //!   的 id 字段）；wotbreplay-parser 的 MapId 枚举个别判别值与客户端数据不一致
 //!   （Alpenstadt/FallsCreek 互换），因此一律以数字 id 解析，不信任枚举名；
-//! - 底图：`glb_cache/maps/<space>.ground.webp`（离线导出的 colormap 高清地面；
+//! - 底图：`data/cache/maps/<space>.ground.webp`（离线导出的 colormap 高清地面；
 //!   全图已导出，缺失即 404）；
 //! - 地形：`3d/Maps/<space>/landscape/*heightmap*.dvpl`（8 字节头 + 512² u16）；
-//!   高度尺度 zmax 来自 `glb_cache/maps/<space>.json` sidecar 的 Landscape 世界
+//!   高度尺度 zmax 来自 `data/cache/maps/<space>.json` sidecar 的 Landscape 世界
 //!   包围盒（tools/export_map_glb.py 按客户端数据写出），sidecar 缺失则不伺服
 //!   ——不再维护硬编码 zmax 表；
-//! - 场景 GLB：`glb_cache/maps/<space>.glb`，同由导出器预生成。
+//! - 场景 GLB：`data/cache/maps/<space>.glb`，同由导出器预生成。
 //!
 //! 对齐：底图覆盖世界 [-300,+300]²（600×600 米、原点居中、图上边=+z、图右边=+x）。
 //! 个别地图可用 `data/maps/<key>.json`（`{"size_m":..,"x":..,"z":..,"rot90":..}`）微调。
@@ -25,8 +25,6 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-/// 地形高度场提取缓存目录（data/maps/_cache/）。
-pub const MAP_DIR: &str = "maps";
 /// 底图默认边长（米）：客户端 SC2 Landscape worldBounds 统一 [-300,+300]。
 const DEFAULT_SIZE_M: f32 = 600.0;
 
@@ -198,7 +196,7 @@ pub struct MapMeta {
     /// 纹理水平镜像（方向校准用）
     #[serde(default)]
     pub flip_x: bool,
-    /// 高度场 zMax 覆盖（米）；缺省用 sidecar（glb_cache/maps/<space>.json）
+    /// 高度场 zMax 覆盖（米）；缺省用 sidecar（data/cache/maps/<space>.json）
     #[serde(default)]
     pub zmax_m: Option<f32>,
 }
@@ -213,7 +211,7 @@ fn meta_path(map_name: &str) -> Option<std::path::PathBuf> {
     let ok = !map_name.is_empty()
         && map_name.len() <= 40
         && map_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    ok.then(|| data_path(MAP_DIR).join(format!("{map_name}.json")))
+    ok.then(|| data_path(&format!("maps/{map_name}.json")))
 }
 
 /// 读取某图的铺设参数：data/maps/<key>.json 存在则用之，否则全默认。
@@ -253,7 +251,7 @@ pub fn map_image_response(map_param: &str) -> Response {
     };
 
     // 2) 高清地面贴图（客户端 colormap 离线导出，2048²，分辨率约为小地图 4 倍）
-    if let Some(bytes) = crate::data::read_shareable(&format!("glb_cache/maps/{}.ground.webp", entry.space)) {
+    if let Some(bytes) = crate::data::read_shareable(&format!("data/cache/maps/{}.ground.webp", entry.space)) {
         return map_response(bytes, "image/webp", Some(entry));
     }
 
@@ -290,7 +288,7 @@ pub struct TerrainGrid {
     pub heights: Vec<u16>,
 }
 
-/// sidecar（glb_cache/maps/<space>.json）中的地形尺度。
+/// sidecar（data/cache/maps/<space>.json）中的地形尺度。
 struct TerrainScale {
     zmax: f32,
     zmin: f32,
@@ -299,7 +297,7 @@ struct TerrainScale {
 
 /// 读 sidecar：worldBounds.min/max → span/zmin/zmax（导出器按客户端 Landscape bbox 写出）。
 fn terrain_scale(entry: &MapEntry) -> Option<TerrainScale> {
-    let bytes = crate::data::read_shareable(&format!("glb_cache/maps/{}.json", entry.space))?;
+    let bytes = crate::data::read_shareable(&format!("data/cache/maps/{}.json", entry.space))?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let bounds = v.get("worldBounds")?;
     let min = bounds.get("min")?.as_array()?;
@@ -390,7 +388,7 @@ pub fn cache_all_terrain(force: bool) -> (usize, usize, usize, Vec<String>) {
     let mut cached = 0usize;
     let mut failed = Vec::new();
     for entry in &registry {
-        let cache = data_path(MAP_DIR).join("_cache").join(format!("{}.hm.u16.bin", entry.key));
+        let cache = crate::data::cache_path(&format!("terrain/{}.hm.u16.bin", entry.key));
         if cache.exists() && !force {
             cached += 1;
             continue;
@@ -432,7 +430,7 @@ pub fn terrain_response(map_param: &str) -> Response {
             Some(z) => (z, 0.0, DEFAULT_SIZE_M),
             None => {
                 eprintln!(
-                    "[map-assets] {} 缺少地形尺度（glb_cache/maps/{}.json），请运行 tools/export_map_glb.py",
+                    "[map-assets] {} 缺少地形尺度（data/cache/maps/{}.json），请运行 tools/export_map_glb.py",
                     entry.space, entry.space
                 );
                 return (axum::http::StatusCode::NOT_FOUND, "terrain not available").into_response();
@@ -444,7 +442,7 @@ pub fn terrain_response(map_param: &str) -> Response {
 
 fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32) -> Response {
     // 1) 手动覆盖：data/maps/<key>.heightmap.u16.bin（512×512 LE，行 0=南）
-    let override_path = data_path(MAP_DIR).join(format!("{}.heightmap.u16.bin", entry.key));
+    let override_path = data_path(&format!("maps/{}.heightmap.u16.bin", entry.key));
     if let Ok(bytes) = std::fs::read(&override_path) {
         if bytes.len() == 512 * 512 * 2 {
             return terrain_response_bytes(bytes, zmax, zmin, span);
@@ -453,7 +451,7 @@ fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32) -> Response 
     }
 
     // 2) 提取缓存
-    let cache = data_path(MAP_DIR).join("_cache").join(format!("{}.hm.u16.bin", entry.key));
+    let cache = crate::data::cache_path(&format!("terrain/{}.hm.u16.bin", entry.key));
     if let Ok(bytes) = std::fs::read(&cache) {
         if bytes.len() == 512 * 512 * 2 {
             return terrain_response_bytes(bytes, zmax, zmin, span);
@@ -488,13 +486,13 @@ fn terrain_response_bytes(bytes: Vec<u8>, zmax: f32, zmin: f32, span: f32) -> Re
 
 /// GET /api/playback/scenery：伺服离线导出的静态场景 GLB
 /// （客户端管线导出：建筑/树木真贴图；tools/export_map_glb.py 预生成到
-/// glb_cache/maps/<space>.glb，运行时不做 SC2 解析。缺失 404，前端静默跳过）。
+/// data/cache/maps/<space>.glb，运行时不做 SC2 解析。缺失 404，前端静默跳过）。
 pub fn scenery_response(map_param: &str) -> Response {
     let Some(entry) = resolve_map(map_param.trim()) else {
         return (axum::http::StatusCode::NOT_FOUND, "scenery not available").into_response();
     };
-    // 与 viewer.rs 的坦克 GLB 缓存同目录体系（glb_cache/ 已 gitignore）
-    match crate::data::read_shareable(&format!("glb_cache/maps/{}.glb", entry.space)) {
+    // 与 viewer.rs 的坦克 GLB 缓存同目录体系（data/cache/ 已 gitignore）
+    match crate::data::read_shareable(&format!("data/cache/maps/{}.glb", entry.space)) {
         Some(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "model/gltf-binary".to_string()),
@@ -513,7 +511,7 @@ pub fn ground_layers_meta_response(map_param: &str) -> Response {
     let Some(entry) = resolve_map(map_param.trim()) else {
         return (axum::http::StatusCode::NOT_FOUND, "ground layers not available").into_response();
     };
-    match crate::data::read_shareable(&format!("glb_cache/maps/{}.ground.layers.json", entry.space)) {
+    match crate::data::read_shareable(&format!("data/cache/maps/{}.ground.layers.json", entry.space)) {
         Some(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "application/json".to_string()),
@@ -538,7 +536,7 @@ pub fn ground_layer_response(map_param: &str, layer: &str) -> Response {
     let Some(entry) = resolve_map(map_param.trim()) else {
         return (axum::http::StatusCode::NOT_FOUND, "ground layer not available").into_response();
     };
-    match crate::data::read_shareable(&format!("glb_cache/maps/{}.ground.{layer}.webp", entry.space)) {
+    match crate::data::read_shareable(&format!("data/cache/maps/{}.ground.{layer}.webp", entry.space)) {
         Some(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "image/webp".to_string()),
@@ -682,7 +680,7 @@ mod tests {
             eprintln!("[skip] 游戏目录不可用，跳过端点测试");
             return;
         }
-        if crate::data::read_shareable("glb_cache/maps/12_malinovka_ma.glb").is_none() {
+        if crate::data::read_shareable("data/cache/maps/12_malinovka_ma.glb").is_none() {
             eprintln!("[skip] 缺少导出产物，跳过端点测试");
             return;
         }

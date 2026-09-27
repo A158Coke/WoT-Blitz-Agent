@@ -47,7 +47,7 @@ def scan() -> dict:
 
     # ---- game_data / tank_images / vendor ----
     report["game_data"] = dir_stats(data / "game_data", "*.json")
-    report["tank_images"] = dir_stats(root / "tank_images", "*.webp")
+    report["tank_images"] = dir_stats(data / "cache" / "tank_images", "*.webp")
     report["vendor_three"] = dir_stats(root / "web" / "vendor" / "three")
 
     # ---- 地图底图（export_mobile_maps.py 产物优先，退化看桌面缓存）----
@@ -60,22 +60,22 @@ def scan() -> dict:
                           "bytes": m["summary"]["total_bytes"],
                           "failed": m["summary"]["failed"]}
     else:
-        st = dir_stats(data / "maps" / "_cache", "*.webp")
-        report["maps"] = {"source": "data/maps/_cache（未执行 export_mobile_maps.py）",
+        st = dir_stats(data / "cache" / "terrain", "*.hm.u16.bin")
+        report["maps"] = {"source": "data/cache/terrain（未执行 export_mobile_maps.py）",
                           "count": st["files"], "expected": 26, "bytes": st["bytes"],
                           "failed": []}
 
     # ---- GLB 全量进度 ----
-    glb_cache = root / "glb_cache"
+    models_cache = data / "cache" / "models"
     expected_ids = []
     tc = data / "tank_cache.json"
     if tc.is_file():
         expected_ids = sorted(json.loads(tc.read_text(encoding="utf-8")).keys(), key=int)
 
     have_model, have_collision, total_bytes, missing = 0, 0, 0, []
-    if glb_cache.is_dir():
+    if models_cache.is_dir():
         for tid in expected_ids:
-            d = glb_cache / tid
+            d = models_cache / tid
             mglb, cglb = d / "model.glb", d / "collision.glb"
             # 另一会话可能正在并发下载/替换，size 用 try 兜底（读到即算，读不到重试一次）
             def size_or(p: Path):
@@ -95,8 +95,8 @@ def scan() -> dict:
 
     # 缓存目录里可能还有 expected 之外的 id（已下架车等），一并统计
     extra = 0
-    if glb_cache.is_dir():
-        extra = sum(1 for d in glb_cache.iterdir()
+    if models_cache.is_dir():
+        extra = sum(1 for d in models_cache.iterdir()
                     if d.is_dir() and d.name not in set(expected_ids)
                     and (d / "model.glb").is_file())
 

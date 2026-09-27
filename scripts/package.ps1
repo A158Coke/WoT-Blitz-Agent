@@ -60,8 +60,8 @@ Copy-Item $exe (Join-Path $stage "wotb-agent.exe")
 Copy-Item config.toml.example $stage/
 Copy-Item README.md $stage/
 Copy-Tree "web/vendor"    (Join-Path $stage "web/vendor")
-Copy-Tree "data"          (Join-Path $stage "data")          @("sessions")   # sessions 为用户运行时会话，不分发
-Copy-Tree "replay_samples" (Join-Path $stage "replay_samples")
+Copy-Tree "data"          (Join-Path $stage "data")          @("sessions", "cache")   # sessions 为运行时会话；cache 为运行时缓存（GLB/底图/封面/地形），仅全量包内置
+Copy-Tree "data/replay_samples" (Join-Path $stage "data/replay_samples")
 
 # 启动器：cmd 用纯 ASCII，避免编码问题
 @"
@@ -89,7 +89,7 @@ WoTB Blitz Tactics Agent - 便携版使用说明
 
 三、3D 模型说明
   轻量包：首次查看某坦克的 3D 装甲/真实车模时会自动联网下载到
-  glb_cache/ 目录，之后离线可用。
+  data/cache/models/ 目录，之后离线可用。
   全量包：已内置全部模型，无需联网。
 
 四、常用命令（命令行运行 wotb-agent.exe <命令>）
@@ -102,8 +102,8 @@ WoTB Blitz Tactics Agent - 便携版使用说明
   --help         查看全部命令
 
 五、数据与目录
-  全部数据/缓存均在解压目录内（data/ glb_cache/ tank_images/），
-  整个文件夹可随意移动。data/ 是必需的运行数据，请勿删除；
+  全部数据/缓存均在解压目录内（data/，其中 data/cache/ 为模型/底图/封面/
+  地形缓存），整个文件夹可随意移动。data/ 是必需的运行数据，请勿删除；
   如需重置数据，重新解压安装包即可。
 "@
 [System.IO.File]::WriteAllText((Join-Path $stage "使用说明.txt"), $readme, (New-Object System.Text.UTF8Encoding($true)))
@@ -119,14 +119,11 @@ if ($needZip) {
 
 # ---- 4. 全量附加（完全离线；robocopy 增量复制，缓存没变时很快） ----
 if ($Full) {
-    if (Test-Path "glb_cache") {
-        Write-Host "复制 glb_cache/（约 1.8GB，增量复制，请稍候）..."
-        Copy-Tree "glb_cache" (Join-Path $stage "glb_cache")
+    if (Test-Path "data/cache") {
+        Write-Host "复制 data/cache/（约 2GB，增量复制，请稍候）..."
+        Copy-Tree "data/cache" (Join-Path $stage "data/cache")
     } else {
-        Write-Warning "未找到 glb_cache/，跳过。可先运行: wotb-agent.exe fetch-models"
-    }
-    if (Test-Path "tank_images") {
-        Copy-Tree "tank_images" (Join-Path $stage "tank_images")
+        Write-Warning "未找到 data/cache/，跳过。可先运行: wotb-agent.exe fetch-models"
     }
 }
 
@@ -159,6 +156,6 @@ Write-Host "===== 打包完成 ====="
 Write-Host ("  便携目录     {0}  ({1})" -f $stage, (Size-Of $stage))
 if ($needZip) { Write-Host ("  轻量 zip     {0}  ({1})" -f $zipPath, (Size-Of $zipPath)) }
 if ($Full) {
-    Write-Host "  全量目录     $stage（含 glb_cache 完全离线）"
+    Write-Host "  全量目录     $stage（含 data/cache 完全离线）"
     Write-Host ("  全量 zip     {0}  ({1})" -f (Join-Path $OutDir "wotb-agent-portable-win64-full.zip"), (Size-Of (Join-Path $OutDir "wotb-agent-portable-win64-full.zip")))
 }

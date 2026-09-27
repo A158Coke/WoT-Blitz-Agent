@@ -8,7 +8,7 @@
 //! `app/src/main/assets/`（原生 assets，不经 tauri bundle.resources）。
 //! - 小资产（data/、web/vendor、tank_images、地图底图）：首启经 JNI AssetManager
 //!   解包到应用私有目录（清单 `resources-manifest.txt`）；
-//! - 大资产（离线全量版 glb_cache）：不落盘，`data::set_embedded_asset_reader` 注入
+//! - 大资产（离线全量版 data/cache）：不落盘，`data::set_embedded_asset_reader` 注入
 //!   按需直读钩子（GLB 服务与地图地形读取处兜底）；
 //! - 可写内容（模型缓存下载、会话、导入的回放）：app_data_dir。
 
@@ -461,7 +461,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 桌面 debug 构建直接指向仓库根（真实 data/、glb_cache/），便于在 PC 上调试完整链路
+            // 桌面 debug 构建直接指向仓库根（真实 data/），便于在 PC 上调试完整链路
             #[cfg(all(debug_assertions, not(target_os = "android")))]
             let data_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
             #[cfg(any(not(debug_assertions), target_os = "android"))]

@@ -1,8 +1,9 @@
 // 自包含分发模式（`cargo build --release --features bundle`）：
-// data/、web/vendor/、replay_samples/ 与 config.toml.example 在编译期打包进 exe，
+// data/（不含 sessions/ 运行时会话与 cache/ 运行时缓存）、web/vendor/ 与
+// config.toml.example 在编译期打包进 exe，
 // 首次在目标机器运行时自释放到 exe 所在目录（不可写则回退到用户目录），
 // 并把工作目录切过去——此后与便携包形态完全一致，
-// update-data / Settings 在线改配置 / glb_cache 懒加载下载照常可用。
+// update-data / Settings 在线改配置 / data/cache 懒加载下载照常可用。
 // 已在带 data/tanks.pb 的目录里运行（如仓库根 cargo run）时不做任何事。
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,8 @@ use rust_embed::{Embed, RustEmbed};
 #[folder = "data/"]
 #[exclude = "sessions/*"]
 #[exclude = "sessions/**"]
+#[exclude = "cache/*"]
+#[exclude = "cache/**"]
 struct DataAssets;
 
 #[derive(RustEmbed)]
@@ -20,7 +23,7 @@ struct DataAssets;
 struct VendorAssets;
 
 #[derive(RustEmbed)]
-#[folder = "replay_samples/"]
+#[folder = "data/replay_samples/"]
 struct ReplaySamples;
 
 const CONFIG_EXAMPLE: &str = include_str!("../config.toml.example");
@@ -71,7 +74,7 @@ fn is_data_ready(dir: &Path) -> bool {
 fn extract(base: &Path) -> anyhow::Result<()> {
     extract_assets::<DataAssets>(base, "data")?;
     extract_assets::<VendorAssets>(base, Path::new("web").join("vendor").to_str().unwrap())?;
-    extract_assets::<ReplaySamples>(base, "replay_samples")?;
+    extract_assets::<ReplaySamples>(base, "data/replay_samples")?;
     Ok(())
 }
 

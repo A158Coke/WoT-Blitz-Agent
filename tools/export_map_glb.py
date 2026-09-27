@@ -18,7 +18,7 @@
   6. 地形尺度：Landscape 渲染对象 bbox（世界包围盒）给出 span/zmin/zmax，
      连同注册表信息写入 <space>.json sidecar，供后端 terrain 接口使用。
 
-输出（output-dir，默认 glb_cache/maps/，按 space 目录命名——同一 space 的多张
+输出（output-dir，默认 data/cache/maps/，按 space 目录命名——同一 space 的多张
 变体地图共用一份场景）：
     <space>.glb           静态场景（游戏世界系，米，z 上；材质含真贴图/透明树叶）
     <space>.ground.webp   地面烘焙贴图（4096²，客户端 tilemask-fp.sl 公式，上=+z/北）
@@ -1608,7 +1608,7 @@ def main() -> int:
                         help="只导出指定图（回放 id / 显示名 / maps.yaml 键，可重复）；缺省全部")
     parser.add_argument("--game-data", type=pathlib.Path,
                         default=pathlib.Path("D:/SteamLibrary/steamapps/common/World of Tanks Blitz/Data"))
-    parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("glb_cache/maps"))
+    parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("data/cache/maps"))
     parser.add_argument("--ground-only", action="store_true",
                         help="跳过 GLB，只重新导出地面贴图（+元数据）")
     parser.add_argument("--jobs", type=int, default=4,

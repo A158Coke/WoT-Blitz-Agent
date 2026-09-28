@@ -205,14 +205,22 @@ fn map_query_param(q: &HashMap<String, String>) -> String {
 }
 
 /// GET /api/playback/map?id=19 —— 地图底图（提取/覆盖/缓存链路见
-/// [`crate::wargaming::map_assets`]；不可用时仍 404，前端回退程序生成网格）
+/// [`crate::wargaming::map_assets`]；不可用时仍 404，前端回退程序生成网格）。
+/// `&res=mini` 伺服客户端小地图（低画质档地面：缓存→客户端提取→随包→高清兜底）
 pub async fn playback_map_handler(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
     let map = map_query_param(&q);
-    tokio::task::spawn_blocking(move || crate::wargaming::map_assets::map_image_response(&map))
-        .await
-        .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "map task failed").into_response())
+    let mini = q.get("res").map(|s| s.as_str()) == Some("mini");
+    tokio::task::spawn_blocking(move || {
+        if mini {
+            crate::wargaming::map_assets::map_minimap_response(&map)
+        } else {
+            crate::wargaming::map_assets::map_image_response(&map)
+        }
+    })
+    .await
+    .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "map task failed").into_response())
 }
 
 /// GET /api/playback/terrain?id=19 —— 高度场地形（u16 LE + X-Terrain-Meta；
@@ -427,6 +435,9 @@ if (window.__TAURI__ && window.__TAURI__.core) {
   #loader .hint { color: var(--dim); max-width: 560px; text-align: center; }
   #err { color: #e07b7b; max-width: 640px; white-space: pre-wrap; }
   #speeds button { min-width: 38px; }
+  #qBadge { color: var(--dim); font-size: 11px; border: 1px solid var(--line);
+            border-radius: 5px; padding: 2px 8px; white-space: nowrap; }
+  #qSel button { min-width: 44px; }
 </style>
 <script type="importmap">__IMPORTMAP__</script>
 </head>
@@ -461,6 +472,7 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     <label class="toggle"><input type="range" id="mapOpacity" min="0" max="1" step="0.05" value="0.92" style="width:74px"> 底图</label>
     <label class="toggle"><input type="checkbox" id="glbToggle"> 真实车模（GLB）</label>
     <label class="toggle"><input type="checkbox" id="labelToggle" checked> 昵称标签</label>
+    <span id="qBadge" title="画质档在加载前选择：主页面回放入口、本页弹层，或 URL ?q=low|mid|high"></span>
   </div>
 </div>
 
@@ -469,6 +481,13 @@ if (window.__TAURI__ && window.__TAURI__.core) {
   <div class="row">
     <input type="text" id="filePath" placeholder=".wotbreplay 文件路径（或 URL 加 ?file=）">
     <button id="loadBtn">加载</button>
+  </div>
+  <div class="row" id="qSel">
+    <span style="color:var(--dim)">画质</span>
+    <button data-q="low">低</button>
+    <button data-q="mid">中</button>
+    <button data-q="high">高</button>
+    <span style="color:var(--dim);font-size:11px">低=流畅优先（无建筑/盒子车模）· 中=无建筑 · 高=全部效果</span>
   </div>
   <div class="hint">14 车全场连续回放：滤波渲染位姿 + 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流。<br>
   数据由本机解析（AvatarFilter 渲染层 + prop2 炮塔角），加载需数秒。</div>
@@ -500,6 +519,58 @@ let groundLayers = null;
 let terrainMesh = null, heightField = null, heightMeta = null;  // 3D 地形
 let mapScenery = null;                              // 静态场景 GLB（建筑等）
 let terrainOn = true;
+
+// ---------- 画质分档 ----------
+// 三档渲染预设：桌面默认高（即历史效果），Tauri/移动 WebView 默认低。
+// 解析优先级：URL ?q= > localStorage > 设备默认；三档都开 3D 地形（仅分段数降档）。
+// 抗锯齿/DPR/场景资源在渲染器与场景首次创建时一次性定型，加载后改档需整页刷新。
+const QUALITY_PRESETS = {
+  low:  { label: '低', antialias: false, maxDpr: 1,   scenery: false, groundLayers: false, miniMap: true,  anisotropy: 1, terrainSeg: 192, allowGlb: false },
+  mid:  { label: '中', antialias: false, maxDpr: 1.5, scenery: false, groundLayers: true,  miniMap: false, anisotropy: 4, terrainSeg: 256, allowGlb: true },
+  high: { label: '高', antialias: true,  maxDpr: 2,   scenery: true,  groundLayers: true,  miniMap: false, anisotropy: 8, terrainSeg: 512, allowGlb: true },
+};
+function resolveQuality() {
+  const usp = new URLSearchParams(location.search);
+  let q = (usp.get('q') || '').toLowerCase();
+  if (!QUALITY_PRESETS[q]) { try { q = localStorage.getItem('pb_quality') || ''; } catch (e) {} }
+  if (!QUALITY_PRESETS[q]) {
+    const mobile = !!window.__TAURI__ || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+    q = mobile ? 'low' : 'high';
+  }
+  try { localStorage.setItem('pb_quality', q); } catch (e) {}
+  return q;
+}
+let QKEY = resolveQuality(), Q = QUALITY_PRESETS[QKEY];
+function setQuality(k) {
+  if (!QUALITY_PRESETS[k] || k === QKEY) return;
+  const apply = () => {
+    QKEY = k; Q = QUALITY_PRESETS[k];
+    try { localStorage.setItem('pb_quality', k); } catch (e) {}
+    document.querySelectorAll('#qSel [data-q]').forEach((b) => b.classList.toggle('on', b.dataset.q === k));
+    applyGlbGate();
+    $('qBadge').textContent = '画质 · ' + Q.label;
+  };
+  if (DATA) {
+    // 已在播放：渲染参数一次性定型，切换档位需带新 ?q= 整页重载
+    // （Tauri WebView 不弹 confirm 对话框，直接重载）
+    if (window.__TAURI__ || confirm('切换到「' + QUALITY_PRESETS[k].label + '」画质将重新加载回放，继续？')) {
+      try { localStorage.setItem('pb_quality', k); } catch (e) {}
+      const u = new URL(location.href); u.searchParams.set('q', k); location.replace(u);
+    }
+    return;   // 取消则维持原档
+  }
+  apply();
+}
+// 低档强制盒子代理（14 车 ×数 MB GLB 下载 + PBR 填充率是移动端主要瓶颈之一）
+function applyGlbGate() {
+  const gt = $('glbToggle');
+  gt.disabled = !Q.allowGlb;
+  if (!Q.allowGlb) {
+    gt.checked = false;
+    gt.parentElement.title = '低画质档不加载真实车模（中/高档可用）';
+    if (glbOn) applyGlbToggle(false);
+  } else gt.parentElement.title = '';
+}
 
 // ---------- 工具 ----------
 const fmtTime = (s) => { s = Math.max(0, s); const m = Math.floor(s / 60);
@@ -553,9 +624,9 @@ function initScene() {
   window.__scene = scene;   // 诊断钩子
   camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 4000);
   camera.position.set(0, 180, 220);
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer = new THREE.WebGLRenderer({ antialias: Q.antialias });
   renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, Q.maxDpr));
   window.__renderer = renderer;   // 诊断钩子（renderer 创建后才可引用）
   // three r165+ 恒为物理光照单位（Lambert 除以 π），旧强度会让建筑/车模暗到发黑；
   // 与装甲查看器（viewer.rs）一致：ACES 色调映射 + ×π 级别的光强
@@ -682,14 +753,15 @@ async function loadMapImage() {
   const mid = DATA.meta.map_id || 0;
   const mapq = mid ? ('id=' + mid) : ('name=' + encodeURIComponent(DATA.meta.map_name || ''));
   try {
-    const resp = await fetch('/api/playback/map?' + mapq);
+    // 低档 res=mini：客户端小地图作地面（比高清底图小一个量级，保留 3D 起伏）
+    const resp = await fetch('/api/playback/map?' + mapq + (Q.miniMap ? '&res=mini' : ''));
     if (resp.ok) {
       mapMetaInfo = JSON.parse(resp.headers.get('X-Map-Meta') || '{}');
       const url = URL.createObjectURL(await resp.blob());
       mapTexture = await new THREE.TextureLoader().loadAsync(url);
       URL.revokeObjectURL(url);
       mapTexture.colorSpace = THREE.SRGBColorSpace;
-      mapTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      mapTexture.anisotropy = Math.min(Q.anisotropy, renderer.capabilities.getMaxAnisotropy());
       if (mapMetaInfo.flip_x) { mapTexture.wrapS = THREE.RepeatWrapping; mapTexture.repeat.x = -1; mapTexture.offset.x = 1; }
     }
   } catch (e) { console.warn('底图加载失败（回退网格）:', e); }
@@ -718,7 +790,8 @@ async function loadMapImage() {
   // 分辨率限制。任一分层缺失则整体回退烘焙底图。
   // 注意分层一律无 alpha（Chrome 把带 alpha 的 webp 预乘解码，GPU 侧会压暗
   // 近黑），第 4 通道在独立灰度图里（tile1/mask1/hmap1 的 R）。
-  try {
+  // 低/中档跳过分层地表：直接走整图烘焙底图（省 4–8 张纹理下载与显存）
+  if (Q.groundLayers) try {
     const mresp = await fetch('/api/playback/groundmeta?' + mapq);
     if (mresp.ok) {
       const L = await mresp.json();
@@ -737,7 +810,7 @@ async function loadMapImage() {
         } catch { ok = false; break; }
       }
       if (ok) {
-        const ani = renderer.capabilities.getMaxAnisotropy();
+        const ani = Math.min(Q.anisotropy, renderer.capabilities.getMaxAnisotropy());
         for (const k of ['tile0', 'tile1', 'hmap0', 'hmap1']) if (texs[k]) {
           texs[k].wrapS = texs[k].wrapT = THREE.RepeatWrapping;
           texs[k].anisotropy = ani;
@@ -757,7 +830,8 @@ async function loadMapImage() {
   // 静态场景模型（建筑/桥/岩石，tools/export_map_glb.py 预生成；缺失静默跳过）。
   // GLB 为游戏系（z 上、+y 北），qFrame = Ry(π)·Rx(-π/2)（YXZ 序）转到回放场景系——
   // 与坦克 GLB 同一帧变换，纯旋转无镜像，绕序天然正确。
-  try {
+  // 中/低档跳过场景 GLB（单图 11–67MB 下载 + 大块显存，是画质档最大的分流项）
+  if (Q.scenery) try {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
     const gltf = await new Promise((res) => {
       new GLTFLoader().load('/api/playback/scenery?' + mapq,
@@ -968,8 +1042,9 @@ function rebuildGround() {
     // 平面经 rotation(-π/2,0,π) 放置后：世界 x = −局部x（场景镜像系）、世界 z = 局部y、
     // 高度沿局部 +z。车辆/建筑全部位于场景系 → 采样必须用**世界 x（= −局部x）**。
     // 若误用局部 x（少取一次负），地形东西镜像，坦克会陷入地内或悬空。
-    // 地形网格 512 段：与 512×512 高度场 1:1 采样（客户端高度图满精度，无信息损失）
-    const geo = new THREE.PlaneGeometry(size, size, 512, 512);
+    // 地形网格按画质档分段（低 192 / 中 256 / 高 512）：顶点仍走双线性高度采样，
+    // 降段只影响地形轮廓精度，不破坏 (x,z)→高度映射
+    const geo = new THREE.PlaneGeometry(size, size, Q.terrainSeg, Q.terrainSeg);
     const pos = geo.attributes.position;
     for (let k = 0; k < pos.count; k++) {
       pos.setZ(k, sampleHeight(-pos.getX(k), pos.getY(k)));
@@ -1096,7 +1171,7 @@ function drawLabel(v) {
   ctx.lineJoin = 'round';
   const name = (dead ? '✝ ' : '') + (v.def.nickname || 'Unknown');
   const starW = (v.def.is_author && !dead) ? 38 : 0;
-  let fs = 34;
+  let fs = 32;
   ctx.font = `600 ${fs}px "Segoe UI", "Microsoft YaHei", sans-serif`;
   while (fs > 24 && starW + ctx.measureText(name).width > 420) {
     fs -= 3;
@@ -1105,16 +1180,26 @@ function drawLabel(v) {
   ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.75)';
   let tx = 262 - (starW + ctx.measureText(name).width) / 2;
   if (starW) {
-    ctx.strokeText('★', tx, 40);
-    ctx.fillStyle = '#e8b23c'; ctx.fillText('★', tx, 40);
+    ctx.strokeText('★', tx, 32);
+    ctx.fillStyle = '#e8b23c'; ctx.fillText('★', tx, 32);
     tx += starW;
   }
-  ctx.strokeText(name, tx, 40);
+  ctx.strokeText(name, tx, 32);
   ctx.fillStyle = dead ? 'rgba(160,168,178,.78)' : '#eef3f9';
-  ctx.fillText(name, tx, 40);
+  ctx.fillText(name, tx, 32);
+  // 坦克名行（昵称下方小字；与名册 .tank 同源 tank_name，缺失留空不占位）
+  const tank = v.def.tank_name || (v.def.tank_id ? 'tank_' + v.def.tank_id : '');
+  if (tank) {
+    ctx.font = '500 21px "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+    ctx.strokeText(tank, 256, 58);
+    ctx.fillStyle = dead ? 'rgba(140,148,158,.6)' : '#a9b6c6';
+    ctx.fillText(tank, 256, 58);
+  }
   // 血量条：暗槽 + 队伍色纵向渐变填充
   const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
-  const bx = 56, by = 66, bw = 400, bh = 36;
+  const bx = 56, by = 74, bw = 400, bh = 36;
   rrPath(ctx, bx, by, bw, bh, 11);
   ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fill();
   ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.stroke();
@@ -1137,17 +1222,30 @@ function drawLabel(v) {
 }
 
 function buildVehicles() {
-  const hullGeo = new THREE.BoxGeometry(3.2, 1.05, 6.2);
+  // 低模车体：俯视六边形轮廓（平尾 + 尖首）挤压成棱柱，配合尾部散热格栅——
+  // 炮管之外的第二重车头方向提示（GLB 关闭时的代理模型）
+  const hullProfile = new THREE.Shape();
+  hullProfile.moveTo(-1.6, -3.1);   // 左后
+  hullProfile.lineTo(1.6, -3.1);    // 右后（尾部平直）
+  hullProfile.lineTo(1.6, 1.15);    // 右舷
+  hullProfile.lineTo(0, 3.1);       // 车首尖点（+z = 车头，与炮管同向）
+  hullProfile.lineTo(-1.6, 1.15);   // 左舷
+  hullProfile.closePath();
+  const hullGeo = new THREE.ExtrudeGeometry(hullProfile, { depth: 1.05, bevelEnabled: false });
+  hullGeo.rotateX(Math.PI / 2);     // 轮廓 y（车首方向）→ 世界 +z，挤出方向翻向 −y
+  hullGeo.translate(0, 1.45, 0);    // 车体占 y ∈ [0.40, 1.45]（顶面接炮塔底）
   const trackGeo = new THREE.BoxGeometry(3.6, 0.75, 6.5);
   const turretGeo = new THREE.BoxGeometry(2.35, 0.85, 3.3);
   const gunGeo = new THREE.CylinderGeometry(0.14, 0.18, 5.4, 8);
+  const grilleGeo = new THREE.BoxGeometry(2.0, 0.4, 0.5);
   const trackMat = new THREE.MeshLambertMaterial({ color: 0x333a44 });
+  const grilleMat = new THREE.MeshLambertMaterial({ color: 0x272e38 });
   for (const def of DATA.vehicles) {
     const color = teamColor({ def });
     const g = new THREE.Group(); g.userData.eid = def.eid;
     const hull = new THREE.Mesh(hullGeo, new THREE.MeshLambertMaterial({ color }));
-    hull.position.y = 1.05;
     const tracks = new THREE.Mesh(trackGeo, trackMat); tracks.position.y = 0.42;
+    const grille = new THREE.Mesh(grilleGeo, grilleMat); grille.position.set(0, 1.62, -2.8);
     const turretG = new THREE.Group(); turretG.position.y = 1.85;
     const turret = new THREE.Mesh(turretGeo, new THREE.MeshLambertMaterial({ color: new THREE.Color(color).multiplyScalar(1.15) }));
     turret.position.z = -0.25;
@@ -1155,7 +1253,7 @@ function buildVehicles() {
     const gun = new THREE.Mesh(gunGeo, new THREE.MeshLambertMaterial({ color: 0x59636f }));
     gun.rotation.x = Math.PI / 2; gun.position.z = 2.4;
     gunPivot.add(gun); turretG.add(turret); turretG.add(gunPivot);
-    g.add(tracks); g.add(hull); g.add(turretG);
+    g.add(tracks); g.add(hull); g.add(grille); g.add(turretG);
     if (def.is_author) {
       const ring = new THREE.Mesh(new THREE.RingGeometry(3.6, 4.3, 32),
         new THREE.MeshBasicMaterial({ color: 0xe8b23c, side: THREE.DoubleSide, transparent: true, opacity: .85 }));
@@ -1504,6 +1602,7 @@ function applyPose(v) {
 let winnerShown = false;
 function animate() {
   requestAnimationFrame(animate);
+  if (!renderer) return;   // 渲染器惰性创建（首次 startPlayback）：数据加载完成前无场景可渲染
   const dt = Math.min(clock.getDelta(), 0.1);
   if (DATA && PLAYING) {
     T += dt * SPEED;
@@ -1618,7 +1717,10 @@ function initControls() {
   });
   document.querySelectorAll('[data-cam]').forEach((b) =>
     b.addEventListener('click', () => setCam(b.dataset.cam)));
-  $('glbToggle').addEventListener('change', (e) => applyGlbToggle(e.target.checked));
+  $('glbToggle').addEventListener('change', (e) => {
+    if (!Q.allowGlb) { e.target.checked = false; return; }   // 低档强制盒子代理
+    applyGlbToggle(e.target.checked);
+  });
   $('terrainToggle').addEventListener('change', (e) => {
     terrainOn = e.target.checked;
     rebuildGround();
@@ -1661,6 +1763,7 @@ async function loadData(file) {
   }
 }
 function startPlayback() {
+  if (!renderer) initScene();   // 渲染器惰性创建：此时画质档已定型（loader 选择/URL 参数）
   $('mapName').textContent = DATA.meta.map_name || ('map_' + DATA.meta.map_id);
   buildWorld();
   loadMapImage();
@@ -1674,9 +1777,16 @@ function startPlayback() {
 }
 
 function init() {
-  initScene();
+  // 注意：initScene 不在此处调用——渲染器在首次 startPlayback 时按已定型的画质档创建，
+  // loader 弹层上的画质选择才能决定抗锯齿/DPR
   initControls();
   animate();
+  document.querySelectorAll('#qSel [data-q]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.q === QKEY);
+    b.addEventListener('click', () => setQuality(b.dataset.q));
+  });
+  applyGlbGate();
+  $('qBadge').textContent = '画质 · ' + Q.label;
   const usp = new URLSearchParams(location.search);
   const f = usp.get('file');
   if (f) { $('filePath').value = f; loadData(f); }

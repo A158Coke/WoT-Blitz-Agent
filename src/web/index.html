@@ -403,6 +403,11 @@
                 <input id="sr-file" placeholder="Path to the .wotbreplay file (Windows or WSL path)" style="flex:1;">
                 <button class="btn" id="btn-sr-import" style="display:none;">📂 导入</button>
                 <button class="btn btn-primary" id="btn-sr-load">Parse</button>
+                <select id="sr-quality" title="实时回放画质：低=流畅优先（无建筑/盒子车模）· 中=无建筑 · 高=全部效果">
+                    <option value="low">画质 · 低</option>
+                    <option value="mid">画质 · 中</option>
+                    <option value="high">画质 · 高</option>
+                </select>
                 <button class="btn" id="btn-sr-playback" title="全场连续实时回放（新窗口）">▶ 实时回放</button>
                 <input type="file" id="sr-import-file" accept=".wotbreplay" style="display:none;">
             </div>
@@ -1265,10 +1270,18 @@ window.openShotInViewer = function(no) {
     if (shot) window.open(srViewerUrl(shot), '_blank', 'width='+Math.round(window.innerWidth*0.85)+',height='+Math.round(window.innerHeight*0.85));
 };
 $('btn-sr-load').addEventListener('click',srParse);
+// 实时回放画质档：localStorage 记忆上次选择；无记录时移动端默认低、桌面默认高
+(function(){
+    let q=null; try{ q=localStorage.getItem('pb_quality'); }catch(e){}
+    if(!['low','mid','high'].includes(q))
+        q=(window.__TAURI__ || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))?'low':'high';
+    $('sr-quality').value=q;
+})();
+$('sr-quality').addEventListener('change',()=>{ try{ localStorage.setItem('pb_quality',$('sr-quality').value); }catch(e){} });
 $('btn-sr-playback').addEventListener('click',()=>{
     const f=$('sr-file').value.trim();
     if(!f){ $('sr-out').innerHTML='<div class="muted">Enter a .wotbreplay path.</div>'; return; }
-    window.open('/playback?file='+encodeURIComponent(f),'_blank');
+    window.open('/playback?file='+encodeURIComponent(f)+'&q='+$('sr-quality').value,'_blank');
 });
 
 // ---------- Compare ----------

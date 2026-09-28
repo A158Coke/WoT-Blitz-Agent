@@ -152,6 +152,13 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Pre-extract minimap ground textures (low-quality playback ground) for all maps
+    /// into data/cache/maps/
+    FetchMinimaps {
+        /// Re-extract even if already cached
+        #[arg(long)]
+        force: bool,
+    },
     /// One-click update of all derived game data after a game patch
     /// (BlitzKit pb -> tank_cache.json -> game_data/), game-version aware
     UpdateData {
@@ -471,6 +478,18 @@ fn main() -> Result<()> {
             let (total, extracted, cached, failed) =
                 wotb_agent::wargaming::map_assets::cache_all_terrain(force);
             println!("=== Terrain cache (data/cache/terrain) ===");
+            println!("  Maps in registry: {}", total);
+            println!("  Extracted:        {}", extracted);
+            println!("  Already cached:   {} (use --force to re-extract)", cached);
+            if !failed.is_empty() {
+                eprintln!("  Failed ({}): {:?}", failed.len(), failed);
+            }
+            return Ok(());
+        }
+        Commands::FetchMinimaps { force } => {
+            let (total, extracted, cached, failed) =
+                wotb_agent::wargaming::map_assets::cache_all_minimaps(force);
+            println!("=== Minimap cache (data/cache/maps/<space>.minimap.webp) ===");
             println!("  Maps in registry: {}", total);
             println!("  Extracted:        {}", extracted);
             println!("  Already cached:   {} (use --force to re-extract)", cached);

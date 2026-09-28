@@ -20,7 +20,7 @@
 
 use crate::wargaming::dvpl::DvplFile;
 use crate::wargaming::game_extract::resolve_game_dir;
-use crate::data::data_path;
+use crate::data::{cache_path, data_path};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -41,6 +41,8 @@ pub struct MapEntry {
     pub space: String,
     /// 客户端本地化显示名（如 "Winter Malinovka"）
     pub display: String,
+    /// 小地图目录名（en.yaml `#maps:<dir>:` 的 dir，即 Gfx/UI/BattleScreenHUD/minimap/ 子目录）
+    pub minimap_dir: String,
 }
 
 impl MapEntry {
@@ -124,19 +126,29 @@ fn load_registry() -> Vec<MapEntry> {
 
     let mut out = Vec::new();
     for (id, key, sc2) in parse_maps_yaml(&maps_text) {
-        // 显示名：优先 dir == maps.yaml 键的基础变体，否则取首条
+        // 显示名/小地图目录：优先 dir == maps.yaml 键的基础变体，否则取首条
         let mut pick: Option<String> = None;
+        let mut pick_dir: Option<String> = None;
         for (path, dir, display) in &en_entries {
             if path != &sc2 {
                 continue;
             }
-            let base = pick.take();
-            pick = match base {
+            let (base, base_dir) = (pick.take(), pick_dir.take());
+            match base {
                 Some(s) => {
-                    if dir == &key { Some(display.clone()) } else { Some(s) }
+                    if dir == &key {
+                        pick = Some(display.clone());
+                        pick_dir = Some(dir.clone());
+                    } else {
+                        pick = Some(s);
+                        pick_dir = base_dir;
+                    }
                 }
-                None => Some(display.clone()),
-            };
+                None => {
+                    pick = Some(display.clone());
+                    pick_dir = Some(dir.clone());
+                }
+            }
         }
         let entry = MapEntry {
             map_id: id,
@@ -144,6 +156,7 @@ fn load_registry() -> Vec<MapEntry> {
             sc2: sc2.clone(),
             space: sc2.split('/').next().unwrap_or_default().to_string(),
             display: pick.unwrap_or_default(),
+            minimap_dir: pick_dir.unwrap_or_default(),
         };
         if entry.is_safe() {
             out.push(entry);
@@ -256,6 +269,106 @@ pub fn map_image_response(map_param: &str) -> Response {
     }
 
     (axum::http::StatusCode::NOT_FOUND, "map image not available").into_response()
+}
+
+// ---------- 小地图底图（GET /api/playback/map?...&res=mini，低画质档地面） ----------
+//
+// 客户端小地图：Data/Gfx/UI/BattleScreenHUD/minimap/<dir>/MiniMapSmall[@2x].packed.webp.dvpl，
+// DVPL 载荷原样即 webp 文件；与高清底图同覆盖（600m 方框、原点居中，共用 X-Map-Meta）。
+
+/// 小地图 DVPL 候选（优先 @2x 高清版，退普通版）。
+const MINIMAP_DVPL: [&str; 2] = ["MiniMapSmall@2x.packed.webp.dvpl", "MiniMapSmall.packed.webp.dvpl"];
+
+/// 低画质档小地图底图：提取缓存 → 客户端随取随解 → 仓库随包图 → 高清底图兜底。
+pub fn map_minimap_response(map_param: &str) -> Response {
+    let name = map_param.trim();
+    if name.is_empty() {
+        return (axum::http::StatusCode::BAD_REQUEST, "missing map").into_response();
+    }
+    let entry = resolve_map(name);
+
+    // 1) 提取缓存：data/cache/maps/<space>.minimap.webp
+    if let Some(entry) = entry {
+        if let Some(bytes) =
+            crate::data::read_shareable(&format!("data/cache/maps/{}.minimap.webp", entry.space))
+        {
+            return map_response(bytes, "image/webp", Some(entry));
+        }
+    }
+
+    // 2) 客户端提取（与高度场同模式：客户端在场即覆盖全部注册表地图），解出后落缓存
+    if let Some(entry) = entry {
+        if let Some(bytes) = extract_minimap(entry) {
+            let path = cache_path(&format!("maps/{}.minimap.webp", entry.space));
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, &bytes);
+            return map_response(bytes, "image/webp", Some(entry));
+        }
+    }
+
+    // 3) 仓库随包小地图（mobile_assets/maps/，客户端不在场时的离线兜底）
+    if let Some(entry) = entry {
+        if let Some(bytes) = bundled_minimap(entry) {
+            return map_response(bytes, "image/webp", Some(entry));
+        }
+    }
+
+    // 4) 兜底：高清烘焙底图（离线导出覆盖图）
+    map_image_response(name)
+}
+
+/// 从游戏目录解出小地图 webp。目录候选：en.yaml 解析的 minimap 目录 → maps.yaml 键名
+/// （en.yaml 无 `#maps:` 条目的新图如 lagoon，其目录与键名同名）；目录名限
+/// 小写字母/数字/下划线（路径安全，与 [`MapEntry::is_safe`] 同规）。
+fn extract_minimap(entry: &MapEntry) -> Option<Vec<u8>> {
+    let game = resolve_game_dir(None).ok()?;
+    let candidates = [entry.minimap_dir.as_str(), entry.key.as_str()];
+    for dir in candidates {
+        if dir.is_empty()
+            || dir.len() > 40
+            || !dir.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            continue;
+        }
+        let base = game
+            .join("Gfx")
+            .join("UI")
+            .join("BattleScreenHUD")
+            .join("minimap")
+            .join(dir);
+        for name in MINIMAP_DVPL {
+            if let Ok(dv) = DvplFile::read(&base.join(name)) {
+                if !dv.data.is_empty() {
+                    return Some(dv.data);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// mobile_assets/maps/<名>.webp：文件名为 MapId Debug 名（如 WinterMalinovka），
+/// 与显示名/键名按“去非字母数字 + 小写”归一匹配。
+fn bundled_minimap(entry: &MapEntry) -> Option<Vec<u8>> {
+    let norm = |x: &str| -> String {
+        x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+    };
+    let want = [norm(&entry.display), norm(&entry.key)];
+    if want.iter().all(|w| w.is_empty()) {
+        return None;
+    }
+    for e in std::fs::read_dir(std::path::Path::new("mobile_assets/maps")).ok()?.flatten() {
+        let Some(stem) = e.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+        let n = norm(&stem);
+        if want.contains(&n) {
+            if let Ok(bytes) = std::fs::read(e.path()) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 /// 响应附带 X-Map-Meta（铺设参数 JSON），前端据此放置底图平面。
@@ -396,6 +509,36 @@ pub fn cache_all_terrain(force: bool) -> (usize, usize, usize, Vec<String>) {
         match extract_heightmap(&entry.space) {
             Some(t) => {
                 let bytes = terrain_bytes(&t);
+                if let Some(parent) = cache.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&cache, &bytes).is_ok() {
+                    extracted += 1;
+                } else {
+                    failed.push(entry.key.clone());
+                }
+            }
+            None => failed.push(entry.key.clone()),
+        }
+    }
+    (registry.len(), extracted, cached, failed)
+}
+
+/// 预提取全部注册表地图的小地图到 `data/cache/maps/<space>.minimap.webp`
+/// （`fetch-minimaps` 命令，低画质档地面）；返回 (注册表总数, 本次提取, 已缓存, 失败名单)。
+pub fn cache_all_minimaps(force: bool) -> (usize, usize, usize, Vec<String>) {
+    let registry = registry();
+    let mut extracted = 0usize;
+    let mut cached = 0usize;
+    let mut failed = Vec::new();
+    for entry in registry {
+        let cache = cache_path(&format!("maps/{}.minimap.webp", entry.space));
+        if cache.exists() && !force {
+            cached += 1;
+            continue;
+        }
+        match extract_minimap(entry) {
+            Some(bytes) => {
                 if let Some(parent) = cache.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }

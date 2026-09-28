@@ -50,11 +50,11 @@
 | 死亡语义 | 哨兵族 {0,−1,−2,−3}；溺水 cause=5 正 HP 死亡（`dead ⇔ hp≤0` 被控受控实验否定）；method1 source 按 cause 分域（0/1/2=对方、3/5=自身）；正确死亡面 = 哨兵族 ∨ prop1=00 ∨ wrapper6 ∨ 结算 field105 | **代码**（hp_terminal_normalized） |
 | method36 全字段 | field2=车体系炮管俯仰（vs type39 f6 中位 0.0018 rad）、field3/4=水平/垂直角速度上限（火炮受损 ×0.675）、field5=瞄准时间（Reticle Cal ×0.70）、field6.f1=bloom（开火必正跳 326/326、火炮受损 ×2） | **代码**（AimSnapshot） |
 | avatar prop9 | 炮塔相对偏航镜像（r=0.999993）——旧"瞄准角/俯仰回退"废弃 | **代码**（A2） |
-| AoI 生命周期 | Type33→Type5→观测→Type4→硬黑屏（485/485 零更新）；Type4 ≠ 死亡；隐藏段禁止插值；OBSERVED/LAST_KNOWN/DEAD 三态 | 文档（P2 落 filter/playback） |
+| AoI 生命周期 | Type33→Type5→观测→Type4→硬黑屏（485/485 零更新）；Type4 ≠ 死亡；隐藏段禁止插值；OBSERVED/LAST_KNOWN/DEAD 三态 | 代码+文档（P2 落地 `collect_aoi_lifecycle`） |
 | type39 | 28B=**7×f32**：f0/f1=世界系炮线 yaw/pitch（开火锚定 0.27°/0.45°）、f2-4=瞄准射线点、f5=相对偏航族（门控）、f6=车体系俯仰（0.17°）。撤销"排除于战斗分析" | 文档 |
 | battle_results 字段 | 105=deathReason(−1 存活/1 火/2 撞/3 世界)、24=lifeTime、16=spotted、119=毁灭协助、120=炮印、117=挡伤、9/10=助攻两族、1=终局HP(−2=自动击毁✓与 parser.rs 现行为互证) | 文档 |
 | Type5 尾部 loadout | 3 消耗品+3 给养（位置序 1037/1037）+9B 配件（字节=ID）；**敌方再物化亦带**（683/683）。**C4 已落地（2026-09-28）**：`collect_vehicle_equipment` 扫描 `0A 06`+6×14B+`0B 09`+9B（ID 域 100..=123 校验）；权威目录 `103=校准弹 CALIBRATED_SHELLS`、`110=强化装甲 ENHANCED_ARMOR`（wotb-item-catalog-json/equipment.json，BlitzKit 11.20 同步；注意文档正文与目录在 105/114 命名上互有分歧，与本任务无关）。`ShotReplayData.shooter/target_equipment` 注入双方搭载，viewer 自动穿深 ×1.06/1.07 与厚度 ×1.04（数据在场时禁用手动勾选框，缺失回退）。本地 5 场验证（framing 泛化后）：作者配件 5/5 场全量命中；目标配件按 AoI 物化覆盖（7/16、2/13、2/6、3/11、9/14）。**新发现 7 条描述符变体**：标准 3+3=6 条（`0A 06`），XM551 受控场作者实体实测 `0A 07`（+1 条 14B 描述符、整包 +14B，配件串本身完好）——WotbTools 文档只记载 6 条与 4 条（观察者族）两族，解析已泛化为 KK≥6 严丝合缝采纳、4 条拒收 | 代码+文档 |
-| wrapper6 = 击杀播报 | victim/killer/deathReason + field3=>50% 伤害助攻者（46/46） | P2 待落地 |
+| wrapper6 = 击杀播报 | victim/killer/deathReason + field3=>50% 伤害助攻者（46/46） | 代码（P2 已落地 `collect_kill_feed`，见 §五） |
 | 其他 | prop4=engineMode TUPLE<u8,2>（&3 移动位）；type35=会话十分秒计数低字节（非"服务器 tick"；type36=u32/10.0 时间基锚）；avatar 0x0c=method12 累计伤害反馈（eventCode/count/value）；0x11=method17 弹药余弹递减；type10 [24..36]=滤波误差（禁当速度）、[8..12] parent≠0 时位置非世界坐标；1 位置单位=1 米；容器头 magic/totalLengthMinus8/variableHeaderLength 三字段互验；payloadLen==0 合法 | 文档 |
 
 ## 三、明确驳回（WotbTools 错误 / 其自标 GUESS 禁采）

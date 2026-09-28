@@ -271,7 +271,7 @@ Export 导出为 Markdown；每轮对话结束自动落盘 `data/sessions/<会�
 
 ### Tankopedia
 
-全部 723 辆坦克的图鉴网格。支持中英文模糊搜索（`e100`、`is7`、`def…`、中文车名如
+全部 735 辆坦克的图鉴网格。支持中英文模糊搜索（`e100`、`is7`、`def…`、中文车名如
 `星际猎人`；支持子串与紧凑子序列匹配）、
 按等级/国家/类型筛选。点击卡片进入坦克详情：装甲汇总、逐板厚度（含 spaced 分类）、
 弹种数据（正式名/穿深/伤害/HE 爆炸半径）。
@@ -338,6 +338,8 @@ single         # 单回放解析
 scan           # 批量扫描回放目录
 compare        # 回放 vs API 累计对比
 combat         # 战斗事件时间线 + 射击推断（--json 含射击复现数据）
+loadout        # 单回放开局配置解析（队伍/坦克/初始血量/耐久加成/弹种表）
+dataset        # 权威回放数据集导出（metadata/settlement/diagnostics JSON）
 playback       # 全场实时回放（浏览器连续播放整场战斗）
 player         # WG API 玩家查询
 snapshot       # API 数据快照（take/diff）
@@ -354,6 +356,8 @@ fetch-models   # 全量预下载坦克 GLB 模型到 data/cache/models/（约 2G
 update-data    # 游戏版本更新后一键刷新全部数据（版本感知增量更新）
 config         # 查看/编辑配置
 usage          # Token 用量统计
+dump-methods   # 逆向工具：转储 method38/8/type=32 原始包字节
+dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 ```
 
 ## 仓库结构
@@ -367,11 +371,12 @@ usage          # Token 用量统计
 | `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
 | `src/models/`、`src/data.rs` | BlitzKit 数据模型；运行时路径层（桌面/移动私有目录重定向） |
 | `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
+| `docs/` | 项目文档：[索引](docs/index.md)、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
 | `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
 | `data/cache/` | 运行时缓存（gitignore）：`models/` 坦克 GLB、`maps/` 地图资产、`tank_images/` 封面、`terrain/` 地形高度场、`screenshots/` 截图 |
 | `data/replay_samples/` | 示例回放（仓库内置 3 个） |
-| `scripts/` | 打包脚本（`package.ps1` + `zipdir.py`） |
+| `scripts/` | 构建/打包脚本（`package.ps1` + `zipdir.py` + `build-all.ps1`；另有移动端底图导出等辅助脚本） |
 
 ## 环境要求
 

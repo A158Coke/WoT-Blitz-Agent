@@ -28,7 +28,7 @@ const tabs = [
       >{{ t.label }}</RouterLink>
     </nav>
   </header>
-  <main :class="{ 'chat-mode': route.name === 'home' }">
+  <main :class="{ 'chat-mode': route.name === 'home', 'fullbleed': route.name === 'playback' }">
     <RouterView />
   </main>
   <div id="toast" :class="{ show: toastState.visible }">{{ toastState.text }}</div>
@@ -61,4 +61,6 @@ main {
 }
 /* Agent tab 视口级三区布局：main 撑满且自身不滚动，滚动交给 #chat-log */
 main.chat-mode { max-width:none; padding:0; overflow:hidden; display:flex; }
+/* 实时回放：视口级全幅（面板/场景绝对定位） */
+main.fullbleed { max-width:none; padding:0; overflow:hidden; display:flex; }
 </style>

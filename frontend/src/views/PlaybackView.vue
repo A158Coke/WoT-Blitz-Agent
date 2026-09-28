@@ -1,0 +1,204 @@
+<script setup>
+// 实时回放面板：Vue 只负责 loader/顶栏/名册/击杀流/控制条等 UI，
+// three.js 场景内核在 scene/playbackScene.js（命令式，逐行平移自旧版）。
+// 面板状态由 scene 每 tick 写入 store；控件事件回调 scene 方法。
+import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { initPlayback, QUALITY_PRESETS } from '../scene/playbackScene.js'
+import { createPlaybackStore } from '../scene/playbackStore.js'
+
+const route = useRoute()
+const store = createPlaybackStore()
+const sceneEl = ref(null)
+let scene = null
+
+const SPEEDS = [0.5, 1, 2, 4, 8, 16]
+const CAMS = [ { k: 'free', label: '自由' }, { k: 'top', label: '俯视' }, { k: 'follow', label: '跟随' } ]
+const QUALITY_ORDER = Object.keys(QUALITY_PRESETS)
+
+function loadFile() {
+  const v = store.filePath.trim()
+  if (v) scene.loadData(v)
+}
+function onSeekInput(e) {
+  scene.seekFraction(e.target.value / 1000)
+}
+
+onMounted(() => {
+  scene = initPlayback(sceneEl.value, store)
+  // URL ?file= 直达加载（Replay Tab「实时回放」入口）
+  const f = route.query.file
+  if (f) { store.filePath = String(f); scene.loadData(String(f)) }
+})
+onBeforeUnmount(() => { if (scene) scene.destroy() })
+</script>
+
+<template>
+  <div id="pb-root">
+    <div id="scene" ref="sceneEl"></div>
+
+    <div id="topbar" class="panel">
+      <span class="map">{{ store.mapName }}</span>
+      <span class="timer">{{ store.timer }}</span>
+      <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
+    </div>
+
+    <div id="team1" class="team panel">
+      <h3>队伍 1</h3>
+      <div class="roster">
+        <div
+          v-for="p in store.roster.team1" :key="p.eid"
+          class="pl" :class="{ dead: p.dead, followed: p.followed }"
+          @click="scene.setFollow(p.eid)"
+        >
+          <span class="dot" :style="{ background: p.dot }"></span>
+          <span class="nick">{{ p.nick }}</span>
+          <span class="tank">{{ p.tank }}</span>
+          <span class="hpbar"><i :style="{ width: p.frac + '%' }"></i></span>
+        </div>
+      </div>
+    </div>
+    <div id="team2" class="team panel">
+      <h3>队伍 2</h3>
+      <div class="roster">
+        <div
+          v-for="p in store.roster.team2" :key="p.eid"
+          class="pl" :class="{ dead: p.dead, followed: p.followed }"
+          @click="scene.setFollow(p.eid)"
+        >
+          <span class="dot" :style="{ background: p.dot }"></span>
+          <span class="nick">{{ p.nick }}</span>
+          <span class="tank">{{ p.tank }}</span>
+          <span class="hpbar"><i :style="{ width: p.frac + '%' }"></i></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="killfeed">
+      <div v-for="kf in store.killfeed" :key="kf.id" class="kf">
+        <template v-if="kf.kill"><span class="k">{{ kf.killer }}</span> 击毁 {{ kf.victim }}</template>
+        <template v-else>{{ kf.text }}</template>
+      </div>
+    </div>
+    <div v-if="store.banner" id="banner" :style="{ color: store.banner.color, display: 'block' }">{{ store.banner.text }}</div>
+
+    <div id="controls" class="panel">
+      <div class="row">
+        <button id="playBtn" @click="scene.togglePlay()">{{ store.playing ? '⏸ 暂停' : '▶ 播放' }}</button>
+        <span id="speeds">
+          <button
+            v-for="s in SPEEDS" :key="s" class="speed-btn"
+            :class="{ on: store.speed === s }" @click="scene.setSpeed(s)"
+          >{{ s }}x</button>
+        </span>
+        <input
+          type="range" id="seek" min="0" max="1000" :value="store.seekFrac"
+          @pointerdown="store.seeking = true" @pointerup="store.seeking = false"
+          @blur="store.seeking = false" @input="onSeekInput"
+        >
+        <span class="time">{{ store.time.toFixed(1) }}s / {{ store.duration.toFixed(1) }}s</span>
+      </div>
+      <div class="row">
+        <span style="color:var(--dim)">镜头</span>
+        <button
+          v-for="c in CAMS" :key="c.k" :data-cam="c.k"
+          :class="{ on: store.cam === c.k }" @click="scene.setCam(c.k)"
+        >{{ c.label }}</button>
+        <span style="flex:1"></span>
+        <label class="toggle" :title="store.glbAllowed ? '' : '低画质档不加载真实车模（中/高档可用）'">
+          <input type="checkbox" :checked="store.glbOn" :disabled="!store.glbAllowed" @change="scene.setGlb($event.target.checked)"> 真实车模（GLB）
+        </label>
+        <label class="toggle">
+          <input type="checkbox" :checked="store.labelsOn" @change="scene.setLabels($event.target.checked)"> 昵称标签
+        </label>
+        <span id="qBadge" title="画质档在加载前选择：主页面回放入口、本页弹层，或 URL ?q=low|mid|high">{{ store.qualityLabel }}</span>
+      </div>
+    </div>
+
+    <div v-if="!store.hasData" id="loader">
+      <h2>全场实时回放</h2>
+      <div class="row">
+        <input type="text" v-model="store.filePath" placeholder=".wotbreplay 文件路径（或 URL 加 ?file=）" @keydown.enter="loadFile">
+        <button id="loadBtn" :disabled="store.loading" @click="loadFile">{{ store.loading ? '解析中…' : '加载' }}</button>
+      </div>
+      <div class="row" id="qSel">
+        <span style="color:var(--dim)">画质</span>
+        <button
+          v-for="k in QUALITY_ORDER" :key="k" :data-q="k"
+          :class="{ on: store.qualityKey === k }" @click="scene.setQuality(k)"
+        >{{ QUALITY_PRESETS[k].label }}</button>
+        <span style="color:var(--dim);font-size:11px">低=小地图地面（无建筑/盒子车模）· 中=烘焙底图+建筑 · 高=分层地表+建筑+抗锯齿</span>
+      </div>
+      <div class="hint">14 车全场连续回放：滤波渲染位姿 + 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流。<br>
+      数据由本机解析（AvatarFilter 渲染层 + prop2 炮塔角），加载需数秒。</div>
+      <div id="err">{{ store.err }}</div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+/* 面板配色体系自旧版 playback 页独立平移（与主应用 tokens 不同系） */
+#pb-root {
+  position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  --panel: rgba(16, 20, 26, .82); --line: #2c3542; --fg: #d8dee7; --dim: #8a94a3;
+  --ally: #3fa66a; --enemy: #c05046; --unknown: #8a94a3; --accent: #e8b23c;
+  background: #0d1117; color: var(--fg);
+  font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+#scene { position: absolute; inset: 0; }
+.panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 8px; backdrop-filter: blur(4px); }
+#topbar { top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 18px;
+          display: flex; gap: 16px; align-items: center; white-space: nowrap; }
+#topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#topbar .score { font-size: 16px; font-weight: 600; }
+#topbar .score .t1 { color: var(--ally); }
+#topbar .score .t2 { color: var(--enemy); }
+#topbar .map { color: var(--dim); }
+.team { top: 60px; width: 240px; padding: 6px; max-height: calc(100% - 190px); overflow-y: auto; }
+#team1 { left: 10px; }
+#team2 { right: 10px; }
+.team h3 { font-size: 12px; color: var(--dim); margin: 2px 4px 6px; font-weight: 500; }
+.pl { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.pl:hover { background: rgba(255, 255, 255, .06); }
+.pl.dead { opacity: .42; }
+.pl.dead .nick { text-decoration: line-through; }
+.pl.followed { outline: 1px solid var(--accent); }
+.pl .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pl .nick { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl .tank { color: var(--dim); font-size: 11px; max-width: 86px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+.pl .hpbar { width: 52px; height: 5px; background: #222a34; border-radius: 3px; flex: none; }
+.pl .hpbar i { display: block; height: 100%; border-radius: 3px; background: var(--ally); }
+#killfeed { position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+            display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+.kf { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+      padding: 3px 12px; font-size: 12px; animation: kfin .18s ease-out; white-space: nowrap; }
+.kf .k { color: var(--accent); font-weight: 600; }
+@keyframes kfin { from { opacity: 0; transform: translateY(-6px); } }
+#controls { bottom: 10px; left: 50%; transform: translateX(-50%); width: min(880px, 94%);
+            padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; }
+#controls .row { display: flex; gap: 8px; align-items: center; }
+#controls input[type=range] { flex: 1; accent-color: var(--accent); }
+#controls .time { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 96px; text-align: center; }
+#pb-root button, #pb-root select { background: #1d242e; color: var(--fg); border: 1px solid var(--line);
+                   border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+#pb-root button:hover { border-color: var(--accent); }
+#pb-root button.on { background: var(--accent); color: #14181e; border-color: var(--accent); font-weight: 600; }
+#playBtn { width: 74px; font-weight: 600; }
+#speeds .speed-btn { min-width: 38px; }
+label.toggle { display: flex; gap: 4px; align-items: center; color: var(--dim); cursor: pointer; }
+#banner { position: absolute; top: 38%; left: 50%; transform: translate(-50%, -50%);
+          font-size: 42px; font-weight: 700; padding: 14px 44px;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+#loader { position: absolute; inset: 0; background: rgba(10, 13, 17, .94); z-index: 10;
+          display: flex; flex-direction: column; gap: 14px; align-items: center;
+          justify-content: center; }
+#loader h2 { font-weight: 500; }
+#loader .row { display: flex; gap: 8px; }
+#loader input[type=text] { width: 420px; background: #141a22; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+#loader .hint { color: var(--dim); max-width: 560px; text-align: center; }
+#err { color: #e07b7b; max-width: 640px; white-space: pre-wrap; }
+#qSel button { min-width: 44px; }
+</style>

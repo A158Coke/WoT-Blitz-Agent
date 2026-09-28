@@ -155,7 +155,11 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/api/scan", post(scan_handler))
         .route("/api/replay/shots", post(replay_shots_handler))
         .route("/api/replay/upload", post(replay_upload_handler))
-        .route("/playback", get(crate::wargaming::playback_viewer::playback_page_handler))
+        // Phase 3 已切流：实时回放由 Vue SPA 接管（vue-router PlaybackView + scene/playbackScene.js）
+        .route("/playback", get(spa_index_handler))
+        // 3D 场景资产（回放 GLB 车模/部件数据；与 /armor_view 前缀版共用 handler）
+        .route("/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
+        .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
         .route("/api/playback/data", post(playback_data_handler))
         .route("/api/playback/map", get(crate::wargaming::playback_viewer::playback_map_handler))
         .route("/api/playback/terrain", get(crate::wargaming::playback_viewer::playback_terrain_handler))
@@ -198,9 +202,13 @@ pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Vue SPA 入口。被 SPA 接管的页面路由（后续阶段：/tank/{id}、/playback、
-/// /armor_view/view/{id}）改挂 spa_index_handler 即可，前端由 vue-router 分发。
+/// Vue SPA 入口。被 SPA 接管的页面路由（/tank/{id}、/playback 等）共用；
+/// standalone 服务（playback_viewer::serve_standalone）经 spa_index_response 复用。
 async fn spa_index_handler() -> Response {
+    spa_index_response()
+}
+
+pub fn spa_index_response() -> Response {
     match SpaAssets::get("index.html") {
         Some(file) => (
             [
@@ -222,6 +230,10 @@ async fn spa_index_handler() -> Response {
 /// SPA 静态资源（Vite 输出带 content hash，可长缓存）。
 /// rust-embed 的键为相对 dist/ 的完整路径，路由通配符捕获的是 /assets/ 之后一段，需补前缀。
 async fn spa_asset_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    spa_asset_response(&path)
+}
+
+pub fn spa_asset_response(path: &str) -> Response {
     let Some(file) = SpaAssets::get(&format!("assets/{path}")) else {
         return (
             axum::http::StatusCode::NOT_FOUND,

@@ -606,7 +606,7 @@ export function initPlayback(container, store) {
 
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
-  const LABEL_FRAC = 0.05;      // 标签高 ≈ 视口高度的 5%（加大文字；所有车恒定屏幕占比）
+  const LABEL_FRAC = 0.055;     // 标签高 ≈ 视口高度的 5.5%（文字加大；所有车恒定屏幕占比）
   const LABEL_ASPECT = 4;       // 画布 512×128 = 4:1
   function updateLabels() {
     const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
@@ -723,7 +723,7 @@ export function initPlayback(container, store) {
     }
     // 血量条：暗槽 + 队伍色纵向渐变填充
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
-    const bx = 56, by = 74, bw = 400, bh = 36;
+    const bx = 56, by = 68, bw = 400, bh = 44;
     rrPath(ctx, bx, by, bw, bh, 11);
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.stroke();
@@ -737,7 +737,7 @@ export function initPlayback(container, store) {
     }
     // 血量数字（条上居中，描边保证低血量时可读；恒定屏幕占比下优先保证可读性）
     const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
-    ctx.font = '700 28px "Segoe UI", sans-serif';
+    ctx.font = '700 30px "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
     ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.85)';
     ctx.strokeText(txt, 256, by + bh / 2 + 1);

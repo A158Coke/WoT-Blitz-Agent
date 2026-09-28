@@ -567,24 +567,44 @@ def compute_normals(positions, indices):
 
 
 # ---------------------------------------------------------------------------
-# 贴图解码：DDS（BC1/2/3）与 DAVA PVR3（RGBA4444）
+# 贴图解码：DDS（BC1/2/3 + DX10 扩展头 BCn）与 DAVA PVR3（RGBA4444）
 # ---------------------------------------------------------------------------
 
 DDS_FOURCC_TO_BCN = {"DXT1": 1, "DXT3": 2, "DXT5": 3}
+# DX10 扩展头：DXGI_FORMAT → BCn（含 typeless/sRGB 变体）
+DDS_DXGI_TO_BCN = {70: 1, 71: 1, 72: 1, 73: 2, 74: 2, 75: 2, 76: 3, 77: 3, 78: 3,
+                   79: 4, 80: 4, 81: 4, 82: 5, 83: 5, 84: 5,
+                   85: 6, 86: 6, 87: 6, 88: 7, 89: 7, 90: 7}
 
 
 def decode_dds(d: bytes, max_dim: int = 1024) -> Image.Image | None:
-    """DDS（DXT1/3/5）→ PIL RGBA，保留 alpha，长边超限等比缩小。"""
+    """DDS（DXT1/3/5 + DX10 扩展头 BCn）→ PIL RGBA，保留 alpha，长边超限等比缩小。"""
     if d[:4] != b"DDS ":
         return None
     height = struct.unpack_from("<I", d, 12)[0]
     width = struct.unpack_from("<I", d, 16)[0]
-    bcn = DDS_FOURCC_TO_BCN.get(d[84:88].decode(errors="replace"))
+    fourcc = d[84:88].decode(errors="replace")
+    # DAVA 写头的 DX10 变体整体比标准布局偏移 +4（fourCC 实测在 84 而非 80），
+    # 扩展头的 dxgi 码随之落在 128（标准为 124）——两处都试，落在已知区间者为准；
+    # 像素数据起点同步为 148（标准 144）。非 DX10 文件保持 fourCC@84 / 数据@128。
+    if fourcc == "DX10":
+        bcn = data_off = None
+        for dxgi_off, off in ((128, 148), (124, 144)):
+            v = struct.unpack_from("<I", d, dxgi_off)[0]
+            if v in DDS_DXGI_TO_BCN:
+                bcn, data_off = DDS_DXGI_TO_BCN[v], off
+                break
+    else:
+        bcn = DDS_FOURCC_TO_BCN.get(fourcc)
+        data_off = 128
     if bcn is None or imagecodecs is None:
         return None
-    block = 8 if bcn == 1 else 16
-    data = d[128:128 + (width // 4) * (height // 4) * block]
-    rgba = imagecodecs.bcn_decode(data, bcn, shape=(height, width, 4))
+    block = 8 if bcn in (1, 4) else 16
+    data = d[data_off:data_off + (width // 4) * (height // 4) * block]
+    try:
+        rgba = imagecodecs.bcn_decode(data, bcn, shape=(height, width, 4))
+    except Exception:
+        return None
     img = Image.frombytes("RGBA", (width, height), rgba).transpose(Image.FLIP_TOP_BOTTOM)
     if max(img.size) > max_dim:
         img.thumbnail((max_dim, max_dim), Image.LANCZOS)
@@ -954,6 +974,7 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
     material_index_by_albedo: dict[tuple, int] = {}
     stats = {"decode_fail": 0, "no_group": 0, "no_uv": 0, "uv1": 0, "no_texture": 0,
              "impostor": 0, "flatcard": 0, "tree_lod_batch": 0, "st_cards": 0,
+             "shadow_helper_skipped": 0,
              "lod_batch_dropped": renderables.get("lod_batches_dropped", 0)}
 
     # SpeedTree 实体的批次按 rbN.lodIndex 分 LOD 组（客户端按距离切组渲染）：
@@ -977,6 +998,13 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
             drop_lod.add((epath, lod))
 
     for name, transform, datasource, material_id, _path, cls, lod, sh_l0 in instances:
+        # 客户端不上屏的几何：ShadowVolume 材质（模板阴影体，只渲染进阴影贴图）
+        # 与 *_helper 编辑器辅助体（材质无任何贴图槽）——导出只会成为屏幕上
+        # 不存在的无贴图异物（如 dec_hm_stones01_shad 的阴影壳、env_nt_heinkel_helper）
+        fx = (materials.resolve(material_id).get("fxName") or "")
+        if fx.endswith("ShadowVolume.material") or "_helper" in str(name).lower():
+            stats["shadow_helper_skipped"] += 1
+            continue
         # SpeedTree 远景 billboard 交叉板：客户端由 SpeedTree 运行时按距离切换 LOD，
         # 静态场景里叶片卡片几何（同实体其他 batch）已完整呈现树形；这些
         # *planes*/*_bb_* 贴图的 batch 若一并导出会变成贯穿树冠的十字大板

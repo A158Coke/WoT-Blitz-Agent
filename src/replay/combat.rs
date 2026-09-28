@@ -39,13 +39,14 @@ pub struct ShotQuality {
     /// 同时意味着 terrain_impact 附带精确落点（撞静态物的弹无 0x1b，不适用）
     #[serde(default, skip_serializing_if = "is_false")]
     pub shell_from_terrain: bool,
-    /// 射手炮管俯仰由发射速度向量推算（prop2 缺失回退；作者路径恒 false——作者回退走 prop9）
+    /// 射手炮管俯仰由发射速度向量推算（prop2 缺失回退；作者路径恒 false——作者回退走 method36 field2）
     #[serde(skip_serializing_if = "is_false")]
     pub shooter_pitch_from_velocity: bool,
-    /// 射手炮管俯仰回退到 avatar prop9（瞄准角，非炮管物理角；仅作者路径 prop2 缺失时）
+    /// 射手炮管俯仰回退到 method36 field2（车体系炮管俯仰，WotbTools PROVEN；仅作者路径 prop2 缺失时）。
+    /// 旧回退源 avatar prop9 已废弃：其为本车炮塔相对偏航镜像（vs prop2 r=0.999993），非俯仰
     #[serde(default, skip_serializing_if = "is_false")]
-    pub shooter_pitch_from_prop9: bool,
-    /// 炮管俯仰回退（prop2 frac 不可得）："shooter"=射手回退速度向量/prop9，"target"=受击方回退车体 pitch
+    pub shooter_pitch_from_method36: bool,
+    /// 炮管俯仰回退（prop2 frac 不可得）："shooter"=射手回退速度向量/method36 field2，"target"=受击方回退车体 pitch
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gun_pitch_degraded: Vec<String>,
     /// 俯仰采样流陈旧（prop2 断流 >2s，AoI 边界/补发簇；frac 恒定本身是炮管定点/贴
@@ -503,7 +504,7 @@ pub struct ShotReplayData {
     /// 射手炮塔绝对朝向（弧度）= sub2_rel + shooter_hullYaw，用于精确入射方位角（替代位置差推算）。
     pub shooter_turret_yaw: f32,
     /// 射手炮管俯仰（弧度，炮塔系，正=仰角）；来源与受击方同源 = prop2 frac 解码（按射手车型极限）。
-    /// 回退：作者 = avatar prop9（瞄准角，狙击模式下≈炮管角，quality.shooter_pitch_from_prop9）；
+    /// 回退：作者 = method36 field2 车体系炮管俯仰（quality.shooter_pitch_from_method36）；
     /// 他人 = 发射速度向量反解（quality.shooter_pitch_from_velocity）。
     pub shooter_gun_pitch: f32,
     /// 弹着点相对【命中通知状态目标位置】的偏移 [x, y, z]（米）；来源 type=8 method20（shotId 配对）。
@@ -518,10 +519,11 @@ pub struct ShotReplayData {
     /// 发射速度向量 [vx, vy, vz]（m/s）；method29 launchVelocity 服务器权威弹道方向（含俯仰），
     /// 与 launchPoint→终点连线夹角实测 <0.1°。
     pub launch_velocity: [f32; 3],
-    /// 命中结果位图（u32 = flags16 | headerHi16<<16；wotinspector hit_flags 同源）。已实证位：
-    /// 0x0001 直接击杀 / 0x0008 跳弹 / 0x0010 材料击穿 / 0x0020 未击穿（材料止）/ 0x0040 间隙层被穿透 /
-    /// 0x0080 间隙层未穿 / 0x0100 内部模块被击穿 / 0x0400 履带受损 / 0x0800 火炮受损 / 0x1000 HE 爆炸伤害分支；
-    /// 0x20000 = headerHi 基础位（wotinspector 样本所有非零 hit_flags 均含此位，本地 4 个回放 headerHi 恒 0x0002 ✓）。
+    /// 命中结果位图（u32 = flags16 | headerHi16<<16；wotinspector hit_flags 同源）。
+    /// 全 16 位命名见 [`hit_flags_mod`]（WotbTools 全位 PROVEN）：0x0001 直接击杀 / 0x0002 目标已死 /
+    /// 0x0004 起火 / 0x0008 跳弹 / 0x0010 材料击穿 / 0x0020 未击穿 / 0x0040/0x0080 间隙层穿与未穿 /
+    /// 0x0100/0x0200 模块穿与未穿 / 0x0400 履带 / 0x0800 火炮 / 0x1000-0x8000 爆炸分支。
+    /// headerHi 保留 raw（多数 0x0002=录像者关联位；Maus 边界 0x0012/0x0028，禁当命中位解码）。
     pub hit_flags: u32,
     /// 模块受损位掩码——wotinspector crit_modules 同源；bit = componentToken - 31（token 31..43 → bit 0..12；实测 token33 受损 → WI bit2=0x04 ✓）。
     pub crit_modules: u32,
@@ -576,8 +578,10 @@ pub struct ShotReplayData {
     pub shooter_tick_samples: Vec<TickSample>,
     /// 地形命中数据（Avatar method 0x1b；全局广播含所有玩家脱靶弹，shotId 精确配对；
     /// 仅当该发未命中任何坦克且撞到地形时存在，约覆盖 2/3 地形弹）。
-    /// args(34) = [shotId u32][shell_global_id u32][material u8][impactPoint 3×f32][segmentStartPoint 3×f32][tail u8]。
-    /// impact_point == method20 弹道终点（4 回放逐发一致）；segment_start = 弹道末段起点（直线弹 = method29 发射点，误差 0.000m；其余为弹跳点）；
+    /// args(34) = [shotId u32][shell_global_id u32][material u8][impactPoint 3×f32][terminalDir 3×f32][tail u8]。
+    /// impact_point == method20 弹道终点（本地 84/92 复核一致）；terminal_dir = 弹道末段速度方向向量
+    /// （P1-B1 裁决：与 method29 发射速度 cos 中位 1.000000、79/79>0.99，norm 散布 0.23..249——
+    /// 旧"segmentStartPoint 位置点/弹跳点"定名已被证伪：|seg−launch|<0.5m 为 0/79）；
     /// material 落点材质类（观测 0/1/2/4/5，命名未定）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terrain_impact: Option<TerrainImpactData>,
@@ -585,6 +589,13 @@ pub struct ShotReplayData {
     /// state_before/after 为未定名状态常量（非扩散度，见 ShooterAimData 注）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shooter_aim: Option<ShooterAimData>,
+    /// 射手车辆配件（Type5 物化 9 字节选择串；calib shells / enhanced armor 供查看器
+    /// 自动穿深/厚度系数，替代手动勾选）。物化缺失（AoI 未覆盖）时 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shooter_equipment: Option<VehicleEquipment>,
+    /// 受击方车辆配件（脱靶弹无目标时 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_equipment: Option<VehicleEquipment>,
     /// 兼容旧字段：= type32_turret_yaw（曾误标为"来袭方向"，实为受击者炮塔角）。
     pub incoming_yaw: f32,
     /// 兼容旧字段：= target_gun_pitch（曾误标为"来袭俯角"，实为受击者炮管俯仰）。
@@ -617,7 +628,7 @@ pub struct ShotReplayData {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shooter_turret_timeline: Vec<(f32, f32)>,
     /// 射手炮管俯仰时间线（prop2 frac 解码，开火 −2.0~+2.0s，[dt, 弧度，正=仰角]）；
-    /// 无车型极限锚定时作者路径回退 prop9（瞄准角，弧度）
+    /// 无车型极限锚定时作者路径回退 method36 field2（车体系炮管俯仰，弧度）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shooter_gun_timeline: Vec<(f32, f32)>,
     /// 受击方炮管俯仰时间线（prop2 frac 解码，命中 −3.0~+2.0s，[dt, 弧度，正=仰角]）——
@@ -633,8 +644,9 @@ pub struct TerrainImpactData {
     pub material: u8,
     /// 精确落点（回放世界系，米；== method20 弹道终点）
     pub impact_point: [f32; 3],
-    /// 弹道末段起点（直线弹 = 发射点；弹跳弹 = 弹跳点）
-    pub segment_start: [f32; 3],
+    /// 弹道末段速度方向向量（世界系；与发射速度同向，norm 非单位长度——WotbTools
+    /// "PROVEN physical direction"，P1-B1 本地裁决 79/79 复现。旧"segment_start 位置点"已证伪）
+    pub terminal_dir: [f32; 3],
 }
 
 /// Avatar method36 (0x24) 开火时刻瞄准快照（可选，无快照则 None）；args = [payloadLen u8][protobuf]。
@@ -647,6 +659,16 @@ pub struct ShooterAimData {
     /// 成对快照 field6.field1（射击后；实测恒 ≈0.906；无成对快照时 None）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_after: Option<f64>,
+    /// root.field2 = 炮管俯仰（车体系 rad；WotbTools PROVEN：与 type39 f6 中位误差 0.0018 rad）——
+    /// 作者俯仰权威来源（prop2 锚定缺失时的回退也走它）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gun_pitch: Option<f64>,
+    /// type39 f0 世界系炮线 yaw（rad；本地 P2-4 验证 yaw 中位误差 0.10~0.14°）——viewer 画真实 3D 炮线
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub world_gun_yaw: Option<f32>,
+    /// type39 f1 世界系炮线 pitch（rad，取负还原；开火锚定 0.45°）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub world_gun_pitch: Option<f32>,
 }
 
 /// protobuf 最小遍历：varint / fixed64 / 定长子消息，返回 (field_no, wire_type, 内容偏移, 内容长)；仅用于 method36 快照，格式不合法返回 None（fail-soft 调用方忽略）。
@@ -683,28 +705,57 @@ fn proto_fields(b: &[u8]) -> Option<Vec<(u32, u8, usize, usize)>> {
     Some(out)
 }
 
-/// 解析 method36 args：返回 (field1 炮塔相对偏航, field6.field1 扩散度)。
-fn parse_method36(args: &[u8]) -> (Option<f64>, Option<f64>) {
-    if args.is_empty() { return (None, None); }
+/// method36 (0x24) 单快照解码结果（WotbTools PROVEN 全字段，11.19 China；根标量均为 fixed64）。
+#[derive(Debug, Clone, Default)]
+pub struct AimSnapshot {
+    /// root.field1 = 炮塔/炮管相对车体偏航（rad；与 prop2 同语义 f64 全精度）
+    pub turret_rel_yaw: Option<f64>,
+    /// root.field2 = 炮管俯仰（车体系 rad；与 type39 f6 中位误差 0.0018 rad，p90 0.01224）
+    pub gun_pitch: Option<f64>,
+    /// root.field3 = 水平炮塔最大角速度（rad/s 车型常量，如 WZ-120 受控 0.8792）
+    pub yaw_speed_limit: Option<f64>,
+    /// root.field4 = 垂直炮管最大角速度（rad/s 车型常量；火炮受损 ×0.675，修复精确复原）
+    pub pitch_speed_limit: Option<f64>,
+    /// root.field5 = 瞄准时间物理标量（Reticle Calibration 边界恰 ×0.70）
+    pub aim_time: Option<f64>,
+    /// field6.field1 = 动态扩散/开花 bloom（开火后必正跳 326/326；火炮受损 ×2）
+    pub bloom: Option<f64>,
+}
+
+/// 解析 method36 args → [`AimSnapshot`]。初始化变体（payloadLen=73）缺 root.field1/field2，
+/// 相应字段为 None；格式不合法返回全 None（fail-soft，调用方忽略）。
+fn parse_method36(args: &[u8]) -> AimSnapshot {
+    let mut out = AimSnapshot::default();
+    if args.is_empty() { return out; }
     // args[0] = payload 长度前缀（= args.len()-1），容错取 min
     let end = (args[0] as usize + 1).min(args.len());
     let payload = &args[1..end];
     let fields = match proto_fields(payload) {
         Some(f) => f,
-        None => return (None, None),
+        None => return out,
     };
     let fixed64 = |b: &[u8], f: &(u32, u8, usize, usize)| {
         f64::from_le_bytes(b[f.2..f.2 + 8].try_into().unwrap())
     };
-    let f1 = fields.iter().find(|f| f.0 == 1 && f.1 == 1).map(|f| fixed64(payload, f));
-    let dispersion = fields.iter().find(|f| f.0 == 6 && f.1 == 2).and_then(|f| {
+    for f in &fields {
+        if f.1 != 1 { continue; }
+        match f.0 {
+            1 => out.turret_rel_yaw = Some(fixed64(payload, f)),
+            2 => out.gun_pitch = Some(fixed64(payload, f)),
+            3 => out.yaw_speed_limit = Some(fixed64(payload, f)),
+            4 => out.pitch_speed_limit = Some(fixed64(payload, f)),
+            5 => out.aim_time = Some(fixed64(payload, f)),
+            _ => {}
+        }
+    }
+    out.bloom = fields.iter().find(|f| f.0 == 6 && f.1 == 2).and_then(|f| {
         let sub = &payload[f.2..f.2 + f.3];
         proto_fields(sub)?
             .iter()
             .find(|s| s.0 == 1 && s.1 == 1)
             .map(|s| fixed64(sub, s))
     });
-    (f1, dispersion)
+    out
 }
 
 /// 收集每实体的 type=7 同钟多属性刷新簇时钟（AoI 补发/通道切换签名，逆向文档 6.x：
@@ -908,6 +959,194 @@ pub fn collect_arena_updates(packets: &[(u32, f32, &[u8])]) -> Vec<ArenaUpdate> 
             name: arena_subtype_name(subtype),
             payload_hex: p[14..12 + alen].iter().map(|x| format!("{:02x}", x)).collect(),
         });
+    }
+    out
+}
+
+/// AoI 实体在场生命周期（WotbTools visibility-lifecycle PROVEN）：
+/// Type33(预备)→~0.4s→Type5(物化)=进入观察集；Type4=离开（硬黑屏，485/485 隐藏段零更新）。
+/// Type4 ≠ 死亡（503/503 敌方、485/485 同 eid 重入）；死亡面 = prop1/血量终态（death_events）。
+/// 消费：OBSERVED（段内可精确播）/ LAST_KNOWN（Type4 前最后 type10，中位 0.101s）/ 隐藏段禁插值。
+/// playback 的 coverage（采样间隙 >2s 断开）已承担渲染侧插值防护；本收集器提供协议精确边界
+/// （0.094~2s 的短隐藏段 coverage 不断，协议面可收紧——P3/前端消费）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AoiPresence {
+    pub eid: u32,
+    /// 进入观察集（Type5 物化时刻）
+    pub t_in: f32,
+    /// 离开（Type4 时刻）；None = 战斗结束仍在场
+    pub t_out: Option<f32>,
+}
+
+/// 收集 AoI 在场区段：Type33 与 Type5 一一配对（3,869:3,869，间隔 0.046~1.207s）取 Type5
+/// 时刻为进入；Type4 关闭当前段。跨场段数 0..N（敌方重入常见，485/503 重入）。
+pub fn collect_aoi_lifecycle(packets: &[(u32, f32, &[u8])]) -> Vec<AoiPresence> {
+    // 文件序状态机：Type33 记 pending（按 eid，取首个）；Type5 消费 pending 开段；Type4 关段
+    let mut pending33: std::collections::HashSet<u32> = Default::default();
+    let mut open: std::collections::HashMap<u32, f32> = Default::default();
+    let mut out: Vec<AoiPresence> = Vec::new();
+    for (ptype, clock, p) in packets {
+        if p.len() < 4 { continue; }   // Type17 等零长/短包无 eid 头（payloadLen==0 合法）
+        let eid = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+        match *ptype {
+            33 => { pending33.insert(eid); }
+            5 => {
+                if pending33.remove(&eid) && !open.contains_key(&eid) {
+                    open.insert(eid, *clock);
+                }
+            }
+            4 => {
+                if let Some(t_in) = open.remove(&eid) {
+                    out.push(AoiPresence { eid, t_in, t_out: Some(*clock) });
+                }
+                pending33.remove(&eid);
+            }
+            _ => {}
+        }
+    }
+    for (eid, t_in) in open {
+        out.push(AoiPresence { eid, t_in, t_out: None });
+    }
+    out.sort_by(|a, b| a.eid.cmp(&b.eid).then(a.t_in.partial_cmp(&b.t_in).unwrap()));
+    out
+}
+
+/// type=39 作者瞄准/炮线帧（len=28，**7×f32**；WotbTools PROVEN，本地 B 组交叉验证闭合）：
+/// f0=世界系瞄准/炮线 yaw（度，开火锚定 0.27°）、f1=世界系 pitch（度，取负存储，0.45°）、
+/// f2..4=世界系瞄准射线一点、f5=相对炮塔偏航族（PARTIAL——死亡/观战后失效，禁当炮塔角）、
+/// f6=车体系炮管俯仰（rad，开火时刻 0.17°；仰角上限呈车型离散档）。
+/// 门控：作者死亡/观战切换后 f0/f1 旋转、f5 冻结——消费须限作者存活期（death_events 门）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Type39Frame {
+    pub clock: f32,
+    /// f0 世界系炮线 yaw（rad，由度转换）
+    pub gun_yaw: f32,
+    /// f1 世界系炮线 pitch（rad，取负还原；正=仰角约定与项目一致需按 −f1）
+    pub gun_pitch_world: f32,
+    /// f2..4 世界系瞄准射线一点
+    pub ray_point: [f32; 3],
+    /// f5 相对偏航族（PARTIAL，原样透传）
+    pub f5_rel_yaw: f32,
+    /// f6 车体系炮管俯仰（rad）
+    pub gun_pitch_local: f32,
+}
+
+/// method38 (0x26) resultFlags 位常量（WotbTools 全 16 位 PROVEN，11.19 China；样本复现）。
+/// 高 16 位 = headerHi（多数 0x0002=录像者/直击关联位；Maus 批量边界见 0x0012/0x0028，
+/// 保留 raw 禁当命中位解码）。位 0x0001/0x0004 潜在例外：撞击死（reason=2）与延迟火烧死不置 0x0001。
+pub mod hit_flags_mod {
+    pub const DIRECT_KILL: u32 = 0x0001;
+    pub const TARGET_ALREADY_DEAD: u32 = 0x0002;
+    pub const FIRE_STARTED: u32 = 0x0004;
+    pub const RICOCHET: u32 = 0x0008;
+    pub const MATERIAL_PENETRATION: u32 = 0x0010;
+    pub const NON_PENETRATION: u32 = 0x0020;
+    pub const SPACED_PIERCED: u32 = 0x0040;
+    pub const SPACED_NOT_PIERCED: u32 = 0x0080;
+    pub const DEVICE_PIERCED: u32 = 0x0100;
+    pub const DEVICE_NOT_PIERCED: u32 = 0x0200;
+    pub const TRACK_DAMAGED: u32 = 0x0400;
+    pub const GUN_DAMAGED: u32 = 0x0800;
+    pub const EXPLOSION_MATERIAL: u32 = 0x1000;
+    pub const EXPLOSION_SPACED: u32 = 0x2000;
+    pub const EXPLOSION_DEVICE_INVOLVED: u32 = 0x4000;
+    pub const EXPLOSION_DEVICE_DAMAGED: u32 = 0x8000;
+    /// 穿透族谓词（WotbTools PROVEN：对结算 penetrations 269/270，r≈0.9924；版本门控，勿命名官方掩码）
+    pub const PENETRATION_FAMILY: u32 = MATERIAL_PENETRATION | DEVICE_PIERCED | EXPLOSION_MATERIAL;
+}
+
+/// 收集 type=39 帧流（作者 avatar 观战相机域；28B=7×f32）。
+pub fn collect_type39_frames(packets: &[(u32, f32, &[u8])]) -> Vec<Type39Frame> {
+    let mut out = Vec::new();
+    for (_t, clock, p) in packets {
+        if *_t != 39 || p.len() < 28 { continue; }
+        let f = |o: usize| f32::from_le_bytes([p[o], p[o + 1], p[o + 2], p[o + 3]]);
+        out.push(Type39Frame {
+            clock: *clock,
+            gun_yaw: f(0).to_radians(),
+            gun_pitch_world: -f(4).to_radians(),
+            ray_point: [f(8), f(12), f(16)],
+            f5_rel_yaw: f(20),
+            gun_pitch_local: f(24),
+        });
+    }
+    out
+}
+
+/// VEHICLE_KILLED（subtype 6，WotbTools wrapper6）击杀播报事件。
+/// 字段语义（WotbTools PROVEN，283 例 post-start 闭合）：
+/// field1=victim 实体、field2=killer 实体、field3=>50% 先前伤害助攻者（官方 >50% 通知规则，
+/// 46/46 = 最高伤害非击杀源；阈值版本门控：8.1=51% / 9.3+=50%）、field4=可选非默认死亡原因
+/// （1=火 2=撞 3=世界 5=溺水，缺省=普通击毁）。field5 稀疏未解，忽略。
+/// 注意：开局初始化段也有 wrapper6 记录（非真实击杀），消费方须用时序门控。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KillFeedEvent {
+    pub clock: f32,
+    pub victim_eid: u32,
+    pub killer_eid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assister_eid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub death_reason: Option<u32>,
+}
+
+/// protobuf 最小 varint 读取（u64 实体 ID 安全），返回 None = 流不合法。
+fn pb_varint(b: &[u8], o: &mut usize) -> Option<u64> {
+    let mut v = 0u64;
+    let mut s = 0u32;
+    loop {
+        let x = *b.get(*o)?;
+        *o += 1;
+        v |= ((x & 0x7f) as u64) << s;
+        if x & 0x80 == 0 { return Some(v); }
+        s += 7;
+        if s > 63 { return None; }
+    }
+}
+
+/// 收集击杀播报时间线（subtype 6；全实体广播经作者 Avatar）。
+/// 载荷结构（本地 dump + WotbTools wrapper6→root field6 双证）：protobuf **root field6
+/// (length-delimited)** 包裹击杀记录，内层 field1=victim / field2=killer / field3=助攻 /
+/// field4=死因（varint）。
+/// 开局初始化记录（period 3 之前）照样收录，消费方用 clock 门控（战斗开始锚点见 wrapper3）。
+pub fn collect_kill_feed(packets: &[(u32, f32, &[u8])]) -> Vec<KillFeedEvent> {
+    let mut out = Vec::new();
+    for u in collect_arena_updates(packets) {
+        if u.subtype != 6 { continue; }
+        let Some(bytes) = decode_hex(&u.payload_hex) else { continue };
+        let Some(record) = find_field(&bytes, 6) else { continue };
+        let mut o = 0usize;
+        let (mut victim, mut killer) = (0u32, 0u32);
+        let (mut assister, mut reason) = (None, None);
+        let mut ok = true;
+        while o < record.len() {
+            let Some(key) = pb_varint(&record, &mut o) else { ok = false; break };
+            let (field, wt) = (key >> 3, key & 7);
+            if wt == 0 {
+                let Some(v) = pb_varint(&record, &mut o) else { ok = false; break };
+                match field {
+                    1 => victim = v as u32,
+                    2 => killer = v as u32,
+                    3 => assister = Some(v as u32),
+                    4 => reason = Some(v as u32),
+                    _ => {}
+                }
+            } else {
+                let skip = match wt {
+                    2 => pb_varint(&record, &mut o).map(|l| l as usize),
+                    1 => Some(8),
+                    5 => Some(4),
+                    _ => None,
+                };
+                match skip {
+                    Some(n) if o + n <= record.len() => o += n,
+                    _ => { ok = false; break }
+                }
+            }
+        }
+        if ok && victim != 0 {
+            out.push(KillFeedEvent { clock: u.clock, victim_eid: victim, killer_eid: killer, assister_eid: assister, death_reason: reason });
+        }
     }
     out
 }
@@ -1176,7 +1415,7 @@ fn render_timeline(
     out
 }
 
-/// 标量时间线降采样：[base+from, base+to] 内的采样 → (dt, 值)（prop2 炮塔角 / prop9 俯仰用）
+/// 标量时间线降采样：[base+from, base+to] 内的采样 → (dt, 值)（prop2 炮塔角 / method36 field2 俯仰用）
 fn timeline_1f(
     series: Option<&Vec<(f32, f32)>>,
     base: f32,
@@ -1320,9 +1559,20 @@ fn truncate_implausible_prefix(samples: &mut Vec<TickSample>) {
     }
 }
 
-/// Vehicle method1（type=8 method=0x01）血量/来源/原因事件（WotbTools AFFIRMED）：
+/// 血量终态哨兵族（WotbTools PROVEN：终态 prop3/method1 分布 0:-223/-1:68/-2:1/-3:59，
+/// 即 {0x0000, 0xFFFF, 0xFFFE, 0xFFFD} 四值；受控溺水实验证明死亡时 HP 可为正——
+/// hp<=0 是充分非必要条件，cause=5 溺死不经血量归零）。归一化后 DmgLoss.hp_cur==0
+/// 覆盖全族，击杀判定与降幅推导对哨兵终态同样成立。
+pub fn hp_terminal_normalized(hp: u16) -> u16 {
+    if (hp as i16) < 0 { 0 } else { hp }
+}
+
+/// method1 (0x01) 血量/来源/原因事件（WotbTools AFFIRMED）：
 /// envelope entityId = 受害者；args 7B = [currentHpRaw u16][sourceEntity u32][causeFlag u8]；
-/// cause：0=炮弹直击 1=火焰 2=撞击 3=世界/环境 5=溺水。攻击者+原因+受害者三键确定性归属，无时间窗猜测。
+/// currentHpRaw = 事件后的绝对血量快照（非增量），终态哨兵族见 [`hp_terminal_normalized`]；
+/// cause：0=炮弹直击 1=火焰 2=撞击 3=世界/环境 5=溺水（4=未观测，禁按序数推断）；
+/// source 按 cause 分域 PROVEN：cause 0/1/2 = 攻击者/点燃者/碰撞对方（≠victim），
+/// cause 3/5 = 自身（==victim）。
 #[derive(Debug, Clone)]
 pub struct HpEvent {
     pub clock: f32,
@@ -1346,6 +1596,78 @@ pub fn collect_initial_hp(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, (f32, u
         out.entry(eid).or_insert((*clock, u16::from_le_bytes([p[51], p[52]])));
     }
     out
+}
+
+/// Type5 物化尾部 loadout 的配件 ID 常量（WotbTools item-catalog，BlitzKit 生产定义同步）：
+/// 103 = CALIBRATED_SHELLS 校准弹（AP/APCR 穿深 +6%、其他 +7%）、110 = ENHANCED_ARMOR 强化装甲（厚度 +4%）。
+pub const EQ_CALIBRATED_SHELLS: u8 = 103;
+pub const EQ_ENHANCED_ARMOR: u8 = 110;
+
+/// 射击一方车辆的配件搭载（Type5 物化 `0B 09` 九字节选择串解码）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VehicleEquipment {
+    /// 携带校准弹（ID 103）
+    pub calibrated_shells: bool,
+    /// 携带强化装甲（ID 110）
+    pub enhanced_armor: bool,
+    /// 九槽原始配件 ID（诊断/未来扩展；未知 ID 不猜名）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub raw: Vec<u8>,
+}
+
+impl VehicleEquipment {
+    fn from_ids(eq: &[u8; 9]) -> Self {
+        VehicleEquipment {
+            calibrated_shells: eq.contains(&EQ_CALIBRATED_SHELLS),
+            enhanced_armor: eq.contains(&EQ_ENHANCED_ARMOR),
+            raw: eq.to_vec(),
+        }
+    }
+}
+
+/// 每实体 Type5 物化 → 9 字节配件选择（首条有效物化为准；配件开局固定，敌方再物化
+/// Type4→Type33→Type5 重复携带，WotbTools 683/683）。
+/// 扫描契约（Java VehicleBattleLoadout 同款）：offset 可变，搜 `0A 06` + 6×14B 描述符 +
+/// `0B 09` + 9B；字节全部落在已知配件 ID 域 100..=123 才采纳（framing 误配不猜名）。
+pub fn collect_vehicle_equipment(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, [u8; 9]> {
+    let mut out: HashMap<u32, [u8; 9]> = HashMap::new();
+    for (ptype, _, p) in packets {
+        if *ptype != 5 { continue; }
+        let eid = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+        if out.contains_key(&eid) { continue; }
+        if let Some(eq) = scan_loadout_equipment(p) {
+            out.insert(eid, eq);
+        }
+    }
+    out
+}
+
+/// 在单条 Type5 载荷内扫描 loadout 块：先定位 `0B 09` + 9B 配件串（字节域 100..=123 校验），
+/// 再回找计数标记 `0A KK`——要求 `0A KK` + KK×14B 描述符 + `0B 09` 严丝合缝且 KK≥6
+/// （6 条=标准 3 消耗品+3 给养；7 条=受控场变体，XM551 场作者实体实测多 1 条 14B 描述符、
+/// 配件串本身完好；4 条=观察者族，WotbTools 警告勿当战斗者搭载，拒收）。
+fn scan_loadout_equipment(p: &[u8]) -> Option<[u8; 9]> {
+    let n = p.len();
+    let mut pos = 0usize;
+    while pos + 11 <= n {
+        if p[pos] == 0x0B && p[pos + 1] == 0x09 {
+            let eq = &p[pos + 2..pos + 11];
+            if eq.iter().all(|&b| (100..=123).contains(&b)) {
+                for k in 6..=10usize {
+                    if pos >= 2 + k * 14 {
+                        let start = pos - 2 - k * 14;
+                        if p[start] == 0x0A && p[start + 1] as usize == k {
+                            let mut arr = [0u8; 9];
+                            arr.copy_from_slice(eq);
+                            return Some(arr);
+                        }
+                    }
+                }
+            }
+        }
+        pos += 1;
+    }
+    None
 }
 
 /// 解析全部 method1 血量事件（全实体、全来源），按时钟排序。
@@ -1411,8 +1733,9 @@ struct DirectHit8 {
 }
 
 /// type=32 来袭炮弹警告/命中通知（eid = 受击者，AoI 广播含他人命中）。
-/// len=26 (method 0x11): [eid u32][01][method u32][u16@9][flag@11][hash6@12..18][segment u64@18..26]
-/// len=27 (method 0x12): [eid u32][01][method u32][u16@9][flag@11][01@12][hash6@13..19][segment u64@19..27]
+/// 帧结构（WotbTools 16,850/16,850）：[eid u32][flag u8][bodyLength u32][body]，bodyLength == payloadLen − 9。
+/// len=26 (bodyLen=17): [eid u32][01][bodyLen u32][u16@9][flag@11][hash6@12..18][segment u64@18..26]
+/// len=27 (bodyLen=18): [eid u32][01][bodyLen u32][u16@9][flag@11][01@12][hash6@13..19][segment u64@19..27]
 /// hash6 6B = [shell u16][来向 yaw u16][抵达 pitch u16]（原始解码恢复，2026-09 复核）：
 ///   yaw = (u16−32768)/32768×π = 受击者指向射手的方位角；pitch = (u16−32768)/32768×(π/2)
 ///   = 抵达垂直角。原始交叉验证（ea2f8c6）：yaw shot1 +66.9° vs 位置推算 +68.8° ✓；
@@ -1548,8 +1871,9 @@ fn collect_warnings32(packets: &[(u32, f32, &[u8])]) -> Vec<ArenaWarning32> {
     for (t, clock, p) in packets {
         if *t != 32 || p.len() < 26 { continue; }
         if p[4] != 0x01 { continue; }
-        let method = u32::from_le_bytes([p[5], p[6], p[7], p[8]]);
-        if method != 0x11 && method != 0x12 { continue; }
+        // p[5..9] = bodyLength（WotbTools PROVEN：恒 == payloadLen−9，作帧完整性断言）
+        let body_len = u32::from_le_bytes([p[5], p[6], p[7], p[8]]) as usize;
+        if body_len + 9 != p.len() { continue; }
         // 尾段 6B = [shell u16][来向 yaw u16][抵达 pitch u16]（原始解码恢复）：
         // off = len≥27 ? 13 : 12（27B 在 hash6 前多一个 01 字节）；yaw@+2 pitch@+4
         let off = if p.len() >= 27 { 13 } else { 12 };
@@ -1634,7 +1958,7 @@ fn derive_dmg_losses(
                 if evs[j].hp != hp { conflict = true; }
                 j += 1;
             }
-            if !conflict { samples.push((t, hp, evs[i].source, evs[i].cause)); }
+            if !conflict { samples.push((t, hp_terminal_normalized(hp), evs[i].source, evs[i].cause)); }
             i = j;
         }
         for w in 1..samples.len() {
@@ -1951,7 +2275,7 @@ pub fn extract_shot_replays(
 
 /// [`extract_shot_replays`] 的完整形态：`pitch_limits` = 昵称→(俯角°,仰角°) 锚定表
 /// （[`gun_pitch_limits_from`] 构建）。双方炮管俯仰主来源 = prop2 frac 比例解码；
-/// 无锚定表时回退旧路径（作者 prop9 瞄准角 / 他人速度向量 / 受击方车体 pitch）并打质量标记。
+/// 无锚定表时回退旧路径（作者 method36 field2 / 他人速度向量 / 受击方车体 pitch）并打质量标记。
 pub fn extract_shot_replays_with_limits(
     packets: &[(u32, f32, &[u8])],
     author_player_eid: u32,
@@ -1974,8 +2298,11 @@ pub fn extract_shot_replays_with_limits(
     // ③ 收集 method38 命中结果（Avatar 方法 = 仅作者自己的射击反馈）
     //    args 布局（WotbTools PROVEN + 4 回放实测）：[victimVehicleId u32][resultFlags16 u16]
     //    [headerHi16 u16][resultCount u8][resultCount × (componentToken u8 + rawState u8)]
-    //    [modifierCount u8][modifierCount × modifierId u32]；rawState：0=无变化 1=受损(crit) 2=摧毁；
-    //    组件号 31=引擎 32=弹药架 33=油箱 34/35=右/左履带 36=火炮 38=观察装置（WotbTools 枚举）
+    //    [modifierCount u8][modifierCount × modifierId u32]；
+    //    rawState（WotbTools PROVEN 修正）：1=受损或乘员受伤 2=critical/禁用族（"摧毁"过强，是否=摧毁 PARTIAL）
+    //    0=命中/参与但无新持久负面（"无变化"过强）；modifierId 加性叠加可并存 [1,2]；
+    //    组件号 31=引擎 32=弹药架 33=油箱 34/35=右/左履带 36=火炮 37=炮塔旋转机 38=观察装置
+    //    39=车长 40=驾驶员 41=炮手 42=UNKNOWN 禁猜 43=装填手（WotbTools 枚举）
     struct HitFeedback {
         t: f32,
         victim: u32,
@@ -2068,40 +2395,20 @@ pub fn extract_shot_replays_with_limits(
     // ④' type=7 刷新簇时钟（AoI 补发/通道切换签名，逆向文档 6.x）——tick 采样窗口截断依据
     let refresh_clusters = collect_refresh_clusters(packets);
 
-    // ⑤ avatar 实体（pos 全零的 type=10）——射手炮管俯仰（prop9）的宿主
-    let avatar_eid = packets.iter()
-        .filter(|(t, _, p)| *t == 10 && p.len() >= 48)
-        .find(|(_, _, p)| {
-            let pos = [
-                f32::from_le_bytes([p[12], p[13], p[14], p[15]]),
-                f32::from_le_bytes([p[16], p[17], p[18], p[19]]),
-                f32::from_le_bytes([p[20], p[21], p[22], p[23]])];
-            pos == [0.0, 0.0, 0.0]
-        })
-        .map(|(_, _, p)| u32::from_le_bytes([p[0], p[1], p[2], p[3]]));
-    let avatar_eid = match avatar_eid {
-        Some(e) => e,
-        None => anyhow::bail!("未找到 avatar 实体（pos 全零的 type=10 缺失），无法解析射手炮管俯仰"),
-    };
+    // （旧 ⑤ avatar 实体探测已移除：其唯一用途是 avatar prop9"俯仰"回退，而 WotbTools 证明
+    // avatar prop9 = 本车炮塔相对偏航镜像（vs prop2 r=0.999993），非俯仰——作者俯仰回退改走
+    // method36 field2，见 aim_snapshots / aim_pitch_series。）
 
     // ⑤'' type=35 服务器竞技场 tick 计数器（u8 递增 @10Hz，自然回绕）；开火 tick 判定 100/100 实测对齐。
     let tick_timeline = collect_tick_timeline(packets);
 
-    // ⑥ per-entity 索引（循环前一次预建，替代逐发全量扫包）：type=10 状态采样 / type=7 prop2 炮塔偏航 / avatar prop9 炮管俯仰。
+    // ⑥ per-entity 索引（循环前一次预建，替代逐发全量扫包）：type=10 状态采样 / type=7 prop2 炮塔偏航。
     // st10 按 clock 排序以保持原 collect_entity_st10 语义（锚点选择依赖时序）。
     let (mut st10, prop2) = build_entity_indexes(packets);
     for v in st10.values_mut() {
         v.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap());
     }
-    let prop9: Vec<(f32, f32)> = packets.iter()   // avatar (clock, 炮管俯仰 rad)
-        .filter(|(t, _, p)| {
-            *t == 7 && p.len() >= 16
-                && u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == avatar_eid
-                && u32::from_le_bytes([p[4], p[5], p[6], p[7]]) == 9
-        })
-        .map(|(_, clock, p)| (*clock, f32::from_le_bytes([p[12], p[13], p[14], p[15]]).to_radians()))
-        .collect();
-    // 射手（作者）俯仰解码锚定：昵称 → (俯角°, 仰角°)；无锚定时俯仰回退 prop9（瞄准角）
+    // 射手（作者）俯仰解码锚定：昵称 → (俯角°, 仰角°)；无锚定时俯仰回退 method36 field2
     let author_name = names.get(&author_player_eid).cloned().unwrap_or_default();
     let shooter_limits = pitch_limits.get(&author_name);
 
@@ -2139,32 +2446,45 @@ pub fn extract_shot_replays_with_limits(
         if args_len < 34 || 12 + args_len > p.len() { continue; }
         let a = &p[12..12 + args_len];
         let f = |o: usize| f32::from_le_bytes([a[o], a[o + 1], a[o + 2], a[o + 3]]);
+        // gid 掩码 & 0xFFFF（P1-B2 裁决：byte2 为纯噪声，40/92 非零但与 low16 零冲突；
+        // 不掩码时 by_global 弹种表查不中）。0x1b [21..33) = 末段速度方向向量（P1-B1 裁决）
         terrain_impacts.entry(u32::from_le_bytes([a[0], a[1], a[2], a[3]])).or_insert((
-            u32::from_le_bytes([a[4], a[5], a[6], a[7]]),
+            u32::from_le_bytes([a[4], a[5], a[6], a[7]]) & 0xFFFF,
             TerrainImpactData {
                 material: a[8],
                 impact_point: [f(9), f(13), f(17)],
-                segment_start: [f(21), f(25), f(29)],
+                terminal_dir: [f(21), f(25), f(29)],
             },
         ));
     }
 
     // ⑤'''' Avatar method36 (0x24) 瞄准快照时间线（envelope = avatar = 录像者本人）；
     // args = [len u8][protobuf]，开火时刻成对；布局不合法的包 fail-soft 跳过（不影响主链 fail-fast）。
-    let mut aim_snapshots: Vec<(f32, f64, f64)> = Vec::new();   // (clock, 炮塔相对偏航, 扩散度)
+    // 全字段解码见 AimSnapshot（WotbTools PROVEN：field1 偏航 / field2 车体系俯仰 / field3-5 车型
+    // 角速度上限与瞄准时间 / field6.f1 bloom）。
+    let mut aim_snapshots: Vec<(f32, AimSnapshot)> = Vec::new();
     for (_, clock, p) in packets {
         if p.len() < 14 { continue; }
         if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != 0x24 { continue; }
         let args_len = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
         if args_len < 2 || 12 + args_len > p.len() { continue; }
-        let (yaw, disp) = parse_method36(&p[12..12 + args_len]);
-        if let (Some(yaw), Some(disp)) = (yaw, disp) {
-            aim_snapshots.push((*clock, yaw, disp));
+        let snap = parse_method36(&p[12..12 + args_len]);
+        if snap.turret_rel_yaw.is_some() && snap.bloom.is_some() {
+            aim_snapshots.push((*clock, snap));
         }
     }
     aim_snapshots.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+    // 作者俯仰回退序列（method36 field2 车体系俯仰，rad）——作者 prop2/锚定缺失时的俯仰源
+    let aim_pitch_series: Vec<(f32, f32)> = aim_snapshots.iter()
+        .filter_map(|(c, s)| s.gun_pitch.map(|p| (*c, p as f32)))
+        .collect();
+    // type=39 作者瞄准/炮线帧（世界系 yaw/pitch；仅开火时刻锚定消费，死亡后旋转不适用）
+    let type39_frames = collect_type39_frames(packets);
 
     let hp_events = parse_hp_events(packets);   // method1 血量事件（全实体、按时钟排序）
+    // Type5 物化 3+3+9 loadout 的 9 字节配件选择（byte=ID，103=校准弹 / 110=强化装甲）——
+    // 射击双方搭载注入，viewer 自动穿深/厚度系数（WotbTools PROVEN，2026-09-28 C4 落地）
+    let vehicle_equipment = collect_vehicle_equipment(packets);
     // ⑥' 确定性伤害降幅区间（WotbTools deriveLosses 同款；仅作者造成的 cause=0 炮弹直击降幅）
     // type=5 满血锚点补链：受害者首个 method1 已是掉血后血量时，首刀降幅才可归属
     let initial_hp = collect_initial_hp(packets);
@@ -2328,21 +2648,29 @@ pub fn extract_shot_replays_with_limits(
 
         // ⑧''' 开火时刻瞄准快照（method36 成对，|dt|≤0.05）：前=射击前，后=射击后。
         let shooter_aim = {
-            let cands: Vec<(f64, f64)> = aim_snapshots.iter()
-                .filter(|(t2, _, _)| (*t2 - fire_time).abs() <= 0.05)
-                .map(|(_, y, d)| (*y, *d))
+            let cands: Vec<&AimSnapshot> = aim_snapshots.iter()
+                .filter(|(t2, _)| (*t2 - fire_time).abs() <= 0.05)
+                .map(|(_, s)| s)
                 .collect();
-            cands.first().map(|(yaw, disp)| ShooterAimData {
-                turret_rel_yaw: *yaw,
-                state_before: *disp,
-                state_after: cands.get(1).map(|(_, d)| *d),
-            })
+            // type39 世界系炮线：开火时刻锚定（|dt|≤0.05s；326/326 三明治保证开火帧存在）
+            let gun_line = type39_frames.iter()
+                .filter(|f2| (f2.clock - fire_time).abs() <= 0.05)
+                .min_by_key(|f2| (((f2.clock - fire_time).abs()) * 1000.0) as u32);
+            cands.first().and_then(|s| s.turret_rel_yaw.map(|yaw| ShooterAimData {
+                turret_rel_yaw: yaw,
+                state_before: s.bloom.unwrap_or(0.0),
+                state_after: cands.get(1).and_then(|s2| s2.bloom),
+                gun_pitch: s.gun_pitch,
+                world_gun_yaw: gun_line.map(|f2| f2.gun_yaw),
+                world_gun_pitch: gun_line.map(|f2| f2.gun_pitch_world),
+            }))
         };
 
-        // 伤害归属（确定性，WotbTools deriveLosses 同款）：击穿 0x0010 / HE 爆炸 0x1000 →
+        // 伤害归属（确定性，WotbTools deriveLosses 同款）：穿透族谓词 0x1110 = 材料击穿 0x0010 /
+        // 内部模块穿 0x0100 / HE 爆炸 0x1000（WotbTools PROVEN：对结算 penetrations 269/270，r≈0.9924）→
         // 互斥：一段降幅只归属一次（防同区间双发重复计数，见 assign_dmg_losses 注）
         let mut dmg_unattributed = false;
-        if hit && hit_flags & (0x0010 | 0x1000) != 0 {
+        if hit && hit_flags & hit_flags_mod::PENETRATION_FAMILY != 0 {
             let victim = target_eid.unwrap_or(0);
             let containing: Vec<(usize, &DmgLoss)> = dmg_losses.iter().enumerate()
                 .filter(|(li, l)| !dmg_losses_used.contains(li)
@@ -2364,8 +2692,10 @@ pub fn extract_shot_replays_with_limits(
                     dmg_unattributed = true;
                 }
             }
+            // hp_cur 已按哨兵族归一化（{0,-1,-2,-3}→0），==0 即终态；溺水（cause=5，HP 可为正）
+            // 不产生降幅、不进入本链——非炮弹击杀，正确地不计入 is_kill
             is_kill = containing.first().map(|(_, l)| l.hp_cur == 0).unwrap_or(false)
-                || hit_flags & 0x0001 != 0;
+                || hit_flags & hit_flags_mod::DIRECT_KILL != 0;
         }
 
         // ⑨ 目标位置与姿态 @ 命中通知状态（WI 对齐确定性锚点，逆向文档 4.0'）：
@@ -2410,7 +2740,7 @@ pub fn extract_shot_replays_with_limits(
             &mut render_cache, author_player_eid, st10.get(&author_player_eid),
             fire_time, -3.0, 2.0, 0.1);
         // 炮塔/炮管实时时间线：受击方炮塔角（prop2，命中 −3~+2）、射手炮塔角（开火 −2~+2）、
-        // 双方炮管俯仰（prop2 frac 解码；射手无锚定时回退 prop9 瞄准角）——全部走
+        // 双方炮管俯仰（prop2 frac 解码；射手无锚定时回退 method36 field2 车体系俯仰）——全部走
         // timeline_prop2_client（客户端语义 0.1s 网格，与锚点同一求值器）
         let target_limits = pitch_limits.get(&target_name);
         let target_turret_timeline = if hit {
@@ -2421,7 +2751,7 @@ pub fn extract_shot_replays_with_limits(
         let shooter_turret_timeline = timeline_prop2_client(prop2.get(&author_player_eid), fire_time, -2.0, 2.0, None);
         let shooter_gun_timeline = match shooter_limits {
             Some(lim) => timeline_prop2_client(prop2.get(&author_player_eid), fire_time, -2.0, 2.0, Some(lim)),
-            None => timeline_1f(Some(&prop9), fire_time, -2.0, 2.0),
+            None => timeline_1f(Some(&aim_pitch_series), fire_time, -2.0, 2.0),
         };
         let target_gun_timeline = if hit {
             target_eid.and_then(|teid| prop2.get(&teid))
@@ -2505,8 +2835,8 @@ pub fn extract_shot_replays_with_limits(
         } else { ta[1] };
 
         // ⑫ 射手炮管俯仰 = prop2 frac 比例解码 @ 开火时刻（与受击方同源同锚定；method29 流序快照优先）；
-        // prop2/锚定缺失 → 回退 prop9（avatar 瞄准角，狙击模式下≈炮管角），仍缺则 fail-fast
-        let (shooter_gun_pitch, shooter_pitch_from_prop9) =
+        // prop2/锚定缺失 → 回退 method36 field2（车体系炮管俯仰，WotbTools PROVEN），仍缺则 fail-fast
+        let (shooter_gun_pitch, shooter_pitch_from_method36) =
             match l.shooter_prop2.zip(shooter_limits) {
                 Some(((_, v), lim)) => {
                     let (y, fr) = decode_prop2_u16(v);
@@ -2524,10 +2854,13 @@ pub fn extract_shot_replays_with_limits(
                     }
                     None => {
                         gun_pitch_degraded.push("shooter".into());
-                        (prop9.iter()
+                        let snap_pitch = aim_snapshots.iter()
                             .min_by_key(|(c, _)| (((*c - fire_time).abs()) * 1000.0) as u32)
-                            .map(|(_, v)| *v)
-                            .ok_or_else(|| anyhow::anyhow!("{}: 射手炮管俯仰（prop2 与 prop9 均缺失）", ctx()))?, true)
+                            .and_then(|(_, s)| s.gun_pitch);
+                        match snap_pitch {
+                            Some(p) => (p as f32, true),
+                            None => anyhow::bail!("{}: 射手炮管俯仰（prop2 与 method36 快照均缺失）", ctx()),
+                        }
                     }
                 },
             };
@@ -2632,6 +2965,8 @@ pub fn extract_shot_replays_with_limits(
             fire_tick,
             terrain_impact,
             shooter_aim,
+            shooter_equipment: vehicle_equipment.get(&author_player_eid).map(VehicleEquipment::from_ids),
+            target_equipment: target_eid.and_then(|t| vehicle_equipment.get(&t)).map(VehicleEquipment::from_ids),
             quality: Some(ShotQuality {
                 shooter_state_dt_ms: (sp_dt * 1000.0).round() as i32,
                 shooter_pos_from_muzzle: false,
@@ -2641,7 +2976,7 @@ pub fn extract_shot_replays_with_limits(
                 shell_from_broadcast,
                 shell_from_terrain,
                 shooter_pitch_from_velocity: false,
-                shooter_pitch_from_prop9,
+                shooter_pitch_from_method36,
                 gun_pitch_degraded,
                 pitch_frozen,
                 shooter_anchor_src: if sp_src != "filtered" { Some(sp_src.into()) } else { None },
@@ -2782,17 +3117,22 @@ pub fn extract_other_shot_replays_with_limits(
         if args_len < 34 || 12 + args_len > p.len() { continue; }
         let a = &p[12..12 + args_len];
         let f = |o: usize| f32::from_le_bytes([a[o], a[o + 1], a[o + 2], a[o + 3]]);
+        // gid 掩码 & 0xFFFF（P1-B2 裁决：byte2 为纯噪声，40/92 非零但与 low16 零冲突；
+        // 不掩码时 by_global 弹种表查不中）。0x1b [21..33) = 末段速度方向向量（P1-B1 裁决）
         terrain_impacts.entry(u32::from_le_bytes([a[0], a[1], a[2], a[3]])).or_insert((
-            u32::from_le_bytes([a[4], a[5], a[6], a[7]]),
+            u32::from_le_bytes([a[4], a[5], a[6], a[7]]) & 0xFFFF,
             TerrainImpactData {
                 material: a[8],
                 impact_point: [f(9), f(13), f(17)],
-                segment_start: [f(21), f(25), f(29)],
+                terminal_dir: [f(21), f(25), f(29)],
             },
         ));
     }
 
     let names = extract_entity_names(packets);
+
+    // Type5 物化 9 字节配件选择（作者路径同款）：他人射击双方搭载注入
+    let vehicle_equipment = collect_vehicle_equipment(packets);
 
     // ④ type=35 tick 计数器展开（与作者路径同构）
     let tick_timeline = collect_tick_timeline(packets);
@@ -2897,8 +3237,8 @@ pub fn extract_other_shot_replays_with_limits(
         if let Some(d) = dhit {
             if let Some(&(dm, hp_cur)) = dmg_assign.get(&li) {
                 damage = dm;
-                is_kill = hp_cur == 0;
-            } else if d.result == 3 || d.result == 4 {
+                is_kill = hp_cur == 0;   // 归属链已按哨兵族 {0,-1,-2,-3}→0 归一化
+            } else if d.result == 3 || d.result == 4 || (d.result == 2 && d.component_index == Some(0)) {
                 // 应伤结果（3=击穿 / 4=履带·模块交互可带伤）却无降幅 = 服务器未记账 HP
                 dmg_unattributed = true;
             }
@@ -3122,6 +3462,8 @@ pub fn extract_other_shot_replays_with_limits(
             fire_tick,
             terrain_impact,         // 0x1b 全局广播：他人脱靶弹同样有精确落点
             shooter_aim: None,      // method36 瞄准快照 = 作者 Avatar 专属
+            shooter_equipment: vehicle_equipment.get(&l.shooter).map(VehicleEquipment::from_ids),
+            target_equipment: target_eid.and_then(|t| vehicle_equipment.get(&t)).map(VehicleEquipment::from_ids),
             quality: Some(ShotQuality {
                 shooter_state_dt_ms: (sp_dt * 1000.0).round() as i32,
                 shooter_pos_from_muzzle: pos_from_muzzle,
@@ -3131,7 +3473,7 @@ pub fn extract_other_shot_replays_with_limits(
                 shell_from_broadcast: false,   // 0x07 弹种广播 = 作者 Avatar 弹药状态，他人不可得
                 shell_from_terrain,
                 shooter_pitch_from_velocity: gun_pitch_degraded.iter().any(|s| s == "shooter"),
-                shooter_pitch_from_prop9: false,
+                shooter_pitch_from_method36: false,
                 gun_pitch_degraded,
                 pitch_frozen,
                 shooter_anchor_src: if sp_src != "filtered" { Some(sp_src.into()) } else { None },

@@ -39,6 +39,14 @@ impl<'a> ReplayParser<'a> {
         let meta = replay.read_meta().ok();
         let br = replay.read_battle_results()
             .with_context(|| format!("Failed to parse battle_results: {}", path.display()))?;
+        // 结算补充字段（crate 未暴露的 #301 字段：死亡原因/寿命/点亮/毁灭协助/炮印/击杀者）
+        let settlements: std::collections::HashMap<u32, crate::wargaming::battle_results_extra::PlayerSettlement> =
+            replay.read_battle_results_dat().ok()
+                .map(|dat| crate::wargaming::battle_results_extra::parse_settlement_extras(&dat.buffer))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.account_id, s))
+                .collect();
 
         let room_type = format!("{:?}", br.room_type());
         let winner_team = match br.winner_team_number() {
@@ -116,6 +124,8 @@ impl<'a> ReplayParser<'a> {
                 .map(|p| p.info.nickname.clone())
                 .unwrap_or_default();
 
+            let settlement = settlements.get(&info.account_id);
+
             players.push(PlayerSummary {
                 account_id: info.account_id,
                 nickname,
@@ -139,6 +149,13 @@ impl<'a> ReplayParser<'a> {
                 n_enemies_destroyed: info.n_enemies_destroyed,
                 mm_rating: info.mm_rating,
                 display_rating: info.display_rating(),
+                death_reason: settlement.and_then(|s| s.death_reason),
+                survived: settlement.and_then(|s| s.death_reason).map(|d| d == -1),
+                life_time_secs: settlement.and_then(|s| s.life_time_secs),
+                killer_id: settlement.and_then(|s| s.killer_id),
+                n_enemies_spotted: settlement.and_then(|s| s.n_enemies_spotted),
+                destruction_assistance: settlement.and_then(|s| s.destruction_assistance),
+                gun_marks: settlement.and_then(|s| s.gun_marks),
             });
         }
 

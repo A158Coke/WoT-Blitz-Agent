@@ -158,6 +158,12 @@ pub struct KillEvent {
     pub victim_eid: u32,
     /// method1 cause 原始值（0=炮弹直击 1=火焰 2=撞击 3=世界/环境 5=溺水；255=未获取）
     pub cause: u8,
+    /// wrapper6 >50% 先前伤害助攻者（官方击杀通知同款；无则 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assister_eid: Option<u32>,
+    /// wrapper6 非默认死亡原因（1=火 2=撞 3=世界 5=溺水；缺省=普通击毁）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub death_reason: Option<u32>,
 }
 
 /// 实际搭载配置描述符（updateArena subtype 1 ARENA_INFO 的 field 1.2 blob，2026-09-25 破译）：
@@ -539,13 +545,31 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         });
     }
 
+    // wrapper6（VEHICLE_KILLED）击杀播报：补全击杀者归属 + >50% 助攻 + 非默认死因
+    // （WotbTools PROVEN 283 例；开局初始化记录用 |t − death_t| ≤ 5s 门控隔离）
+    let kill_feed: std::collections::HashMap<u32, crate::replay::combat::KillFeedEvent> =
+        crate::replay::combat::collect_kill_feed(input.packets).into_iter()
+            .filter(|k| {
+                vehicles_out.iter().find(|v| v.eid == k.victim_eid)
+                    .and_then(|v| v.death_t).map(|dt| (dt - k.clock).abs())
+                    .map(|dt| dt <= 5.0)
+                    .unwrap_or(false)
+            })
+            .map(|k| (k.victim_eid, k))
+            .collect();
     let mut kills: Vec<KillEvent> = vehicles_out.iter()
-        .filter_map(|v| v.death_t.map(|t| KillEvent {
-            t,
-            killer_eid: v.killer_eid,
-            victim_eid: v.eid,
-            cause: cause_by_eid.get(&v.eid).copied()
-                .unwrap_or(if v.killer_eid != 0 { 0 } else { 3 }),
+        .filter_map(|v| v.death_t.map(|t| {
+            let wf = kill_feed.get(&v.eid);
+            KillEvent {
+                t,
+                killer_eid: if v.killer_eid != 0 { v.killer_eid }
+                    else { wf.map(|k| k.killer_eid).unwrap_or(0) },
+                victim_eid: v.eid,
+                cause: cause_by_eid.get(&v.eid).copied()
+                    .unwrap_or(if v.killer_eid != 0 || wf.is_some() { 0 } else { 3 }),
+                assister_eid: wf.and_then(|k| k.assister_eid),
+                death_reason: wf.and_then(|k| k.death_reason),
+            }
         }))
         .collect();
     kills.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());

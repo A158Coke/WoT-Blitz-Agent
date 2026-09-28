@@ -79,6 +79,28 @@ pub struct PlayerSummary {
     pub mm_rating: Option<f32>,
     /// 排位显示评级
     pub display_rating: Option<u32>,
+    // ===== 结算补充字段（battle_results #301 crate 未暴露部分，wargaming::battle_results_extra）=====
+    /// 死亡原因：-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境（结算缺失时 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub death_reason: Option<i32>,
+    /// 是否存活（death_reason == -1 推导；结算缺失时 None，不猜）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub survived: Option<bool>,
+    /// 存活寿命（整秒）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub life_time_secs: Option<u32>,
+    /// 击杀者 ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub killer_id: Option<u32>,
+    /// 点亮敌人数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n_enemies_spotted: Option<u32>,
+    /// 毁灭协助次数（≥25% 伤害后盟友击毁）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destruction_assistance: Option<u32>,
+    /// 炮印数（0..3）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gun_marks: Option<u32>,
 }
 
 impl BattleSummary {

@@ -2693,15 +2693,6 @@ export function initTankViewer() {
             document.getElementById('tank-tier').textContent = 'Tier ' + (tankData.tier || '?');
             document.getElementById('tank-type').textContent = tankData.type || '?';
             document.getElementById('tank-nation').textContent = tankData.nation || '?';
-            if (tankData.armor) {
-                const a = tankData.armor;
-                document.getElementById('armor-front').textContent =
-                    `Turret ${a.turret.front} / Hull ${a.hull.front}`;
-                document.getElementById('armor-sides').textContent =
-                    `Turret ${a.turret.sides} / Hull ${a.hull.sides}`;
-                document.getElementById('armor-rear').textContent =
-                    `Turret ${a.turret.rear} / Hull ${a.hull.rear}`;
-            }
             document.getElementById('info-panel').style.display = 'block';
         }
 

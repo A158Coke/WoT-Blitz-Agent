@@ -27,12 +27,6 @@ onMounted(() => {
                 <div class="stat"><span class="label">Tier</span><span class="value" id="tank-tier"></span></div>
                 <div class="stat"><span class="label">Type</span><span class="value" id="tank-type"></span></div>
                 <div class="stat"><span class="label">Nation</span><span class="value" id="tank-nation"></span></div>
-                <div id="armor-section">
-                    <h2>Armor (mm)</h2>
-                    <div class="armor-row"><span>Front</span><span class="armor-front" id="armor-front"></span></div>
-                    <div class="armor-row"><span>Sides</span><span class="armor-sides" id="armor-sides"></span></div>
-                    <div class="armor-row"><span>Rear</span><span class="armor-rear" id="armor-rear"></span></div>
-                </div>
             </div>
             <div id="tank-selectors">
                 <div class="sel-row" id="config-row" style="display:none;"><label id="config-label">Config:</label><select id="config-select"></select></div>
@@ -113,19 +107,7 @@ onMounted(() => {
     .armor-view #info-panel .stat { display: flex; justify-content: space-between; margin: 4px 0; }
     .armor-view #info-panel .label { color: var(--muted); }
     .armor-view #info-panel .value { font-weight: bold; }
-    .armor-view #armor-section { margin-top: 15px; padding-top: 10px; border-top: 1px solid var(--border); }
-    .armor-view #armor-section h2 { font-size: 1.1em; margin: 0 0 8px 0; color: var(--accent-2); }
-    .armor-view .armor-row { display: flex; justify-content: space-between; margin: 2px 0; font-size: 0.9em; }
-    .armor-view .armor-front { color: var(--green); }
-    .armor-view .armor-sides { color: var(--orange); }
-    .armor-view .armor-rear { color: var(--red); }
-    .armor-view #armor-table { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-    .armor-view #armor-table table { width: 100%; font-size: 0.85em; border-collapse: collapse; }
-    .armor-view #armor-table th { text-align: left; color: var(--muted); padding: 2px 6px; border-bottom: 1px solid var(--border); }
-    .armor-view #armor-table td { padding: 2px 6px; }
-    .armor-view .plate-thick { color: var(--green); font-weight: bold; }
-    .armor-view .plate-thin { color: var(--red); }
-    .armor-view #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 1.2em; color: var(--accent-3); }
+                                                    .armor-view #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 1.2em; color: var(--accent-3); }
     .armor-view /* 右下角栈：调试按钮(JS 动态挂入)与操作提示上下排列，互不遮挡 */
         #corner-br {
             position: absolute; bottom: 20px; right: 20px;

@@ -160,6 +160,13 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         // 3D 场景资产（回放 GLB 车模/部件数据；与 /armor_view 前缀版共用 handler）
         .route("/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
         .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
+        // Phase 4 已切流：装甲检视器 Vue 版走根级数据端点（旧 /armor_view 前缀版保留兼容）
+        .route("/api/tank_filter", get(crate::wargaming::viewer::tank_filter_handler))
+        .route("/api/shells/{tank_id}", get(crate::wargaming::viewer::shells_handler))
+        .route("/api/penetrate", post(crate::wargaming::viewer::penetrate_handler))
+        .route("/api/replay_shot", get(replay_shots_embedded_handler))
+        .route("/api/hold", get(crate::wargaming::heatmap_ready::hold_handler))
+        .route("/api/ready", get(crate::wargaming::heatmap_ready::ready_handler))
         .route("/api/playback/data", post(playback_data_handler))
         .route("/api/playback/map", get(crate::wargaming::playback_viewer::playback_map_handler))
         .route("/api/playback/terrain", get(crate::wargaming::playback_viewer::playback_terrain_handler))
@@ -173,7 +180,9 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/api/tank_image/{tank_id}", get(tank_image_handler))
         .route("/api/vendor/{*path}", get(vendor_handler))
         .route("/screenshots/{*path}", get(screenshots_handler))
-        .route("/armor_view/view/{tank_id}", get(armor_view_handler))
+        // Phase 4 已切流：/armor_view/view/{id} 由 Vue SPA 接管（vue-router ArmorView）；
+        // 旧 /armor_view 前缀数据路由保留（standalone viewer 与旧书签兼容）
+        .route("/armor_view/view/{tank_id}", get(spa_index_handler))
         .route("/armor_view/", get(armor_view_root))
         .route("/armor_view/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
         .route("/armor_view/vendor/three/{*path}", get(crate::wargaming::viewer::vendor_handler))
@@ -267,23 +276,6 @@ pub fn spa_asset_response(path: &str) -> Response {
         file.data,
     )
         .into_response()
-}
-
-/// 内嵌 3D 装甲检视页面（tank_id 从路径取），供坦克百科详情弹窗用 iframe 加载。
-async fn armor_view_handler(
-    axum::extract::Path(tank_id): axum::extract::Path<u64>,
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> axum::response::Response {
-    let shooter = q.get("shooter").and_then(|v| v.parse::<u32>().ok()).unwrap_or(tank_id as u32);
-    let mut resp = axum::response::Response::builder()
-        .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .header(axum::http::header::CACHE_CONTROL, "no-cache, max-age=0")
-        .body(axum::body::Body::from(
-            crate::wargaming::viewer::viewer_index_html(tank_id as u32, shooter, "/armor_view"),
-        ))
-        .unwrap();
-    if let Ok(v) = axum::http::HeaderValue::from_str("no-store") { resp.headers_mut().insert(axum::http::header::PRAGMA, v); }
-    resp
 }
 
 /// `/armor_view/` 根：重定向到默认坦克（IS-7）的检视页。

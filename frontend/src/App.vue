@@ -28,7 +28,7 @@ const tabs = [
       >{{ t.label }}</RouterLink>
     </nav>
   </header>
-  <main :class="{ 'chat-mode': route.name === 'home', 'fullbleed': route.name === 'playback' }">
+  <main :class="{ 'chat-mode': route.name === 'home', 'fullbleed': route.name === 'playback' || route.name === 'armor-view' }">
     <RouterView />
   </main>
   <div id="toast" :class="{ show: toastState.visible }">{{ toastState.text }}</div>

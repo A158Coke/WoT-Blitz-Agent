@@ -163,6 +163,8 @@ onMounted(() => {
         }
     .armor-view #tank-selectors .sel-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 0.85em; }
     .armor-view #tank-selectors label { width: 58px; color: var(--muted); font-size: 0.8em; }
+    /* 全局 tokens.css 的 input{flex:1;min-width:120px} 会把复选框撑到 120px 导致 Equip 行溢出面板——恢复自然尺寸 */
+    .armor-view input[type="checkbox"] { flex: none; min-width: 0; width: auto; margin: 0; }
     .armor-view #tank-selectors .tank-btn {
             background: #2c2724; color: var(--txt); border: 1px solid var(--border); border-radius: var(--radius-sm);
             padding: 5px 10px; max-width: 176px; cursor: pointer; font-size: 0.85em;

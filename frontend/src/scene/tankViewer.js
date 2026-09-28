@@ -1041,7 +1041,7 @@ export function initTankViewer() {
                 // 游戏的 hide_elements 拆件 = 特定状态（击杀镜头/部件脱落等）专用，
                 // 战斗渲染恒隐藏——否则会作为多余组件暴露在炮塔/炮盾上且随其转动
                 tankModel.traverse(function(node) {
-                    if (!/^(gun_\d+|turret_\d+|hull)_hide_elements$/.test(node.name || '')) return;
+                    if (!/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(node.name || '')) return;
                     node.traverse(function(m) {
                         if (m.isMesh) m.visible = false;
                     });
@@ -1367,7 +1367,7 @@ export function initTankViewer() {
                             sModel.scale.setScalar(1);
                             // 同受击方：hide_elements 拆件战斗渲染恒隐藏（否则随炮塔/炮盾转动暴露）
                             sModel.traverse(function(n) {
-                                if (!/^(gun_\d+|turret_\d+|hull)_hide_elements$/.test(n.name || '')) return;
+                                if (!/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(n.name || '')) return;
                                 n.traverse(function(m) {
                                     if (m.isMesh) m.visible = false;
                                 });

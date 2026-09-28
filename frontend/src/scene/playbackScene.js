@@ -792,7 +792,7 @@ export function initPlayback(container, store) {
         model.scale.setScalar(1);
         // 拆件战斗渲染恒隐藏（否则随炮塔/炮盾转动暴露，装甲查看器同规则）
         model.traverse(n => {
-          if (/^(gun_\d+|turret_\d+|hull)_hide_elements$/.test(n.name || ''))
+          if (/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(n.name || ''))
             n.traverse(m => { if (m.isMesh) m.visible = false; });
         });
         // 缓存模板 + 部件数据（sd）；每车实例化时 clone 并重收集节点引用

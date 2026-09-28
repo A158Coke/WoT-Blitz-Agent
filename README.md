@@ -107,7 +107,7 @@ tank_cache_path = "data/tank_cache.json"
 
 其他按需缓存（首次访问自动下载，无需手动准备，均在 `data/cache/` 下）：3D 模型
 `data/cache/models/`、坦克封面图 `data/cache/tank_images/`、地形高度场
-`data/cache/terrain/`（`fetch-terrain` 预提取）；前端依赖 `web/vendor/`（Three.js/Chart.js，离线可用）。
+`data/cache/terrain/`（`fetch-terrain` 预提取）；前端为 `frontend/` Vue 3 SPA（Vite 构建、经 rust-embed 编译期嵌入 exe，天然离线）。
 如需**完全离线**（查看器/回放不再联网拉模型），运行 `fetch-models` 一次性全量预下载
 全部坦克 GLB（约 2 GB，可断点续跑）。
 
@@ -243,7 +243,7 @@ tauri android build --apk --target aarch64           # 全量版追加 --config 
 
 - **协议桥接**：WebView 所有请求经 `register_asynchronous_uri_scheme_protocol` 转发进
   axum `Router`（`web::build_router`），无真实端口，桌面/移动同一套路由与前端。
-- **路径层**：`data::set_base_dir()` 把 `data/`（含 `data/cache/`）、`web/vendor`
+- **路径层**：`data::set_base_dir()` 把 `data/`（含 `data/cache/`）
   等运行时路径整体重定向到应用私有目录（桌面不设置，语义不变）。
 - **资产供给**：小资产首启经 JNI AssetManager 解包（清单 `resources-manifest.txt`）；
   全量版 GLB 走 `data::set_embedded_asset_reader` 按需直读 APK assets，不落盘。

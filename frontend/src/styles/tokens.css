@@ -1,0 +1,36 @@
+/* 设计基线：自旧版 src/web/index.html 的 :root 与基础样式平移，后续所有页面共用。
+   颜色/圆角/阴影只改这里，不改组件。 */
+
+:root {
+    --bg:#120f0e;
+    --bg-grad: radial-gradient(1200px 620px at 18% -12%, #3a2412 0%, transparent 58%),
+                radial-gradient(1000px 520px at 92% -4%, #48240f 0%, transparent 55%),
+                radial-gradient(900px 700px at 50% 110%, #2a1710 0%, transparent 60%);
+    --panel:#1b1817; --panel2:#231f1d; --panel3:#2c2724;
+    --border:#3a3028; --border-hi:#5c4a35;
+    --accent:#ff8a3d; --accent-2:#ffb35c; --accent-3:#ffd29b;
+    --green:#5fbf7a; --blue:#5fa8e8; --red:#ff6b6b; --yellow:#ffcf5c;
+    --txt:#f3ede6; --muted:#9c8f7f;
+    --shadow:0 10px 34px rgba(0,0,0,0.45);
+    --radius:16px; --radius-sm:10px;
+}
+
+* { box-sizing: border-box; }
+html,body { height:100%; }
+body {
+    display:flex; flex-direction:column;
+    margin:0; background:var(--bg); background-image:var(--bg-grad); background-attachment:fixed;
+    color:var(--txt); font-family:"Segoe UI", system-ui, -apple-system, sans-serif; line-height:1.5;
+}
+
+h2 { margin:0 0 4px 0; font-size:1.25em; font-weight:800; }
+.sub { color:var(--muted); font-size:0.86em; margin-bottom:16px; }
+
+/* 通用卡片：各 Tab 页面的标准容器 */
+.card {
+    background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--border); border-radius:var(--radius); padding:22px;
+    box-shadow:var(--shadow); margin-bottom:18px;
+}
+
+button { font-family:inherit; }
+textarea { font-family:ui-monospace,monospace; resize:vertical; }

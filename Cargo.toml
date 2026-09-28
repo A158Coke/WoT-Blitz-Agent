@@ -20,9 +20,11 @@ tokio-util = "0.7"
 ctrlc = "3"
 axum = "0.8"
 webbrowser = "1"
-rust-embed = { version = "8", features = ["debug-embed", "include-exclude"], optional = true }
+rust-embed = { version = "8", features = ["include-exclude"] }
 
 [features]
 # 自包含分发：把 data/、web/vendor/、replay_samples/、config.toml.example 编译进 exe，
 # 首次运行自释放（见 src/bundle.rs）。构建：cargo build --release --features bundle
-bundle = ["dep:rust-embed"]
+# debug-embed 挂在 bundle 下：默认 debug 构建里 rust-embed 运行时读盘
+# （frontend/dist 可 npm run build 后直接生效，免重编译），release 构建编译期嵌入。
+bundle = ["rust-embed/debug-embed"]

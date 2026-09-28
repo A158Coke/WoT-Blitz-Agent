@@ -4,7 +4,9 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -All         # 一键重新打包：轻量 zip + 全量 zip + 全量目录（改完代码用这个）
 #   powershell -ExecutionPolicy Bypass -File scripts\package.ps1              # 仅轻量便携 zip（~18MB，模型联网懒下载）
 #   powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Full        # 仅全量：zip（~1.9GB）+ 同名目录，完全离线
-#   -SkipBuild   跳过 cargo build，直接用现有 target/release/wotb-agent.exe（只改了数据/文档时用）
+#   -SkipBuild   跳过构建，直接用现有 target/release/wotb-agent.exe（只改了数据/文档时用）
+#
+# 依赖：Node.js（Vue 前端构建，见 frontend/）；构建统一走 scripts\build-all.ps1。
 #
 # 产物（默认在 dist/）：
 #   wotb-agent-portable-win64.zip          轻量便携包
@@ -29,12 +31,12 @@ Set-Location $root
 
 $exe = "target/release/wotb-agent.exe"
 
-# ---- 1. 构建 ----
+# ---- 1. 构建（前端 npm build → cargo build --release，release 编译期嵌入 frontend/dist）----
 if (-not $SkipBuild) {
-    cargo build --release
-    if ($LASTEXITCODE -ne 0) { throw "cargo build --release 失败" }
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "build-all.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build-all.ps1 失败" }
 }
-if (-not (Test-Path $exe)) { throw "未找到 $exe，请先执行 cargo build --release" }
+if (-not (Test-Path $exe)) { throw "未找到 $exe，请先执行 scripts\build-all.ps1" }
 
 # ---- 2. 组装便携目录 ----
 $stage = Join-Path $OutDir "wotb-agent-portable-win64"

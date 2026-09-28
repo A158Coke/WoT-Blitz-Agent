@@ -3,6 +3,10 @@ data/token_usage.json
 *_report.json
 report.json
 
+# Vue 前端（frontend/）：依赖与构建产物（构建产物经 rust-embed 编译期嵌入 exe）
+frontend/node_modules/
+frontend/dist/
+
 # 含密钥，绝不能上传；用 config.toml.example 作为模板
 config.toml
 

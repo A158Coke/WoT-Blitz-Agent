@@ -12,6 +12,13 @@ use serde_json::{json, Value};
 
 use crate::models::config::Config;
 use crate::web::sessions::{ChatError, SessionManager};
+use rust_embed::RustEmbed;
+
+/// Vue 前端构建产物（frontend/dist/，构建入口 scripts/build-all.ps1）。
+/// 默认 debug 构建运行时读盘（npm run build 后刷新即生效）；release 构建编译期嵌入。
+#[derive(RustEmbed)]
+#[folder = "frontend/dist/"]
+struct SpaAssets;
 
 pub mod sessions;
 
@@ -124,8 +131,12 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
     crate::wargaming::viewer::set_global_resolver(viewer_resolver);
 
     Router::new()
-        .route("/", get(index_handler))
-        .route("/tank/{tank_id}", get(tank_detail_page_handler))
+        .route("/", get(spa_index_handler))
+        .route("/index.html", get(spa_index_handler))
+        .route("/assets/{*path}", get(spa_asset_handler))
+        .route("/legacy", get(legacy_index_handler))
+        // Phase 1 已切流：坦克详情由 Vue SPA 接管（vue-router 路由 /tank/:tankId）
+        .route("/tank/{tank_id}", get(spa_index_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/events", get(chat_events_handler))
         .route("/api/chat/cancel", post(chat_cancel_handler))
@@ -182,13 +193,68 @@ pub async fn serve(config_path: std::path::PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn index_handler() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+/// Vue SPA 入口。被 SPA 接管的页面路由（后续阶段：/tank/{id}、/playback、
+/// /armor_view/view/{id}）改挂 spa_index_handler 即可，前端由 vue-router 分发。
+async fn spa_index_handler() -> Response {
+    match SpaAssets::get("index.html") {
+        Some(file) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            file.data,
+        )
+            .into_response(),
+        None => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "frontend/dist/index.html 缺失：请先构建前端（cd frontend && npm ci && npm run build，\
+             或 scripts\\build-all.ps1）",
+        )
+            .into_response(),
+    }
 }
 
-/// 独立坦克详情页（坦克百科卡片点击后在新窗口打开）。
-async fn tank_detail_page_handler(axum::extract::Path(_tank_id): axum::extract::Path<u64>) -> Html<&'static str> {
-    Html(include_str!("tank_detail.html"))
+/// SPA 静态资源（Vite 输出带 content hash，可长缓存）。
+/// rust-embed 的键为相对 dist/ 的完整路径，路由通配符捕获的是 /assets/ 之后一段，需补前缀。
+async fn spa_asset_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    let Some(file) = SpaAssets::get(&format!("assets/{path}")) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("asset not found: {path}"),
+        )
+            .into_response();
+    };
+    let ct = match path.rsplit('.').next().unwrap_or("") {
+        "js" | "mjs" => "text/javascript",
+        "css" => "text/css",
+        "html" => "text/html; charset=utf-8",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, ct),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
+        file.data,
+    )
+        .into_response()
+}
+
+/// 旧版主 GUI（迁移期间保留于 /legacy，收尾阶段退役）。
+async fn legacy_index_handler() -> Html<&'static str> {
+    Html(include_str!("index.html"))
 }
 
 /// 内嵌 3D 装甲检视页面（tank_id 从路径取），供坦克百科详情弹窗用 iframe 加载。

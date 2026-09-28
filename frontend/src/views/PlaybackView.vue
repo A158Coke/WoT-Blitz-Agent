@@ -2,7 +2,7 @@
 // 实时回放面板：Vue 只负责 loader/顶栏/名册/击杀流/控制条等 UI，
 // three.js 场景内核在 scene/playbackScene.js（命令式，逐行平移自旧版）。
 // 面板状态由 scene 每 tick 写入 store；控件事件回调 scene 方法。
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { initPlayback, QUALITY_PRESETS } from '../scene/playbackScene.js'
 import { createPlaybackStore } from '../scene/playbackStore.js'
@@ -10,6 +10,7 @@ import { createPlaybackStore } from '../scene/playbackStore.js'
 const route = useRoute()
 const store = createPlaybackStore()
 const sceneEl = ref(null)
+const seekEl = ref(null)
 let scene = null
 
 const SPEEDS = [0.5, 1, 2, 4, 8, 16]
@@ -23,6 +24,13 @@ function loadFile() {
 function onSeekInput(e) {
   scene.seekFraction(e.target.value / 1000)
 }
+
+// 进度条为非受控输入（旧版语义）：滑块值由场景 tick 直接写 DOM。
+// 不用 :value 绑定——Vue 每帧重渲染会把 value 强制写回 store.seekFrac（旧值），
+// 与用户拖拽打架导致滑块不跟手。seeking 期间（用户按住）场景不回写。
+watch(() => store.seekFrac, (v) => {
+  if (seekEl.value && !store.seeking) seekEl.value = String(v)
+})
 
 onMounted(() => {
   scene = initPlayback(sceneEl.value, store)
@@ -92,7 +100,7 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           >{{ s }}x</button>
         </span>
         <input
-          type="range" id="seek" min="0" max="1000" :value="store.seekFrac"
+          type="range" id="seek" ref="seekEl" min="0" max="1000" value="0"
           @pointerdown="store.seeking = true" @pointerup="store.seeking = false"
           @blur="store.seeking = false" @input="onSeekInput"
         >

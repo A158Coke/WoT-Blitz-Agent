@@ -606,7 +606,7 @@ export function initPlayback(container, store) {
 
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
-  const LABEL_FRAC = 0.03;      // 标签高 ≈ 视口高度的 3%
+  const LABEL_FRAC = 0.05;      // 标签高 ≈ 视口高度的 5%（加大文字；所有车恒定屏幕占比）
   const LABEL_ASPECT = 4;       // 画布 512×128 = 4:1
   function updateLabels() {
     const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
@@ -614,7 +614,9 @@ export function initPlayback(container, store) {
       if (!v.label) continue;
       // 标签为覆盖场景根级对象：世界位置 = 车体位置 + 悬浮偏移（不再从父节点继承）
       const d = camera.position.distanceTo(v.group.position);
-      const s = Math.max(0.3, d * k);
+      // 严格 d·k：屏幕占比对所有车恒定（旧 max(0.3,…) 钳位让近处车的标签明显偏小，
+      // 是尺寸不一致的来源）；下限仅防 d→0 退化
+      const s = Math.max(0.05, d * k);
       v.label.scale.set(s * LABEL_ASPECT, s, 1);
       // 悬浮高度随距离缩放（较此前整体减半），远处上限同步降半
       v.label.position.copy(v.group.position);

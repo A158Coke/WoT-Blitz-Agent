@@ -8,7 +8,6 @@ use crate::wargaming::dvpl::ArmorModel;
 use crate::wargaming::penetration::{self, PenetrationRequest};
 
 const GLB_CACHE_DIR: &str = "cache/models";
-const VENDOR_DIR: &str = "web/vendor/three";
 const GLB_FILES: [&str; 2] = ["collision.glb", "model.glb"];
 
 fn wsl_ip() -> String {
@@ -118,7 +117,6 @@ pub fn build_viewer_router(
             crate::web::spa_asset_response(&path)
         }))
         .route("/glb/{tank_id}/{filename}", get(glb_handler))
-        .route("/vendor/three/{*path}", get(vendor_handler))
         .route("/api/tank/{tank_id}", get(tank_data_handler))
         .route("/api/tank_filter", get(tank_filter_handler))
         .route("/api/tank_image/{tank_id}", get(tank_image_handler))
@@ -454,25 +452,6 @@ fn image_response(bytes: Vec<u8>) -> Response {
     ).into_response()
 }
 
-pub(crate) async fn vendor_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
-    if path.contains("..") {
-        return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
-    }
-    let full = crate::data::app_path(VENDOR_DIR).join(&path);
-    match std::fs::read(&full) {
-        Ok(bytes) => {
-            let ct = if path.ends_with(".js") {
-                "application/javascript"
-            } else if path.ends_with(".map") {
-                "application/json"
-            } else {
-                "application/octet-stream"
-            };
-            ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
-        }
-        Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("vendor file not found: {}", path)).into_response(),
-    }
-}
 
 pub(crate) async fn penetrate_handler(Json(req): Json<PenetrationRequest>) -> Json<Value> {
     let result = penetration::calculate(&req);

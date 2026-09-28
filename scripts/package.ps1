@@ -61,7 +61,6 @@ function Copy-Tree($src, $dst, $excludeDirs = @()) {
 Copy-Item $exe (Join-Path $stage "wotb-agent.exe")
 Copy-Item config.toml.example $stage/
 Copy-Item README.md $stage/
-Copy-Tree "web/vendor"    (Join-Path $stage "web/vendor")
 Copy-Tree "data"          (Join-Path $stage "data")          @("sessions", "cache")   # sessions 为运行时会话；cache 为运行时缓存（GLB/底图/封面/地形），仅全量包内置
 Copy-Tree "data/replay_samples" (Join-Path $stage "data/replay_samples")
 

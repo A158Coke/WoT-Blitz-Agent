@@ -1,4 +1,8 @@
-# Vue 3 全量迁移方案
+# Vue 3 全量迁移方案 ✅ 已完成（2026-09-28）
+
+> 状态：Phase 0–5 全部落地。四个页面（主 GUI 六 Tab、坦克详情、实时回放、3D 装甲检视器）
+> 均已切流至 Vue 3 SPA（`frontend/`，Vite 构建、rust-embed 编译期嵌入二进制），
+> 嵌入 HTML 字符串与 `web/vendor/` 目录全部退役。以下为原始方案，留档。
 
 > 目标：将全部 4 个前端页面从「嵌在 Rust 源码里的 vanilla HTML/JS」迁移到 Vue 3 + Vite，
 > 参考架构：[WotbTools](https://github.com/A158Coke/WotbTools)（Vue 3 + Vite + three.js 回放可视化）。

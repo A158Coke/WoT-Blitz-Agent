@@ -2,7 +2,7 @@
 //! （`mobile/src-tauri`，路径依赖本 crate）共用全部业务模块。
 //!
 //! 移动端启动时先 `data::set_base_dir(应用私有目录)` 再触碰任何文件访问，
-//! 之后 data/（静态库/缓存/会话）、web/vendor 等相对路径全部落在私有目录。
+//! 之后 data/（静态库/缓存/会话）等相对路径全部落在私有目录。
 
 pub mod agent;
 pub mod data;

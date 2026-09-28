@@ -21,7 +21,7 @@ if [ "$1" = "--full" ]; then
   cp -r "$ROOT/data/cache/." "$DEST/data/cache/"
 fi
 
-# 小资产覆盖同步（data/ 含 cache 底图 webp/地形/封面、web/vendor）
+# 小资产覆盖同步（data/ 含 cache 底图 webp/地形/封面；前端已 npm 打包进 exe，无 vendor）
 echo "syncing resources/ ..."
 cp -r "$RES/." "$DEST/"
 

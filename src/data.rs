@@ -5,7 +5,7 @@
 //
 // 运行根目录（base_dir）：桌面/CLI 不设置 = 当前目录（语义与历史版本完全一致）；
 // 移动端由 Tauri 入口在启动最早期 set_base_dir(应用私有目录)，此后所有相对路径
-// （data/ 下的静态库/缓存/会话、web/vendor）自动落到私有目录。
+// （data/ 下的静态库/缓存/会话）自动落到私有目录。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -36,7 +36,7 @@ pub fn data_dir() -> PathBuf {
     base_dir().join(DATA_DIR)
 }
 
-/// 返回运行根目录下的非 data 资产路径（web/vendor 前端离线依赖——前端代码资产，
+/// 返回运行根目录下的非 data 资产路径（
 /// 不随数据目录收敛；此出口仅剩该用途）。
 pub fn app_path(rel: &str) -> PathBuf {
     base_dir().join(rel)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """准备 Tauri 打包资产树（在 mobile/src-tauri/ 下生成 resources/ 与 resources-manifest.txt）。
 
-  python prepare-assets.py          # 轻量版：data/（cache 仅底图 webp/地形/封面）+ web/vendor
+  python prepare-assets.py          # 轻量版：data/（cache 仅底图 webp/地形/封面）；前端已 npm 打包进 exe，无 vendor
   python prepare-assets.py --full   # 追加 resources-glb/（data/cache 全量，懒读取不解包）
 
 目录形态 = 应用运行根目录（base_dir）布局，因此 tauri 资源路径与 data::app_path 一致。
@@ -41,8 +41,6 @@ def main():
     total += copy_tree(os.path.join(ROOT, 'data'), os.path.join(RES, 'data'),
                        skip_dirs={'sessions', os.path.join('cache', 'models'),
                                   os.path.join('cache', 'screenshots')})
-    # web/vendor 前端依赖
-    total += copy_tree(os.path.join(ROOT, 'web', 'vendor'), os.path.join(RES, 'web', 'vendor'))
     # 示例回放预置为 replays/（移动端 replay_dir 指向私有 replays/，开箱即可 Scan）
     total += copy_tree(os.path.join(ROOT, 'replay_samples'), os.path.join(RES, 'replays'))
     # 地图资产裁剪：底图 webp 保留（2048²，回放底图必需），

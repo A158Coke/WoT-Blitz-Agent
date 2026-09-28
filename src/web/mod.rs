@@ -178,14 +178,13 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/api/tanks", get(tanks_handler))
         .route("/api/tank_detail/{tank_id}", get(tank_detail_handler))
         .route("/api/tank_image/{tank_id}", get(tank_image_handler))
-        .route("/api/vendor/{*path}", get(vendor_handler))
         .route("/screenshots/{*path}", get(screenshots_handler))
         // Phase 4 已切流：/armor_view/view/{id} 由 Vue SPA 接管（vue-router ArmorView）；
-        // 旧 /armor_view 前缀数据路由保留（standalone viewer 与旧书签兼容）
+        // 旧 /armor_view 前缀数据路由保留（standalone viewer 与旧书签兼容）；vendor 路由已随
+        // web/vendor 退役删除（Phase 5，three/KaTeX 已 npm 打包进 SPA 产物）
         .route("/armor_view/view/{tank_id}", get(spa_index_handler))
         .route("/armor_view/", get(armor_view_root))
         .route("/armor_view/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
-        .route("/armor_view/vendor/three/{*path}", get(crate::wargaming::viewer::vendor_handler))
         .route("/armor_view/api/tank/{tank_id}", get(armor_tank_data_handler))
         .route("/armor_view/api/tank_filter", get(crate::wargaming::viewer::tank_filter_handler))
         .route("/armor_view/api/tank_image/{tank_id}", get(crate::wargaming::viewer::tank_image_handler))
@@ -1085,26 +1084,6 @@ async fn screenshots_handler(axum::extract::Path(path): axum::extract::Path<Stri
             ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
         }
         Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("screenshot not found: {}", path)).into_response(),
-    }
-}
-
-/// 提供 web/vendor/ 静态文件（防路径穿越）。
-async fn vendor_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
-    if path.contains("..") {
-        return (axum::http::StatusCode::BAD_REQUEST, "invalid path").into_response();
-    }
-    let full = crate::data::app_path("web/vendor").join(&path);
-    match std::fs::read(&full) {
-        Ok(bytes) => {
-            let ct = if path.ends_with(".js") { "application/javascript" }
-                else if path.ends_with(".css") { "text/css" }
-                else if path.ends_with(".woff2") { "font/woff2" }
-                else if path.ends_with(".woff") { "font/woff" }
-                else if path.ends_with(".ttf") { "font/ttf" }
-                else { "application/octet-stream" };
-            ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
-        }
-        Err(_) => (axum::http::StatusCode::NOT_FOUND, format!("not found: {}", path)).into_response(),
     }
 }
 

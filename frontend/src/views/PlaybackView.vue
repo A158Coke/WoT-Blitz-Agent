@@ -179,7 +179,10 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #controls { bottom: 10px; left: 50%; transform: translateX(-50%); width: min(880px, 94%);
             padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; }
 #controls .row { display: flex; gap: 8px; align-items: center; }
-#controls input[type=range] { flex: 1; accent-color: var(--accent); }
+/* 全局 tokens.css 的 input{padding:9px 13px;border...;flex:1;min-width:120px} 会破坏
+   滑块的原生渲染与命中判定、撑大开关复选框——恢复各自自然形态 */
+#controls input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); padding: 0; border: none; background: transparent; border-radius: 0; }
+#pb-root input[type="checkbox"] { flex: none; min-width: 0; width: auto; margin: 0; }
 #controls .time { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 96px; text-align: center; }
 #pb-root button, #pb-root select { background: #1d242e; color: var(--fg); border: 1px solid var(--line);
                    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }

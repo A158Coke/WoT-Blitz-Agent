@@ -41,6 +41,9 @@ pub struct PlayerStats {
 }
 
 /// WG API 客户端（保存 Application ID、服务器分区域名与复用的 HTTP 客户端）。
+// Clone 供工具执行整体挪到 spawn_blocking 线程：reqwest::blocking 的内部 runtime
+// 不能在 tokio async worker 上创建/销毁（会 panic "Cannot drop a runtime..."）。
+#[derive(Clone)]
 pub struct WgApiClient {
     application_id: String,
     base_url: String,

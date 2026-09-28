@@ -287,7 +287,7 @@ async fn session_actor(
 ) {
     // 懒加载：磁盘有历史则恢复；Agent 构建失败不终止 actor，留待下次 Chat 重试（以 Error 事件反馈）。
     let path = dir.join(format!("{id}.json"));
-    let mut agent = restore_agent(&config_path, &path, &shared);
+    let mut agent = restore_agent(&config_path, &path, &shared).await;
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -299,7 +299,7 @@ async fn session_actor(
                 shared.swap_token(run_token.clone());
 
                 if agent.is_none() {
-                    agent = restore_agent(&config_path, &path, &shared);
+                    agent = restore_agent(&config_path, &path, &shared).await;
                 }
                 match agent.as_mut() {
                     Some(a) => {
@@ -326,24 +326,34 @@ async fn session_actor(
 }
 
 /// 构建 Agent 并尝试从磁盘恢复历史（失败以 Error 事件反馈，不 panic）。
-fn restore_agent(config_path: &std::path::Path, path: &std::path::Path, shared: &SessionShared) -> Option<Agent> {
-    match Agent::new(config_path) {
-        Ok(mut a) => {
-            if path.exists() {
-                match a.load_session(path) {
-                    Ok(()) => shared.set_history(a.history()),
-                    Err(e) => shared.push_event(AgentEvent::Error {
-                        message: format!("Failed to restore session: {e}"),
-                    }),
+/// Agent::new 构造 reqwest::blocking::Client，其内部 runtime 不能在 async worker 上
+/// 创建/销毁（tokio panic "Cannot drop a runtime..."），因此整体放 blocking 线程执行。
+async fn restore_agent(config_path: &std::path::Path, path: &std::path::Path, shared: &SessionShared) -> Option<Agent> {
+    let config_path = config_path.to_path_buf();
+    let path = path.to_path_buf();
+    let shared = shared.clone();
+    tokio::task::spawn_blocking(move || {
+        match Agent::new(&config_path) {
+            Ok(mut a) => {
+                if path.exists() {
+                    match a.load_session(&path) {
+                        Ok(()) => shared.set_history(a.history()),
+                        Err(e) => shared.push_event(AgentEvent::Error {
+                            message: format!("Failed to restore session: {e}"),
+                        }),
+                    }
                 }
+                Some(a)
             }
-            Some(a)
+            Err(e) => {
+                shared.push_event(AgentEvent::Error {
+                    message: format!("Failed to init agent: {e}"),
+                });
+                None
+            }
         }
-        Err(e) => {
-            shared.push_event(AgentEvent::Error {
-                message: format!("Failed to init agent: {e}"),
-            });
-            None
-        }
-    }
+    })
+    .await
+    .ok()
+    .flatten()
 }

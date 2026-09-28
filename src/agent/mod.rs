@@ -184,9 +184,18 @@ Respond in Chinese if the user speaks Chinese, in English otherwise.";
                         .unwrap_or(Value::Null);
                     on_event(AgentEvent::ToolCall { name: tool_name.clone(), args: args.clone() });
 
-                    let result = match self.tools.execute(tool_name, &args) {
-                        Ok(r) => r,
-                        Err(e) => format!("Error: {}", e),
+                    // 工具内部全是阻塞 IO（reqwest::blocking WG API、回放扫描、文件解析），
+                    // 挪到 blocking 线程执行：reqwest::blocking 的内部 runtime 在 async
+                    // worker 上创建即 panic，且阻塞调用会占死 worker。
+                    let result = {
+                        let tools = self.tools.clone();
+                        let name = tool_name.clone();
+                        let args = args.clone();
+                        match tokio::task::spawn_blocking(move || tools.execute(&name, &args)).await {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => format!("Error: {}", e),
+                            Err(e) => format!("Error: tool task failed: {}", e),
+                        }
                     };
                     on_event(AgentEvent::ToolResult { name: tool_name.clone(), result: result.clone() });
 

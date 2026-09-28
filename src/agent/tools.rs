@@ -15,6 +15,8 @@ use crate::wargaming::penetration::{self, ArmorHit, ArmorSection, PenetrationReq
 // Agent 工具集：注册给 LLM 的工具定义 + 执行逻辑；Agent Loop 调用 execute() 并把结果回填为 tool 消息。
 
 /// Agent 工具执行器：持有 WG API 客户端、可选坦克解析器、回放目录。
+// Clone 供 chat_async 在 spawn_blocking 上执行工具（阻塞 IO 不得占用 async worker）。
+#[derive(Clone)]
 pub struct AgentTools {
     pub wg_client: WgApiClient,
     pub tank_resolver: Option<TankResolver>,

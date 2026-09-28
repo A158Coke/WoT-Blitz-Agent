@@ -1038,14 +1038,8 @@ export function initTankViewer() {
                 tankModel = gltf.scene;
                 applyModelTransforms(tankModel);
                 tagModuleMeshes(tankModel);
-                // 游戏的 hide_elements 拆件 = 特定状态（击杀镜头/部件脱落等）专用，
-                // 战斗渲染恒隐藏——否则会作为多余组件暴露在炮塔/炮盾上且随其转动
-                tankModel.traverse(function(node) {
-                    if (!/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(node.name || '')) return;
-                    node.traverse(function(m) {
-                        if (m.isMesh) m.visible = false;
-                    });
-                });
+                // hide_elements 拆件全部渲染（用户要求完整模型）。拆件位于 hull/turret_XX/gun_XX
+                // 子树内，姿态矩阵随父节点自动跟随，无需额外处理。
                 tankModel.traverse(function(node) {
                     if (node.isMesh) {
                         node.castShadow = true;
@@ -1365,13 +1359,7 @@ export function initTankViewer() {
                             if (!gltf) { console.warn(logTag + ' shooter model load failed'); return null; }
                             const sModel = gltf.scene;
                             sModel.scale.setScalar(1);
-                            // 同受击方：hide_elements 拆件战斗渲染恒隐藏（否则随炮塔/炮盾转动暴露）
-                            sModel.traverse(function(n) {
-                                if (!/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(n.name || '')) return;
-                                n.traverse(function(m) {
-                                    if (m.isMesh) m.visible = false;
-                                });
-                            });
+                            // hide_elements 拆件全部渲染（与视觉模型同规则；随父节点姿态自动跟随）
                             if (opts && opts.applyPose) opts.applyPose(sModel);
                             // 炮闩 gun 局部坐标——必须在炮塔/炮管 bake【之前】捕获：
                             // bake 会改写 gun 节点矩阵（绕枢轴偏航/俯仰），之后无法从模型系反推。

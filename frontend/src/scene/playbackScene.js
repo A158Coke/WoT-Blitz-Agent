@@ -790,11 +790,7 @@ export function initPlayback(container, store) {
           new loader().load(`/glb/${tankId}/model.glb`, g => res(g.scene), undefined, () => res(null)));
         if (!model) return null;
         model.scale.setScalar(1);
-        // 拆件战斗渲染恒隐藏（否则随炮塔/炮盾转动暴露，装甲查看器同规则）
-        model.traverse(n => {
-          if (/^(gun_\d+(_mask)?|turret_\d+|hull)_hide_elements(_switch)?$/.test(n.name || ''))
-            n.traverse(m => { if (m.isMesh) m.visible = false; });
-        });
+        // hide_elements 拆件全部渲染（与装甲检视器同规则；位于部件子树内，姿态随父节点自动跟随）
         // 缓存模板 + 部件数据（sd）；每车实例化时 clone 并重收集节点引用
         //（同 tank_id 多车共用一个实例会互相抢对象、位姿互覆盖）
         return { template: model, sd };

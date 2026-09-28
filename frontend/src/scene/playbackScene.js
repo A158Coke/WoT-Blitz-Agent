@@ -24,6 +24,7 @@ export function initPlayback(container, store) {
   let shotPtr = 0, killPtr = 0;
   const tracers = [], impacts = [];
   let renderer = null, scene, camera, controls, clock, raycaster;
+  let labelScene = null, labelRenderer = null;
   let glbCache = new Map(), glbOn = false;
   let mapPlane = null;
   let mapTexture = null, mapMetaInfo = null;          // 底图贴图 + 铺设参数
@@ -143,6 +144,17 @@ export function initPlayback(container, store) {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
     container.appendChild(renderer.domElement);
+    // 昵称标签独立覆盖画布：按设备像素比满分辨率渲染，清晰度不受画质档 maxDpr 影响
+    //（低档锁主画布 DPR=1 会让 HiDPI 屏上的标签文字发糊）。alpha 透明叠在主画布上，
+    // pointer-events 穿透，标签恒在主场景之上（与原 depthTest:false 语义一致）。
+    labelScene = new THREE.Scene();
+    labelRenderer = new THREE.WebGLRenderer({ alpha: true, antialias: false });
+    labelRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    labelRenderer.setSize(container.clientWidth, container.clientHeight);
+    labelRenderer.domElement.style.position = 'absolute';
+    labelRenderer.domElement.style.inset = '0';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    container.appendChild(labelRenderer.domElement);
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.maxPolarAngle = Math.PI / 2 - 0.02;
     clock = new THREE.Clock();
@@ -158,6 +170,7 @@ export function initPlayback(container, store) {
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
+    if (labelRenderer) labelRenderer.setSize(container.clientWidth, container.clientHeight);
   }
   function onScenePointerDown(e) {
     if (e.button !== 0) return;
@@ -599,12 +612,15 @@ export function initPlayback(container, store) {
     const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
     for (const v of V) {
       if (!v.label) continue;
-      v.label.getWorldPosition(tmpV);
-      const d = camera.position.distanceTo(tmpV);
+      // 标签为覆盖场景根级对象：世界位置 = 车体位置 + 悬浮偏移（不再从父节点继承）
+      const d = camera.position.distanceTo(v.group.position);
       const s = Math.max(0.3, d * k);
       v.label.scale.set(s * LABEL_ASPECT, s, 1);
       // 悬浮高度随距离缩放（较此前整体减半），远处上限同步降半
-      v.label.position.y = Math.min(12, Math.max(3.25, d * 0.045));
+      v.label.position.copy(v.group.position);
+      v.label.position.y += Math.min(12, Math.max(3.25, d * 0.045));
+      // 车辆不可见时标签同步隐藏（原先经父子关系继承，现根级需显式管理）
+      v.label.visible = v.group.visible && store.labelsOn;
     }
   }
 
@@ -768,7 +784,7 @@ export function initPlayback(container, store) {
         g.add(ring);
       }
       const v = { def, group: g, turretG, gunPivot, meshHull: hull };
-      g.add(makeLabel(v));
+      labelScene.add(makeLabel(v));   // 标签在独立覆盖画布渲染（满 DPR，清晰度与画质档解耦）
       scene.add(g);
       V.push(v);
     }
@@ -1138,6 +1154,8 @@ export function initPlayback(container, store) {
     controls.update();
     updateLabels();
     renderer.render(scene, camera);
+    // 标签覆盖画布：同一相机，标签恒在主场景之上
+    if (labelRenderer) labelRenderer.render(labelScene, camera);
   }
 
   function tick() {
@@ -1259,7 +1277,7 @@ export function initPlayback(container, store) {
     setCam,
     setFollow,
     setGlb: (on) => { if (Q.allowGlb || !on) applyGlbToggle(on); },
-    setLabels: (on) => { store.labelsOn = on; for (const v of V) v.label.visible = on; },
+    setLabels: (on) => { store.labelsOn = on; if (labelScene) labelScene.visible = on; },
     setQuality,
     qualityPresets: QUALITY_PRESETS,
     destroy() {
@@ -1269,6 +1287,10 @@ export function initPlayback(container, store) {
       if (renderer) {
         renderer.dispose();
         renderer.domElement.remove();
+      }
+      if (labelRenderer) {
+        labelRenderer.dispose();
+        labelRenderer.domElement.remove();
       }
     },
   };

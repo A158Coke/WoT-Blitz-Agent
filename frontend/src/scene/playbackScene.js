@@ -690,21 +690,22 @@ export function initPlayback(container, store) {
     ctx.globalAlpha = dead ? .45 : .92; ctx.fillStyle = base;
     ctx.fillRect(26, 6, 12, 116);
     ctx.restore();
-    // 昵称 + 车型名并排一行（水平居中；超宽自适应缩昵称字号）
+    // 车型名为主（大字亮色）+ 昵称为辅（小字置灰），并排一行水平居中；超宽自适应缩字号
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     ctx.lineJoin = 'round';
     const name = (dead ? '✝ ' : '') + (v.def.nickname || 'Unknown');
     const tank = v.def.tank_name || (v.def.tank_id ? 'tank_' + v.def.tank_id : '');
     const starW = (v.def.is_author && !dead) ? 42 : 0;
-    const tankFont = (px) => `600 ${px}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-    let nfs = 42;
+    const tankFont = (px) => `700 ${px}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+    const nickFont = '500 26px "Segoe UI", "Microsoft YaHei", sans-serif';
+    let tfs = 42;                                   // 车型名为主字号
     const rowWidth = () => {
-      ctx.font = `700 ${nfs}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-      let w = starW + ctx.measureText(name).width;
-      if (tank) { ctx.font = tankFont(26); w += 14 + ctx.measureText(tank).width; }
+      ctx.font = tankFont(tfs);
+      let w = starW + ctx.measureText(tank).width;
+      if (name) { ctx.font = nickFont; w += 14 + ctx.measureText(name).width; }
       return w;
     };
-    while (nfs > 28 && rowWidth() > 430) nfs -= 2;
+    while (tfs > 28 && rowWidth() > 430) tfs -= 2;
     ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.75)';
     let tx = 256 - rowWidth() / 2;
     if (starW) {
@@ -712,17 +713,21 @@ export function initPlayback(container, store) {
       ctx.fillStyle = '#e8b23c'; ctx.fillText('★', tx, 34);
       tx += starW;
     }
-    ctx.font = `700 ${nfs}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-    ctx.strokeText(name, tx, 34);
+    // 主：车型名（无车型数据时昵称顶位）
+    const primaryText = tank || name;
+    ctx.font = tankFont(tfs);
+    ctx.strokeText(primaryText, tx, 34);
     ctx.fillStyle = dead ? 'rgba(160,168,178,.78)' : '#eef3f9';
-    ctx.fillText(name, tx, 34);
-    tx += ctx.measureText(name).width;
-    if (tank) {
+    ctx.fillText(primaryText, tx, 34);
+    tx += ctx.measureText(primaryText).width;
+    // 辅：昵称（小字置灰；tank 缺失时已顶位，不重复绘制）
+    if (tank && name) {
       tx += 14;
-      ctx.font = tankFont(26);
-      ctx.strokeText(tank, tx, 36);
-      ctx.fillStyle = dead ? 'rgba(140,148,158,.6)' : '#a9b6c6';
-      ctx.fillText(tank, tx, 36);
+      ctx.font = nickFont;
+      ctx.lineWidth = 5;
+      ctx.strokeText(name, tx, 36);
+      ctx.fillStyle = dead ? 'rgba(140,148,158,.6)' : '#b9c4cf';
+      ctx.fillText(name, tx, 36);
     }
     // 血量条：暗槽 + 队伍色纵向渐变填充
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;

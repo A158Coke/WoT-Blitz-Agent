@@ -131,10 +131,11 @@ export function initPlayback(container, store) {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x11161d);
     window.__scene = scene;   // 诊断钩子
-    camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 4000);
+    // SPA 壳内渲染：视口尺寸取容器（main 区域），而非整窗（顶部导航占 67px）
+    camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.5, 4000);
     camera.position.set(0, 180, 220);
     renderer = new THREE.WebGLRenderer({ antialias: Q.antialias });
-    renderer.setSize(innerWidth, innerHeight);
+    renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, Q.maxDpr));
     window.__renderer = renderer;   // 诊断钩子（renderer 创建后才可引用）
     // three r165+ 恒为物理光照单位（Lambert 除以 π），旧强度会让建筑/车模暗到发黑；
@@ -154,12 +155,14 @@ export function initPlayback(container, store) {
   }
   function onResize() {
     if (!renderer) return;
-    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
   }
   function onScenePointerDown(e) {
     if (e.button !== 0) return;
-    const nd = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    const r = container.getBoundingClientRect();
+    const nd = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(nd, camera);
     const hits = raycaster.intersectObjects(V.map(v => v.group), true);
     if (hits.length) {

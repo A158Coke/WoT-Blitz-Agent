@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 html,body { height:100%; }
+/* Vue 挂载根：旧版 nav/main 是 body 直接子元素（body flex 列排），
+   迁移后中间隔了 #app，必须延续 flex 列排 + 满视口高度，
+   否则 main 的 flex:1 失效 → Agent 聊天高度不足、3D 视图底部面板越界。 */
+#app { display:flex; flex-direction:column; height:100%; }
 body {
     display:flex; flex-direction:column;
     margin:0; background:var(--bg); background-image:var(--bg-grad); background-attachment:fixed;

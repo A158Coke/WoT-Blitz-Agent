@@ -2998,14 +2998,16 @@ export function initTankViewer() {
             scene.background = new THREE.Color(0x1c1410);
             scene.fog = new THREE.Fog(0x1c1410, 15, 50);
 
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+            // SPA 壳内渲染：视口尺寸取 canvas 容器（main 区域），而非整窗（顶部导航占 67px）
+            const view = document.getElementById('canvas-container');
+            camera = new THREE.PerspectiveCamera(50, view.clientWidth / view.clientHeight, 0.1, 1000);
             camera.position.set(2.5, 3.2, -8);
 
             renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setSize(view.clientWidth, view.clientHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.localClippingEnabled = true;
-            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            view.appendChild(renderer.domElement);
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.15;
 
@@ -3191,9 +3193,10 @@ export function initTankViewer() {
             document.getElementById('turret-controls').style.display = 'block';
 
             window.addEventListener('resize', function() {
-                camera.aspect = window.innerWidth / window.innerHeight;
+                const view = document.getElementById('canvas-container');
+                camera.aspect = view.clientWidth / view.clientHeight;
                 camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setSize(view.clientWidth, view.clientHeight);
                 });
         }
 

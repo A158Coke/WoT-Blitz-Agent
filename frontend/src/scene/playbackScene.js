@@ -1095,7 +1095,9 @@ export function initPlayback(container, store) {
   let followAnchor = null;             // 跟随模式：上一帧坦克位置（位移增量基准）
   function applyPose(v) {
     const dead = deathAt(v, T);
-    const vis = visibleAt(v, T);
+    // 死亡后模型不消失：coverage 在阵亡处截止，但残骸应留在最后已知位置
+    // （posAt 对越界时间钳位到最后采样，即阵亡点），与游戏内残骸留场行为一致
+    const vis = visibleAt(v, T) || dead;
     v.group.visible = vis;
     if (v.glb) v.glb.visible = vis;
     if (!vis) { v.wasDead = false; return; }
@@ -1109,13 +1111,20 @@ export function initPlayback(container, store) {
     const rel = wrapPi(turretAbsAt(v, T) - yawAt(v, T));
     v.turretG.rotation.y = -rel;
     v.gunPivot.rotation.x = -gunPitchAt(v, T);
-    // 死亡：低模灰化（材质色乘 0.35；复活语义不存在，回放倒带时恢复）
+    // 死亡：低模灰化——降饱和 + 亮度下限（旧版直接 ×0.35，队伍色本就偏深，乘完近乎
+    // 黑色剪影）。复活语义不存在，回放倒带时恢复原色。
     if (dead !== v.wasDead) {
       v.wasDead = dead;
       v.group.traverse((o) => {
         if (o.isMesh && o.material && o.material.color) {
-          if (dead) { o.userData.__c = o.material.color.clone(); o.material.color.multiplyScalar(0.35); }
-          else if (o.userData.__c) o.material.color.copy(o.userData.__c);
+          if (dead) {
+            o.userData.__c = o.material.color.clone();
+            const hsl = { h: 0, s: 0, l: 0 };
+            o.material.color.getHSL(hsl);
+            o.material.color.setHSL(hsl.h, hsl.s * 0.15, Math.max(0.30, hsl.l));
+          } else if (o.userData.__c) {
+            o.material.color.copy(o.userData.__c);
+          }
         }
       });
     }

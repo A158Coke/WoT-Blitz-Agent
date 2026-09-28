@@ -1,19 +1,38 @@
 <script setup>
-// 全局壳：顶栏 + 路由出口。样式基线来自旧版主 GUI（tokens.css + 顶栏规则平移）。
+// 全局壳：顶栏（六 Tab 路由）+ 路由出口 + 全局 toast + 模型库悬浮组件。
+// Agent Tab（首页）用视口级三区布局：main 撑满不滚动，滚动交给 #chat-log。
+import { useRoute } from 'vue-router'
+import { useToast } from './composables/useToast.js'
+import ModelsChip from './components/ModelsChip.vue'
+
+const route = useRoute()
+const { toastState } = useToast()
+
+const tabs = [
+  { name: 'home', label: 'Agent', to: '/' },
+  { name: 'tankopedia', label: 'Tankopedia', to: '/tankopedia' },
+  { name: 'player', label: 'Player', to: '/player' },
+  { name: 'replay', label: 'Replay', to: '/replay' },
+  { name: 'compare', label: 'Compare', to: '/compare' },
+  { name: 'settings', label: 'Settings', to: '/settings' },
+]
 </script>
 
 <template>
   <header id="nav">
-    <span id="brand">WOTB<span class="dot">.</span>Agent</span>
+    <span id="brand">WoTB<span class="dot">.</span>Agent</span>
     <nav id="tabs">
-      <!-- 各功能 Tab 随迁移阶段逐个改为 router-link -->
-      <RouterLink class="nav-btn active" to="/">Home</RouterLink>
+      <RouterLink
+        v-for="t in tabs" :key="t.name" :to="t.to"
+        class="nav-btn" active-class="active" :class="{ active: route.name === t.name }"
+      >{{ t.label }}</RouterLink>
     </nav>
-    <a id="legacy-link" href="/legacy" title="迁移完成前的旧版完整界面">旧版界面 →</a>
   </header>
-  <main>
+  <main :class="{ 'chat-mode': route.name === 'home' }">
     <RouterView />
   </main>
+  <div id="toast" :class="{ show: toastState.visible }">{{ toastState.text }}</div>
+  <ModelsChip />
 </template>
 
 <style scoped>
@@ -31,19 +50,15 @@
   transition:all .15s ease; text-decoration:none;
 }
 .nav-btn:hover { color:var(--txt); background:rgba(255,255,255,0.05); }
-.nav-btn.active,
-.nav-btn.router-link-active {
+.nav-btn.active {
   background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#1a1208;
   box-shadow:0 4px 16px rgba(255,138,61,0.35);
 }
-#legacy-link {
-  color:var(--muted); font-size:0.88em; text-decoration:none; padding:6px 10px;
-  border:1px solid var(--border); border-radius:var(--radius-sm);
-}
-#legacy-link:hover { color:var(--accent-2); border-color:var(--border-hi); }
 
 main {
   flex:1; min-height:0; width:100%; overflow-y:auto; padding:24px;
   max-width:1200px; margin:0 auto;
 }
+/* Agent tab 视口级三区布局：main 撑满且自身不滚动，滚动交给 #chat-log */
+main.chat-mode { max-width:none; padding:0; overflow:hidden; display:flex; }
 </style>

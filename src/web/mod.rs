@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use axum::{
     routing::{delete, get, post},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -134,7 +134,12 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/", get(spa_index_handler))
         .route("/index.html", get(spa_index_handler))
         .route("/assets/{*path}", get(spa_asset_handler))
-        .route("/legacy", get(legacy_index_handler))
+        // Phase 2 已切流：主 GUI 六 Tab 全部由 Vue SPA 接管（vue-router 分发）
+        .route("/tankopedia", get(spa_index_handler))
+        .route("/player", get(spa_index_handler))
+        .route("/replay", get(spa_index_handler))
+        .route("/compare", get(spa_index_handler))
+        .route("/settings", get(spa_index_handler))
         // Phase 1 已切流：坦克详情由 Vue SPA 接管（vue-router 路由 /tank/:tankId）
         .route("/tank/{tank_id}", get(spa_index_handler))
         .route("/api/chat", post(chat_handler))
@@ -250,11 +255,6 @@ async fn spa_asset_handler(axum::extract::Path(path): axum::extract::Path<String
         file.data,
     )
         .into_response()
-}
-
-/// 旧版主 GUI（迁移期间保留于 /legacy，收尾阶段退役）。
-async fn legacy_index_handler() -> Html<&'static str> {
-    Html(include_str!("index.html"))
 }
 
 /// 内嵌 3D 装甲检视页面（tank_id 从路径取），供坦克百科详情弹窗用 iframe 加载。

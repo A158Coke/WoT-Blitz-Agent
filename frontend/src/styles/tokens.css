@@ -32,5 +32,63 @@ h2 { margin:0 0 4px 0; font-size:1.25em; font-weight:800; }
     box-shadow:var(--shadow); margin-bottom:18px;
 }
 
+.row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:12px 0; }
+input, select, button, textarea {
+    font-size:0.95em; padding:9px 13px; background:var(--panel3); color:var(--txt);
+    border:1px solid var(--border); border-radius:var(--radius-sm); transition:border-color .15s ease, box-shadow .15s ease;
+    font-family:inherit;
+}
+input:focus, select:focus, textarea:focus { outline:none; border-color:var(--border-hi); box-shadow:0 0 0 3px rgba(255,138,61,0.14); }
+input, textarea { flex:1; min-width:120px; }
+textarea { font-family:ui-monospace,monospace; resize:vertical; }
+.btn { cursor:pointer; }
+.btn:hover { filter:brightness(1.12); }
+.btn-primary { background:linear-gradient(135deg,var(--accent),var(--accent-2)); border-color:transparent; color:#1a1208; font-weight:700; box-shadow:0 4px 14px rgba(255,138,61,0.28); }
+.btn-sm { padding:5px 11px; font-size:0.85em; border-radius:8px; }
+.btn:disabled { opacity:0.45; cursor:not-allowed; filter:none; }
+
+h4 { margin:12px 0 6px; }
+table { width:100%; border-collapse:collapse; font-size:0.92em; }
+th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }
+th { color:var(--muted); font-weight:600; font-size:0.82em; text-transform:uppercase; letter-spacing:.4px; }
+tbody tr:hover td { background:rgba(255,255,255,0.03); }
+.inline-table-sm { font-size:0.86em; }
+
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:13px; margin:10px 0; }
+.stat-box { background:linear-gradient(180deg,var(--panel2),var(--panel3)); border:1px solid var(--border); border-radius:12px; padding:14px; transition:transform .12s ease; }
+.stat-box:hover { transform:translateY(-2px); }
+.stat-box .lbl { color:var(--muted); font-size:0.76em; text-transform:uppercase; letter-spacing:.4px; }
+.stat-box .val { font-size:1.35em; font-weight:800; margin-top:4px; }
+.stat-box .val.g { color:var(--green); }
+.stat-box .val.o { color:var(--accent-2); }
+.stat-box .val.b { color:var(--blue); }
+.stat-box .val.r { color:var(--red); }
+.bar { height:8px; background:var(--panel3); border-radius:4px; overflow:hidden; }
+.bar > div { height:100%; background:linear-gradient(90deg,var(--accent),var(--accent-3)); }
+
+.spinner { display:inline-block; width:13px; height:13px; border:2px solid var(--muted); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; }
+@keyframes spin { to { transform:rotate(360deg); } }
+@keyframes fadeIn { from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+
+.muted { color:var(--muted); }
+#toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--panel3); color:var(--txt); padding:11px 20px; border-radius:var(--radius-sm); opacity:0; transition:all .3s; z-index:300; box-shadow:var(--shadow); font-size:0.92em; border:1px solid var(--border-hi); pointer-events:none; }
+#toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.pill { display:inline-block; padding:2px 9px; border-radius:20px; font-size:0.72em; font-weight:700; }
+.pill.tier { background:rgba(255,207,92,0.16); color:var(--yellow); }
+.pill.nat { background:rgba(95,168,232,0.16); color:var(--blue); }
+.pill.gold { background:rgba(255,207,92,0.16); color:var(--yellow); }
+.pill.warn { background:rgba(232,120,80,0.16); color:var(--red); }
+/* 射击复现结果徽章配色 */
+.pill.track { color:#e8b23c; border-color:#e8b23c; }
+.pill.pen   { background:rgba(95,191,122,0.16); color:var(--green); }
+.pill.nopen { background:rgba(255,107,107,0.15); color:var(--red); }
+.pill.ric   { background:rgba(255,207,92,0.16); color:var(--yellow); }
+.pill.he-res{ background:rgba(95,168,232,0.16); color:var(--blue); }
+.pill.miss  { background:rgba(156,143,127,0.15); color:var(--muted); }
+.pill.kill  { background:rgba(255,107,107,0.2); color:var(--red); }
+/* 表内迷你胜率条 */
+.wrbar { display:inline-block; width:52px; height:6px; background:var(--panel3); border-radius:3px; overflow:hidden; vertical-align:middle; margin-left:6px; }
+.wrbar > i { display:block; height:100%; border-radius:3px; }
+
 button { font-family:inherit; }
 textarea { font-family:ui-monospace,monospace; resize:vertical; }

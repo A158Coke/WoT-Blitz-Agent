@@ -13,6 +13,15 @@ export default defineConfig({
     target: 'es2020',
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue': ['vue', 'vue-router'],
+          'vendor-chart': ['chart.js'],
+          'vendor-md': ['markdown-it', 'dompurify', 'katex'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

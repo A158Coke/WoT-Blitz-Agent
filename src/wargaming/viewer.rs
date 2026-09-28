@@ -24,7 +24,7 @@ fn wsl_ip() -> String {
 /// primaryArmor 是 BlitzKit 缺项，从 game_data 同节段拷贝（缺失时留空串——仅影响展示，
 /// 装甲摘要链走 game_data 原路径不受影响）；炮塔/主炮取顶级配置（最后炮塔×最后炮），
 /// 与 game_data 的 XML 顶级配置语义对齐。
-fn synth_armor_model(tank_id: u32) -> Option<ArmorModel> {
+pub(crate) fn synth_armor_model(tank_id: u32) -> Option<ArmorModel> {
     let mi = crate::wargaming::blitzkit::model_info(tank_id)?;
     let game_am = crate::wargaming::game_extract::load_game_data(
         tank_id, &crate::data::data_dir().join("game_data"))
@@ -473,11 +473,6 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
 
     let info = resolver.resolve_info(tank_id);
 
-    let armor_plates = std::fs::read_to_string(crate::data::data_path("armor_cache.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get(tank_id.to_string()).cloned());
-
     // C 类数据：炮管/底盘碰撞盒仍取本机客户端提取（BlitzKit 无对应数据）
     let game_data = crate::wargaming::game_extract::load_game_data(tank_id, &crate::data::data_dir().join("game_data"));
     // 逐板装甲：BlitzKit models.pb 唯一来源（primary 为 BlitzKit 缺项，合成时从 game_data 拷贝）
@@ -594,7 +589,6 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
         "model_url": format!("{}/glb/{}/collision.glb", base_prefix, tank_id),
         "visual_model_url": format!("{}/glb/{}/model.glb", base_prefix, tank_id),
         "armor": armor,
-        "armor_plates": armor_plates.unwrap_or(json!(null)),
         "hull_spaced": hull_spaced,
         "model_origins": model_origins,
         "initial_turret_rotation": initial_turret_rotation,

@@ -48,23 +48,25 @@ export function initTankViewer() {
         }
 
         function getPlateThickness(section, plateId) {
-            const ap = tankData.armor_plates;
-            if (section === 'hull') return ap?.hull_plates?.[plateId] ?? tankData.armor_model?.hull?.plates?.[plateId] ?? null;
-            if (section === 'turret') return ap?.turret_plates?.[plateId] ?? tankData.armor_model?.turret?.plates?.[plateId] ?? null;
-            if (section === 'gun') return ap?.gun_plates?.[plateId] ?? tankData.armor_model?.gun?.plates?.[plateId] ?? null;
+            // BlitzKit resolveArmor 语义：thickness = armor.thickness[index] ?? 0。
+            // 数据源只有 models.pb 合成的 tankData.armor_model（armor_cache.json 已退役）；
+            // 缺板（如序列化时省略的 0 值板）记 0mm，0 厚度板照常渲染/判定。
+            const am = tankData.armor_model || {};
+            const id = String(plateId);
+            if (section === 'hull') return am.hull?.plates?.[id] ?? 0;
+            if (section === 'turret') return am.turret?.plates?.[id] ?? 0;
+            if (section === 'gun') return am.gun?.plates?.[id] ?? 0;
             if (section === 'chassis') {
-                const ch = tankData.armor_model?.chassis;
-                if (!ch) return null;
-                if (plateId === 'leftTrack') return ch.left_track;
-                if (plateId === 'rightTrack') return ch.right_track;
+                const ch = am.chassis;
+                if (!ch) return 0;
+                if (plateId === 'leftTrack') return ch.left_track ?? 0;
+                if (plateId === 'rightTrack') return ch.right_track ?? 0;
             }
             if (section === 'gunBarrel') {
-                // 炮管：XML 提取的 armor_model 优先，缺失时回退 models.pb 的 gun_thickness
-                // （armor_cache 的 gun_plates 只含炮盾板，无 'gun' 炮管值）
-                const gp = tankData.armor_model?.gun?.plates;
-                return gp?.['gun'] ?? currentConfig()?.gun_thickness ?? null;
+                // 炮管：armor_model 的 'gun' 汇总值优先，缺失回退 models.pb 的 gun_thickness
+                return am.gun?.plates?.['gun'] ?? currentConfig()?.gun_thickness ?? 0;
             }
-            return null;
+            return 0;
         }
 
         function isRealArmorThickness(t) {
@@ -3515,6 +3517,18 @@ export function initTankViewer() {
                     gunClipPlane.distanceToPoint(hit.point) < 0) continue;
                 const entry = classifyHit(hit);
                 if (entry) armorHits.push(entry);
+            }
+
+            // BlitzKit 语义（SpacedArmorScene）：整条射线只命中外部模块（炮管/履带）而无任何
+            // 主装甲板（hull/turret/gun/spaced 板）→ 不构成一次击穿判定，不显示结果。
+            // 仅作用于相机点击路径；射击复现的弹道弦判定需要外部模块层参与穿深链，保持原样。
+            const isCameraClick = !window.__segRay && !(__shotRayOrigin && __shotRayTarget);
+            if (isCameraClick &&
+                armorHits.length > 0 &&
+                armorHits.every(h => h.section === 'gunBarrel' || h.section === 'chassis')) {
+                if (window.__hitMarker) { scene.remove(window.__hitMarker); window.__hitMarker = null; }
+                document.getElementById('click-info').style.display = 'none';
+                return;
             }
 
             if (armorHits.length === 0) {

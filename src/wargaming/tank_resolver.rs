@@ -214,7 +214,7 @@ impl TankResolver {
 
     /// 从本地 BlitzKit 数据文件构建完整解析器（无需 WG API）。
     /// 数据源：tanks.pb（唯一数据源，运行时解析）、models.pb（俯仰角）、
-    /// game_data/{id}.json（装甲模型）、armor_cache.json（装甲摘要兜底）。
+    /// game_data/{id}.json（装甲模型）；装甲摘要回退 BlitzKit models.pb。
     pub fn from_blitzkit() -> Result<Self> {
         let mut resolver = Self::new();
 
@@ -293,22 +293,8 @@ impl Default for TankResolver {
     }
 }
 
-/// armor_cache.json 的解析结果（进程内只读取/解析一次，供全部坦克的回退查询共用；
-/// 文件缺失/解析失败时为 None，按"无缓存"回退 BlitzKit 数据）。
-fn armor_cache() -> Option<&'static serde_json::Value> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<serde_json::Value>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            std::fs::read_to_string(crate::data::data_path("armor_cache.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        })
-        .as_ref()
-}
-
 /// 提取装甲摘要（前/侧/后，mm）：优先用游戏提取的精确装甲模型（game_data/{id}.json，
-/// 按 primary 板 ID 定位各板块厚度）；缺失时回退 armor_cache.json（取每组最大厚度近似）。
+/// 按 primary 板 ID 定位各板块厚度）；缺失时回退 BlitzKit models.pb（取每组最大厚度近似）。
 fn extract_armor_summary(tank_id: u32) -> Option<ArmorData> {
     let game_path = crate::data::data_path(&format!("game_data/{}.json", tank_id));
     if let Ok(content) = std::fs::read_to_string(&game_path) {
@@ -319,20 +305,22 @@ fn extract_armor_summary(tank_id: u32) -> Option<ArmorData> {
         }
     }
 
-    let cache = armor_cache()?;
-    let entry = cache.get(tank_id.to_string())?;
-    let p = |key: &str| {
-        entry.get(key).and_then(|v| v.as_object()).map(|m| {
-            m.values().filter_map(|x| x.as_f64()).fold(0.0f64, |a, b| a.max(b)) as u32
-        })
+    let mi = crate::wargaming::blitzkit::model_info(tank_id)?;
+    let p = |plates: &std::collections::BTreeMap<u32, f32>| -> u32 {
+        plates.values().fold(0.0f64, |a, b| a.max(*b as f64)) as u32
     };
+    let hull_max = p(&mi.hull_plates);
+    let turret_max = mi.turrets.iter()
+        .map(|t| p(&t.turret_plates))
+        .max()
+        .unwrap_or(0);
     Some(ArmorData {
-        turret_front: p("turret_plates").unwrap_or(0),
-        turret_sides: p("turret_plates").unwrap_or(0),
-        turret_rear: p("turret_plates").unwrap_or(0),
-        hull_front: p("hull_plates").unwrap_or(0),
-        hull_sides: p("hull_plates").unwrap_or(0),
-        hull_rear: p("hull_plates").unwrap_or(0),
+        turret_front: turret_max,
+        turret_sides: turret_max,
+        turret_rear: turret_max,
+        hull_front: hull_max,
+        hull_sides: hull_max,
+        hull_rear: hull_max,
     })
 }
 

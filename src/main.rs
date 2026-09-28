@@ -35,6 +35,14 @@ enum Commands {
         #[arg(long)]
         tank_cache: Option<PathBuf>,
     },
+    /// Export authoritative ReplayDataset (metadata/settlement/diagnostics) as JSON
+    Dataset {
+        /// Path to the .wotbreplay file
+        file: PathBuf,
+        /// Tank cache file path (JSON)
+        #[arg(long)]
+        tank_cache: Option<PathBuf>,
+    },
     /// Scan a directory for replays and aggregate stats
     Scan {
         /// Directory containing .wotbreplay files
@@ -522,6 +530,91 @@ fn main() -> Result<()> {
             } else {
                 print_single_replay(&summary);
             }
+        }
+        Commands::Dataset { file, tank_cache } => {
+            let resolver = tank_cache
+                .filter(|p| p.exists())
+                .and_then(|p| TankResolver::load_from_json_file(&p).ok());
+            let parser = if let Some(ref r) = resolver {
+                wotb_agent::replay::parser::ReplayParser::with_resolver(r)
+            } else {
+                wotb_agent::replay::parser::ReplayParser::new()
+            };
+            let summary = parser.parse_file(&file)?;
+
+            // 诊断层：包流直方图 + 未消费数据段 + 质量降级聚合
+            let mut replay = wotbreplay_parser::replay::Replay::open(std::fs::File::open(&file)?)?;
+            let data = replay.read_data()?;
+            let raw_packets: Vec<(u32, f32, &[u8])> = data.packets.iter()
+                .map(|pkt| {
+                    let t = match &pkt.payload {
+                        wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
+                        wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
+                        wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
+                    };
+                    (t, pkt.clock_secs, &pkt.raw_payload[..])
+                })
+                .collect();
+
+            let mut dataset = wotb_agent::models::replay_dataset::ReplayDataset::from_summary(&summary);
+
+            // packet_types 直方图
+            let mut hist: std::collections::BTreeMap<u32, u64> = Default::default();
+            for (t, _, _) in &raw_packets { *hist.entry(*t).or_insert(0) += 1; }
+            dataset.diagnostics.packet_types = hist.into_iter().collect();
+
+            // 未消费数据段（type=8 按 method、type=7 按 prop、type=32 按帧型；其余按 type）
+            let mut un: std::collections::BTreeMap<String, u64> = Default::default();
+            let consumed8 = [0x00u32, 0x01, 0x07, 0x08, 0x0d, 0x14, 0x1b, 0x1d, 0x23, 0x24, 0x26, 0x30];
+            let consumed7 = [0u32, 1, 2, 3, 4, 9, 10, 11];
+            for (t, _, p) in &raw_packets {
+                let key = match t {
+                    8 if p.len() >= 8 => {
+                        let m = u32::from_le_bytes([p[4], p[5], p[6], p[7]]);
+                        if consumed8.contains(&m) { continue; }
+                        format!("m0x{:02x}", m)
+                    }
+                    7 if p.len() >= 8 => {
+                        let sub = u32::from_le_bytes([p[4], p[5], p[6], p[7]]);
+                        if consumed7.contains(&sub) { continue; }
+                        format!("prop{}", sub)
+                    }
+                    10 | 5 | 4 | 26 | 28 | 31 | 33 | 35 | 36 | 39 | 0 => continue,
+                    32 => {
+                        if p.len() >= 5 && p[4] == 0x01 && (p.len() == 26 || p.len() == 27) { continue; }
+                        "type32_other".to_string()
+                    }
+                    other => format!("type{}", other),
+                };
+                *un.entry(key).or_insert(0) += 1;
+            }
+            dataset.diagnostics.unsupported = un.into_iter().collect();
+
+            // 质量降级聚合（作者 + 他人路径全部 ShotReplayData.quality）
+            let author_eid = wotb_agent::replay::combat::resolve_author_player_eid_by_nick(&raw_packets, &summary.author_nickname);
+            let pitch_limits = Default::default();
+            let author_shots = wotb_agent::replay::combat::extract_shot_replays_auto_with_limits(&raw_packets, &summary.author_nickname, &pitch_limits)
+                .unwrap_or_default();
+            let others = wotb_agent::replay::combat::extract_other_shot_replays_with_limits(&raw_packets, author_eid, &pitch_limits);
+            dataset.diagnostics.shots_author = author_shots.len();
+            dataset.diagnostics.shots_others = others.shots.len();
+            let mut deg: std::collections::BTreeMap<String, u64> = Default::default();
+            let mut bump = |q: &Option<wotb_agent::replay::combat::ShotQuality>, deg: &mut std::collections::BTreeMap<String, u64>| {
+                let Some(q) = q else { return };
+                if q.shooter_pos_from_muzzle { *deg.entry("shooter_pos_from_muzzle".into()).or_insert(0) += 1; }
+                if q.shooter_pitch_from_velocity { *deg.entry("shooter_pitch_from_velocity".into()).or_insert(0) += 1; }
+                if q.shooter_pitch_from_method36 { *deg.entry("shooter_pitch_from_method36".into()).or_insert(0) += 1; }
+                if q.dmg_unattributed { *deg.entry("dmg_unattributed".into()).or_insert(0) += 1; }
+                if q.shell_from_broadcast { *deg.entry("shell_from_broadcast".into()).or_insert(0) += 1; }
+                if q.shell_from_terrain { *deg.entry("shell_from_terrain".into()).or_insert(0) += 1; }
+                for k in q.gun_pitch_degraded.iter().chain(q.pitch_frozen.iter()).chain(q.turret_degraded.iter()) {
+                    *deg.entry(k.clone()).or_insert(0) += 1;
+                }
+            };
+            for s in author_shots.iter().chain(others.shots.iter()) { bump(&s.quality, &mut deg); }
+            dataset.diagnostics.degradation = deg.into_iter().collect();
+
+            println!("{}", serde_json::to_string_pretty(&dataset)?);
         }
         Commands::Scan { dir, mode, days, output, tank_cache, fetch_tanks, app_id: _, server: _ } => {
             let resolver = if fetch_tanks {
@@ -1368,7 +1461,7 @@ fn cmd_update_data(
     }.save()?;
 
     println!("  Manifest: data/data_version.json updated");
-    println!("Note: armor_cache.json is static fallback data (armor summary) and is NOT refreshed by this command.");
+    println!("Note: armor summary now comes from BlitzKit models.pb; legacy armor_cache.json is retired.");
     Ok(())
 }
 
@@ -1415,6 +1508,26 @@ fn print_single_replay(summary: &wotb_agent::models::battle::BattleSummary) {
             p.mm_rating.unwrap_or(0.0));
     }
     println!("\n  (* = replay author)");
+
+    // 结算补充字段（battle_results #301 crate 未暴露部分：死因/寿命/点亮/毁灭协助/炮印）
+    println!("--- Settlement（存活/死因/寿命/点亮/毁灭协助/炮印） ---");
+    for p in &summary.players {
+        let fate = match p.death_reason {
+            Some(-1) => format!("幸存(寿命 {}s)", p.life_time_secs.unwrap_or(0)),
+            Some(1) => format!("火焰(寿命 {}s)", p.life_time_secs.unwrap_or(0)),
+            Some(2) => format!("撞车(寿命 {}s)", p.life_time_secs.unwrap_or(0)),
+            Some(3) => format!("世界(寿命 {}s)", p.life_time_secs.unwrap_or(0)),
+            Some(d) => format!("死因{d}"),
+            None => "击毁".to_string(),
+        };
+        let killer = p.killer_id.map(|k| format!(" · 击杀者 {k}")).unwrap_or_default();
+        println!("  {:<25} {} · 点亮 {} · 毁灭协助 {} · 炮印 {}{}",
+            p.nickname, fate,
+            p.n_enemies_spotted.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            p.destruction_assistance.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            p.gun_marks.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            killer);
+    }
     println!("\n========================================================");
 }
 

@@ -492,10 +492,9 @@ impl AgentTools {
         // 装甲汇总（前/侧/后，mm）与血量（一次 resolve_info 复用）
         let info = resolver.resolve_info(target);
         let summary = info.and_then(|i| i.armor.clone());
-        // 逐板厚度（armor_cache.json，models.pb 派生）
-        let plates: Value = std::fs::read_to_string(crate::data::data_path("armor_cache.json")).ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.get(target.to_string()).cloned())
+        // 逐板厚度（models.pb 唯一来源；armor_cache.json 已退役）
+        let plates: Value = crate::wargaming::viewer::synth_armor_model(target)
+            .and_then(|m| serde_json::to_value(m).ok())
             .unwrap_or(json!(null));
 
         // spaced 分类 + 顶配弹种（models.pb；顶配 = turrets.at(-1).guns.at(-1)）

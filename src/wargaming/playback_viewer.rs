@@ -468,8 +468,6 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     <button data-cam="top">俯视</button>
     <button data-cam="follow">跟随</button>
     <span style="flex:1"></span>
-    <label class="toggle"><input type="checkbox" id="terrainToggle" disabled> 3D 地形</label>
-    <label class="toggle"><input type="range" id="mapOpacity" min="0" max="1" step="0.05" value="0.92" style="width:74px"> 底图</label>
     <label class="toggle"><input type="checkbox" id="glbToggle"> 真实车模（GLB）</label>
     <label class="toggle"><input type="checkbox" id="labelToggle" checked> 昵称标签</label>
     <span id="qBadge" title="画质档在加载前选择：主页面回放入口、本页弹层，或 URL ?q=low|mid|high"></span>
@@ -487,7 +485,7 @@ if (window.__TAURI__ && window.__TAURI__.core) {
     <button data-q="low">低</button>
     <button data-q="mid">中</button>
     <button data-q="high">高</button>
-    <span style="color:var(--dim);font-size:11px">低=流畅优先（无建筑/盒子车模）· 中=无建筑 · 高=全部效果</span>
+    <span style="color:var(--dim);font-size:11px">低=小地图地面（无建筑/盒子车模）· 中=烘焙底图+建筑 · 高=分层地表+建筑+抗锯齿</span>
   </div>
   <div class="hint">14 车全场连续回放：滤波渲染位姿 + 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流。<br>
   数据由本机解析（AvatarFilter 渲染层 + prop2 炮塔角），加载需数秒。</div>
@@ -511,14 +509,13 @@ let shotPtr = 0, killPtr = 0;
 const tracers = [], impacts = [];
 let renderer, scene, camera, controls, clock, raycaster;
 let glbCache = new Map(), glbOn = false;
-let mapPlane = null, mapOpacity = 0.92;
+let mapPlane = null;
 let mapTexture = null, mapMetaInfo = null;          // 底图贴图 + 铺设参数
 // 分层地表（客户端 tilemask-fp.sl 实时合成）：{layers: 合成参数, texs: {cm,tile,mask,hmap}}。
 // 缺失（未导出/404）时回退整图烘焙底图
 let groundLayers = null;
 let terrainMesh = null, heightField = null, heightMeta = null;  // 3D 地形
 let mapScenery = null;                              // 静态场景 GLB（建筑等）
-let terrainOn = true;
 
 // ---------- 画质分档 ----------
 // 三档渲染预设：桌面默认高（即历史效果），Tauri/移动 WebView 默认低。
@@ -526,7 +523,7 @@ let terrainOn = true;
 // 抗锯齿/DPR/场景资源在渲染器与场景首次创建时一次性定型，加载后改档需整页刷新。
 const QUALITY_PRESETS = {
   low:  { label: '低', antialias: false, maxDpr: 1,   scenery: false, groundLayers: false, miniMap: true,  anisotropy: 1, terrainSeg: 192, allowGlb: false },
-  mid:  { label: '中', antialias: false, maxDpr: 1.5, scenery: false, groundLayers: true,  miniMap: false, anisotropy: 4, terrainSeg: 256, allowGlb: true },
+  mid:  { label: '中', antialias: false, maxDpr: 1.5, scenery: true,  groundLayers: false, miniMap: false, anisotropy: 4, terrainSeg: 256, allowGlb: true },
   high: { label: '高', antialias: true,  maxDpr: 2,   scenery: true,  groundLayers: true,  miniMap: false, anisotropy: 8, terrainSeg: 512, allowGlb: true },
 };
 function resolveQuality() {
@@ -747,7 +744,7 @@ async function loadMapImage() {
   if (mapScenery) { scene.remove(mapScenery); mapScenery = null; }
   mapTexture = null; mapMetaInfo = null; heightField = null; heightMeta = null;
   groundLayers = null;
-  $('terrainToggle').disabled = true;
+  // 地面加载方式由画质档决定（低=小地图底图、中/高=分层地表），3D 地形有高度场即开启
   // 地图端点用回放数字 id（与客户端 arenaTypeID → maps.yaml 同链）；
   // 显示名可能与解析器枚举名不一致，仅作后备
   const mid = DATA.meta.map_id || 0;
@@ -782,8 +779,6 @@ async function loadMapImage() {
       }
     }
   } catch (e) { console.warn('地形加载失败（回退 2D）:', e); }
-  $('terrainToggle').disabled = !heightField;
-  $('terrainToggle').checked = !!heightField && terrainOn;
   // 客户端同款分层地表：colormap/lightmap/tile 细节/mask/(HeightBlend 高度图)，
   // tile 纹理前端按 textureTiling 平铺全分辨率采样（texCoordTiled = texCoord ×
   // textureTiling，30–120 次重复/全图）——清晰度等同客户端，不受整图烘焙
@@ -907,7 +902,7 @@ function sampleHeight(x, z) {
   return top * (1 - ty) + bot * ty;
 }
 
-// 依据 mapTexture/heightField/terrainOn 重建地面（2D 平面或 3D 地形二选一）
+// 依据 mapTexture/heightField 重建地面（2D 平面或 3D 地形二选一）
 // 客户端 Landscape/tilemask-fp.sl 非 PBR 路径的实时合成材质（离线着色器解码
 // 逐分支核对）：GLOBAL_TINT（globalFlatColor×2 + lightmap 通道 brightness/
 // contrast/gamma 调整）、SCALED_TILES（每通道各自 tileScale）、HEIGHT_BLEND
@@ -1037,7 +1032,7 @@ function rebuildGround() {
   if (!mapTexture && !heightField) return;
   const meta = mapMetaInfo || {};
   const size = meta.size_m || heightMeta?.span || 600;
-  if (heightField && terrainOn) {
+  if (heightField) {
     // 3D 地形：高度场为场景系（列 0 = 场景 x −300，即已含游戏 x 取负），行 0 = z −300。
     // 平面经 rotation(-π/2,0,π) 放置后：世界 x = −局部x（场景镜像系）、世界 z = 局部y、
     // 高度沿局部 +z。车辆/建筑全部位于场景系 → 采样必须用**世界 x（= −局部x）**。
@@ -1058,23 +1053,19 @@ function rebuildGround() {
       mat = groundShaderMaterial(groundLayers.layers, groundLayers.texs,
         size, meta.x || 0, meta.z || 0);
     } else {
-      mat = new THREE.MeshBasicMaterial({
-        map: mapTexture, transparent: mapOpacity < 1, opacity: mapOpacity,
-      });
+      mat = new THREE.MeshBasicMaterial({ map: mapTexture });
       mat.toneMapped = false;
     }
     terrainMesh = new THREE.Mesh(geo, mat);
     terrainMesh.rotation.set(-Math.PI / 2, 0, Math.PI);
     terrainMesh.position.set(meta.x || 0, 0, meta.z || 0);
-    terrainMesh.visible = mapOpacity > 0.01;
     scene.add(terrainMesh);
   } else if (mapTexture) {
-    const mat = new THREE.MeshBasicMaterial({ map: mapTexture, transparent: true, opacity: mapOpacity, depthWrite: false });
+    const mat = new THREE.MeshBasicMaterial({ map: mapTexture });
     mat.toneMapped = false;
     mapPlane = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
     mapPlane.rotation.set(-Math.PI / 2, 0, Math.PI + (meta.rot90 || 0) * Math.PI / 2);
     mapPlane.position.set(meta.x || 0, 0.04, meta.z || 0);
-    mapPlane.visible = mapOpacity > 0.01;
     scene.add(mapPlane);
   }
 }
@@ -1720,16 +1711,6 @@ function initControls() {
   $('glbToggle').addEventListener('change', (e) => {
     if (!Q.allowGlb) { e.target.checked = false; return; }   // 低档强制盒子代理
     applyGlbToggle(e.target.checked);
-  });
-  $('terrainToggle').addEventListener('change', (e) => {
-    terrainOn = e.target.checked;
-    rebuildGround();
-  });
-  $('mapOpacity').addEventListener('input', (e) => {
-    mapOpacity = parseFloat(e.target.value);
-    for (const m of [mapPlane, terrainMesh]) {
-      if (m) { m.material.opacity = mapOpacity; m.material.transparent = mapOpacity < 1; m.visible = mapOpacity > 0.01; }
-    }
   });
   $('labelToggle').addEventListener('change', (e) => {
     for (const v of V) v.label.visible = e.target.checked;

@@ -19,6 +19,9 @@ export default defineConfig({
           'vendor-vue': ['vue', 'vue-router'],
           'vendor-chart': ['chart.js'],
           'vendor-md': ['markdown-it', 'dompurify', 'katex'],
+          // three（含 addons）单独成包：仅 /playback 与 /armor_view 两个场景路由需要，
+          // 随路由懒加载按需取用，不再混入通用首屏 chunk
+          'vendor-three': ['three'],
         },
       },
     },

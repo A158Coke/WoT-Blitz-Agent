@@ -132,6 +132,11 @@ Respond in Chinese if the user speaks Chinese, in English otherwise.";
     where
         F: FnMut(AgentEvent) + Send,
     {
+        // 全局打断标志只对"设置时正在运行的轮次"生效；新轮次开始即复位，
+        // 否则一次 Web 取消（无 session_id 的回退分支）或 Ctrl+C 会让
+        // 之后所有会话立即返回 "[Interrupted by user]"，直到进程重启。
+        INTERRUPTED.store(false, Ordering::SeqCst);
+
         if self.config.llm.api_key.is_empty() {
             on_event(AgentEvent::Error { message: "LLM API key not configured.".into() });
             return Err(anyhow::anyhow!("LLM API key not configured. Run `wotb-agent config --show` to edit config.toml."));

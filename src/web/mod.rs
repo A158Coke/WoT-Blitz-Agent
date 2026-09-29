@@ -16,8 +16,12 @@ use rust_embed::RustEmbed;
 
 /// Vue 前端构建产物（frontend/dist/，构建入口 scripts/build-all.ps1）。
 /// 默认 debug 构建运行时读盘（npm run build 后刷新即生效）；release 构建编译期嵌入。
+/// 排除 release/：导出资产包曾以相对 `--out release/asset_pack` 落进 dist（1.3GB），
+/// 编译期嵌入会直接撑爆构建——dist 只认 npm 产物。
 #[derive(RustEmbed)]
 #[folder = "frontend/dist/"]
+#[exclude = "release/*"]
+#[exclude = "release/**"]
 struct SpaAssets;
 
 pub mod sessions;
@@ -193,6 +197,9 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/armor_view/api/replay_shot", get(replay_shots_embedded_handler))
         .route("/api/models/status", get(models_status_handler))
         .route("/api/models/download_all", post(models_download_all_handler))
+        // 回放上传 body 上限：axum 默认 2MB，而 .wotbreplay 普遍 1-10MB，
+        // 不放宽则移动端"导入回放"超限直接 413
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -686,6 +693,22 @@ async fn replay_shots_handler(
         return (axum::http::StatusCode::NOT_FOUND, format!("replay not found: {}", file)).into_response();
     }
 
+    // 解包 / 全量包解析 / 双路射击提取 / 配置富化全是 CPU+IO 重活——整体挪
+    // spawn_blocking（此前直接跑在 async worker 上，单请求可占死 worker 数秒，
+    // 并发时拖慢所有路由；同文件 player/scan/snapshot 均已有此纪律）
+    let tank_cache = state.tank_cache.clone();
+    match tokio::task::spawn_blocking(move || replay_shots_blocking(path, file, tank_cache)).await {
+        Ok(resp) => resp,
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("task join failed: {}", e)).into_response(),
+    }
+}
+
+/// [`replay_shots_handler`] 的阻塞实现（spawn_blocking 内执行）。
+fn replay_shots_blocking(
+    path: std::path::PathBuf,
+    file: String,
+    tank_cache: Arc<TankCache>,
+) -> Response {
     use wotbreplay_parser::replay::Replay;
     let f = match std::fs::File::open(&path) {
         Ok(f) => f,
@@ -735,11 +758,14 @@ async fn replay_shots_handler(
         .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
     let comps = crate::replay::playback::collect_comp_descriptors(&raw_packets, &valid_tanks);
     let pitch_limits = br.as_ref()
-        .and_then(|br| state.tank_cache.resolver()
+        .and_then(|br| tank_cache.resolver()
             .map(|r| r.pitch_limits_from_battle_results(br, &comps)))
         .unwrap_or_default();
-    // fail-fast：提取失败直接返回 500 + 错误信息（前端可见），不做静默降级
-    let shot_replay = match crate::replay::combat::extract_shot_replays_auto_with_limits(&raw_packets, &author_nick, &pitch_limits) {
+    // fail-fast：提取失败直接返回 500 + 错误信息（前端可见），不做静默降级。
+    // 一次共享扫描完成作者严格 + 他人宽松两路（此前两个接口各自全量重扫包流）
+    let (mut all_shots, others) = match crate::replay::combat::extract_all_shots_auto_with_limits(
+        &raw_packets, &author_nick, 0, &pitch_limits)
+    {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[replay_shots] 提取失败: {}", e);
@@ -747,11 +773,7 @@ async fn replay_shots_handler(
                     Json(json!({"error": format!("射击复现数据提取失败: {}", e)}))).into_response();
         }
     };
-    eprintln!("[replay_shots] shot_replay={}", shot_replay.len());
-    // 其他玩家射击：宽松提取后合并、按时间全局重编号（index 是 viewer `shot=N` 与列表共用的选择键）
-    let author_eid = crate::replay::combat::resolve_author_player_eid_by_nick(&raw_packets, &author_nick);
-    let mut all_shots = shot_replay;
-    let others = crate::replay::combat::extract_other_shot_replays_with_limits(&raw_packets, author_eid, &pitch_limits);
+    eprintln!("[replay_shots] shot_replay={} total_launches(others)={}", all_shots.iter().filter(|s| s.is_author).count(), others.total_launches);
     // 数据边界提示（前端射击列表头部展示）：他人路径收录覆盖 + 跳过/兜底统计
     let mut extraction_notes: Vec<String> = Vec::new();
     if others.total_launches > 0 {
@@ -886,7 +908,7 @@ async fn replay_shots_handler(
     }).collect()).unwrap_or_default();
     // 作者坦克弹种表（按弹药槽位顺序）；查不到坦克时给空数组，前端降级显示"槽N"。
     let author_shells: Vec<Value> = if author_tank_id != 0 {
-        state.tank_cache.resolver()
+        tank_cache.resolver()
             .and_then(|r| r.resolve_info(author_tank_id).map(|info| {
                 info.shells.iter().map(|sh| json!({
                     "shell_type": sh.shell_type,
@@ -1008,7 +1030,7 @@ async fn tank_detail_handler(
     let dmg_max = shells.iter().filter_map(|s| s.get("damage").and_then(|d| d.as_f64())).fold(f64::NEG_INFINITY, f64::max);
     let dmg_max = if dmg_max.is_finite() { Some(dmg_max as u64) } else { None };
 
-    let configs: Vec<Value> = crate::wargaming::viewer::build_configs(tank_id as u32);
+    let configs = crate::wargaming::viewer::build_configs(tank_id as u32);
     // 收藏车标记来自 tanks.pb field13==2（tank_cache.json 不含此字段）
     let is_collector = crate::wargaming::blitzkit::tank_full(tank_id as u32)
         .map(|t| t.is_collector)
@@ -1033,7 +1055,7 @@ async fn tank_detail_handler(
         "armor": armor,
         "shells": shells,
         "damage_max": dmg_max,
-        "configs": configs,
+        "configs": configs.as_ref(),
         "image": format!("/api/tank_image/{}", tank_id),
     })).into_response()
 }
@@ -1149,8 +1171,12 @@ async fn replay_upload_handler(
         return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir failed: {e}")).into_response();
     }
     let path = dir.join(&name);
-    match std::fs::write(&path, &body) {
-        Ok(_) => Json(json!({ "path": path.to_string_lossy(), "bytes": body.len() })).into_response(),
-        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("save failed: {e}")).into_response(),
+    let bytes = body.len();
+    let display = path.to_string_lossy().to_string();
+    // 写盘挪 blocking（async 上下文直接 fs::write 全量 body 会占 worker）
+    match tokio::task::spawn_blocking(move || std::fs::write(&path, &body)).await {
+        Ok(Ok(_)) => Json(json!({ "path": display, "bytes": bytes })).into_response(),
+        Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("save failed: {e}")).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("save task failed: {e}")).into_response(),
     }
 }

@@ -1,5 +1,6 @@
 use axum::{routing::{get, post}, response::{IntoResponse, Response}, Json, Router};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::path::Path;
@@ -154,16 +155,8 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
 
     let url = format!("https://api.blitzkit.app/tanks/{}/{}", tank_id, filename);
     eprintln!("[glb-cache] downloading {} ...", url);
-    // Client 构建一次复用（内部含连接池），重试循环内不再 clone/重建；
-    // 构建失败时退化为默认 Client，重试语义不变
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => reqwest::Client::new(),
-    };
+    // Client 进程级复用（连接池跨请求共享；此前每次调用重建，池形同虚设）
+    let client = glb_http_client();
     let mut last_err;   // 循环内每个分支都会先赋值
     for _attempt in 0..3 {
         match client.get(&url).send().await {
@@ -202,13 +195,16 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
     // 而 curl（不同 TLS 栈）可完整拉取同一资源。
     eprintln!("[glb-cache] reqwest 失败，尝试系统 curl 回退...");
     let tmp_path = cache_path.with_extension("download");
-    let out = std::process::Command::new("curl")
+    // tokio 异步子进程（此前 std::process 同步 output() 会在 async worker 上挂最长
+    // --max-time 180s，回源失败时占死 worker）
+    let out = tokio::process::Command::new("curl")
         .args([
             "-sfL", "--max-time", "180",
             "-o", tmp_path.to_string_lossy().as_ref(),
             &url,
         ])
-        .output();
+        .output()
+        .await;
     match out {
         Ok(o) if o.status.success() && tmp_path.exists() => {
             match std::fs::read(&tmp_path) {
@@ -282,7 +278,7 @@ pub async fn start_viewer_server_for_replay(
     // meta.player_name 仅作兜底）
     let br = replay.read_battle_results().ok();
     let author_nickname = br.as_ref()
-        .map(|br| crate::replay::combat::author_nick_from_battle_results(br))
+        .map(crate::replay::combat::author_nick_from_battle_results)
         .or_else(|| meta.as_ref().map(|m| m.player_name.clone()))
         .unwrap_or_default();
     let author_player_eid = crate::replay::combat::resolve_author_player_eid_by_nick(&raw_packets, &author_nickname);
@@ -597,7 +593,7 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
         "armor_model": armor_model_val,
         "caliber": caliber,
         "shells": shells,
-        "configs": configs,
+        "configs": configs.as_ref(),
         "hp": info.as_ref().and_then(|i| i.hp),
         "speed": info.as_ref().and_then(|i| i.speed_forward),
         "gun_depression": info.as_ref().and_then(|i| i.gun_depression).map(|v| v as f64),
@@ -636,13 +632,52 @@ fn parse_glb_top_nodes(bytes: &[u8]) -> Option<Vec<String>> {
     let scene = js.get("scenes")?.as_array()?.first()?.get("nodes")?.as_array()?;
     let root_idx = scene.first()?;
     let root = nodes.get(root_idx.as_u64()? as usize)?;
-    let Some(children) = root.get("children").and_then(|c| c.as_array()) else { return None };
+    let children = root.get("children").and_then(|c| c.as_array())?;
     Some(children.iter()
         .filter_map(|c| nodes.get(c.as_u64()? as usize)?.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
         .collect())
 }
 
-pub(crate) fn build_configs(tank_id: u32) -> Vec<Value> {
+/// GLB 下载专用 HTTP Client（进程级单例：连接池跨请求复用）。
+fn glb_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(45))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+/// build_configs 进程级缓存（tank_id → 配置表）：此前每次调用都重读整个 model.glb
+/// （数 MB）+ 解析 GLB JSON chunk + tank_full/model_info 深克隆——一场回放的富化
+/// 循环（逐玩家/逐发调 resolve_config_index / shell_index_by_global_id）会重复
+/// 60+ 次完整读盘解析。配置是 tanks.pb + models.pb + GLB 的纯函数，进程内不变。
+static CONFIGS_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, Arc<Vec<Value>>>>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn build_configs(tank_id: u32) -> Arc<Vec<Value>> {
+    let cache = CONFIGS_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(c) = guard.get(&tank_id) {
+            return Arc::clone(c);
+        }
+    }
+    let configs = Arc::new(build_configs_uncached(tank_id));
+    // 仅在 model.glb 已就位时入缓存：未下载的车型保持逐次重建，下载完成后
+    // 下一次调用自然构建完整配置（含 gun/turret 模型节点映射）
+    let glb_ready = crate::data::data_path(GLB_CACHE_DIR)
+        .join(tank_id.to_string()).join("model.glb").exists();
+    if glb_ready {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(tank_id, Arc::clone(&configs));
+        }
+    }
+    configs
+}
+
+fn build_configs_uncached(tank_id: u32) -> Vec<Value> {
     let Some(tank) = crate::wargaming::blitzkit::tank_full(tank_id) else { return Vec::new() };
 
     let (model_guns, model_turrets) = model_config_nodes(tank_id);
@@ -669,9 +704,9 @@ pub(crate) fn build_configs(tank_id: u32) -> Vec<Value> {
     let mut distinct_gun_modules = Vec::new();
     for tur in &tank.turrets {
         for gun in &tur.guns {
-            if !gun_idx_by_module.contains_key(&gun.module_id) {
+            if let std::collections::hash_map::Entry::Vacant(e) = gun_idx_by_module.entry(gun.module_id) {
                 let idx = distinct_gun_modules.len() as u32;
-                gun_idx_by_module.insert(gun.module_id, idx);
+                e.insert(idx);
                 distinct_gun_modules.push(gun.module_id);
             }
         }
@@ -681,7 +716,9 @@ pub(crate) fn build_configs(tank_id: u32) -> Vec<Value> {
         tmod_by_module.get(&tmod).map(|t| t.model_node)
             .or_else(|| Some((ti as u32) + 1))
     };
-    let gun_model_info = |tmod: u32, gmod: u32| -> Option<(u32, Option<f32>, Option<f32>, Vec<u32>)> {
+    // (model_node, gun_thickness, gun_mask, gun_spaced)
+    type GunModelInfo = (u32, Option<f32>, Option<f32>, Vec<u32>);
+    let gun_model_info = |tmod: u32, gmod: u32| -> Option<GunModelInfo> {
         tmod_by_module.get(&tmod)
             .and_then(|t| t.guns.iter().find(|g| g.gun_module_id == gmod))
             .map(|g| (g.model_node, g.thickness, g.mask, g.gun_spaced.clone()))

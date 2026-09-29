@@ -29,9 +29,19 @@ const CACHE_MAX: usize = 4;
 
 type Cache = Mutex<Vec<(String, Arc<Vec<u8>>)>>;
 static CACHE: OnceLock<Cache> = OnceLock::new();
+/// gzip 响应缓存（与 JSON 缓存同键；此前缓存命中后每次请求仍重新压缩多 MB JSON）。
+/// 值为 Arc<Bytes>（克隆 = 引用计数，跨请求零拷贝；Body 本身非 Sync 不能入 static）
+type GzCacheEntry = (String, Arc<axum::body::Bytes>);
+static GZ_BYTES_CACHE: OnceLock<Mutex<Vec<GzCacheEntry>>> = OnceLock::new();
 
 fn cache() -> &'static Cache {
     CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn cache_put(c: &'static Cache, key: String, v: Arc<Vec<u8>>) {
+    let mut c = c.lock().unwrap();
+    c.insert(0, (key, v));
+    c.truncate(CACHE_MAX);
 }
 
 /// 解析回放 → PlaybackData → 未压缩 JSON 字节（缓存命中直接返回）。
@@ -44,9 +54,7 @@ pub fn build_playback_json(path: &Path) -> anyhow::Result<Arc<Vec<u8>>> {
     }
     let json = build_playback_json_uncached(path, &key)?;
     let arc = Arc::new(json);
-    let mut c = cache().lock().unwrap();
-    c.insert(0, (key, arc.clone()));
-    c.truncate(CACHE_MAX);
+    cache_put(cache(), key, arc.clone());
     Ok(arc)
 }
 
@@ -166,24 +174,48 @@ fn gzip_bytes(data: &[u8]) -> Vec<u8> {
     enc.finish().unwrap_or_default()
 }
 
-/// 数据响应：gzip JSON（浏览器 fetch 按 Content-Encoding 透明解压）
+/// 数据响应：gzip JSON（浏览器 fetch 按 Content-Encoding 透明解压）。
+/// 全场时间线构建（多 MB JSON）与 gzip 压缩都是 CPU 重活——整体 spawn_blocking
+/// （同文件 map/terrain/groundtex 系列均有此纪律，此前唯独最重的数据端点漏了）。
 pub async fn playback_data_response(path: &Path) -> Response {
-    match build_playback_json(path) {
-        Ok(json) => {
-            let gz = gzip_bytes(&json);
-            (
-                [
-                    (axum::http::header::CONTENT_TYPE, "application/json"),
-                    (axum::http::header::CONTENT_ENCODING, "gzip"),
-                ],
-                gz,
-            ).into_response()
-        }
-        Err(e) => (
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || playback_gzip_blocking(&path)).await {
+        Ok(Ok(gz)) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (axum::http::header::CONTENT_ENCODING, "gzip"),
+            ],
+            gz,
+        ).into_response(),
+        Ok(Err(e)) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("回放数据构建失败: {e:?}"),
         ).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("playback task failed: {e}"),
+        ).into_response(),
     }
+}
+
+/// [`playback_data_response`] 的阻塞实现：JSON 构建（自带缓存）→ gzip（结果缓存）。
+fn playback_gzip_blocking(path: &Path) -> anyhow::Result<axum::body::Bytes> {
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy().to_string();
+    if let Some((_, b)) = GZ_BYTES_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+        .lock().unwrap().iter().find(|(k, _)| k == &key)
+    {
+        return Ok((**b).clone());
+    }
+    let json = build_playback_json(path)?;
+    let gz = gzip_bytes(&json);
+    // Bytes::from(Vec) 取所有权零拷贝；Bytes 克隆共享底层缓冲
+    let bytes = Arc::new(axum::body::Bytes::from(gz));
+    let out = (*bytes).clone();
+    let mut c = GZ_BYTES_CACHE.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap();
+    c.insert(0, (key, bytes));
+    c.truncate(CACHE_MAX);
+    Ok(out)
 }
 
 /// POST /api/playback/data  body {file: "路径"}（与 /api/replay/shots 同款路径参数约定）
@@ -270,8 +302,8 @@ pub async fn playback_scenery_handler(
         .unwrap_or_else(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "scenery task failed").into_response())
 }
 
-/// 播放器页面已切流至 Vue SPA（/playback → crate::web::spa_index_handler，
-/// vue-router 路由 PlaybackView + scene/playbackScene.js 场景内核）。
+// 播放器页面已切流至 Vue SPA（/playback → crate::web::spa_index_handler，
+// vue-router 路由 PlaybackView + scene/playbackScene.js 场景内核）。
 
 // ---------- 独立服务（CLI `playback <replay>`） ----------
 

@@ -43,6 +43,8 @@ enum Commands {
         #[arg(long)]
         tank_cache: Option<PathBuf>,
     },
+    /// Dump the map registry (id → key/space/display) as JSON for asset packing
+    DumpMapIndex,
     /// Export consumer facets for one replay (playback / ai-review / hall-of-fame JSON)
     Facets {
         /// Path to the .wotbreplay file
@@ -632,6 +634,9 @@ fn main() -> Result<()> {
         }
         Commands::Facets { file, parts, out, tank_cache } => {
             wotb_agent::facets::export_cli(&file, &parts, out.as_deref(), tank_cache.as_deref())?;
+        }
+        Commands::DumpMapIndex => {
+            println!("{}", wotb_agent::wargaming::map_assets::dump_map_index());
         }
         Commands::Scan { dir, mode, days, output, tank_cache, fetch_tanks, app_id: _, server: _ } => {
             let resolver = if fetch_tanks {

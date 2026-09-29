@@ -170,6 +170,23 @@ pub fn registry() -> &'static [MapEntry] {
     REGISTRY.get_or_init(load_registry)
 }
 
+/// 注册表的 JSON 投影（`dump-map-index` CLI / 资产打包器消费）：
+/// 数字 id → space/key/display/minimap_dir，静态资产面据此建 index.json。
+pub fn dump_map_index() -> serde_json::Value {
+    serde_json::Value::Array(
+        registry()
+            .iter()
+            .map(|e| serde_json::json!({
+                "map_id": e.map_id,
+                "key": e.key,
+                "space": e.space,
+                "display": e.display,
+                "minimap_dir": e.minimap_dir,
+            }))
+            .collect(),
+    )
+}
+
 /// 解析地图标识：纯数字 = 回放数字 id；否则显示名/键名（去分隔符归一，大小写不敏感）。
 pub fn resolve_map(param: &str) -> Option<&'static MapEntry> {
     let s = param.trim();

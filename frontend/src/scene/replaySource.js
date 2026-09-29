@@ -47,3 +47,58 @@ export async function loadPlaybackData(source) {
     ? loadFromLocalFile(source.file)
     : loadFromServer(source.file)
 }
+
+// ---------- 地图静态路径（契约 §13 纯静态资产面；打包器 scripts/export_asset_pack.py 的布局） ----------
+let mapIndexPromise = null
+let currentMapKey = null
+
+/** 一次性装载资产面索引（数字 id → key）；仅在配置了资产基址时请求 */
+export function loadMapIndex() {
+  if (!assetBase()) return Promise.resolve(null)
+  if (!mapIndexPromise) {
+    mapIndexPromise = fetch(assetUrl('/index.json'))
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+  }
+  return mapIndexPromise
+}
+
+/** 从 mapq（id=..&name=..）解析当前地图的静态 key；结果缓存供同步取用 */
+export async function resolveMapKey(mapq) {
+  const id = new URLSearchParams(mapq).get('id')
+  const idx = assetBase() ? await loadMapIndex() : null
+  currentMapKey = (idx && idx.maps && idx.maps[String(id)]) ? idx.maps[String(id)].key : null
+  return currentMapKey
+}
+
+/**
+ * 静态模式 URL（已配置基址且 index 命中 → 打包器物化路径）；
+ * key 未解析/同源模式 → null，调用方回退服务端路由。
+ * kind ∈ map | map-mini | terrain | terrain-meta | scenery | groundmeta | groundtex
+ */
+export function mapStaticUrl(kind, layer) {
+  if (!currentMapKey || !assetBase()) return null
+  const f = (name) => `${assetBase()}/map/${currentMapKey}/${name}`
+  switch (kind) {
+    case 'map': return f('ground.webp')
+    case 'map-mini': return f('mini.webp')
+    case 'terrain': return f('terrain.u16.bin')
+    case 'terrain-meta': return f('terrain.json')
+    case 'scenery': return f('scenery.glb')
+    case 'groundmeta': return f('ground.layers.json')
+    case 'groundtex': return f(`ground/${layer}.webp`)
+  }
+  return null
+}
+
+/** 服务端路由 URL（动态镜像/同源回退，既有行为） */
+export function serverMapUrl(kind, mapq, qSuffix = '') {
+  const route = {
+    map: '/api/playback/map',
+    terrain: '/api/playback/terrain',
+    scenery: '/api/playback/scenery',
+    groundmeta: '/api/playback/groundmeta',
+    groundtex: '/api/playback/groundtex',
+  }[kind]
+  return assetUrl(route) + '?' + mapq + qSuffix
+}

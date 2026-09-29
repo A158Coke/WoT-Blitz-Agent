@@ -3,7 +3,7 @@
 // 唯一改动是原 DOM 面板触点（$('timer') 等）全部改写 store（playbackStore.js）。
 import * as THREE from 'three'
 
-import { loadPlaybackData } from './replaySource.js'
+import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './replaySource.js'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -272,6 +272,7 @@ export function initPlayback(container, store) {
   }
 
   async function loadMapImage() {
+    await resolveMapKey(mapq).catch(() => {});
     if (mapPlane) { scene.remove(mapPlane); mapPlane = null; }
     if (terrainMesh) { scene.remove(terrainMesh); terrainMesh = null; }
     if (mapScenery) { scene.remove(mapScenery); mapScenery = null; }
@@ -284,7 +285,7 @@ export function initPlayback(container, store) {
     const mapq = mid ? ('id=' + mid) : ('name=' + encodeURIComponent(DATA.meta.map_name || ''));
     try {
       // 低档 res=mini：客户端小地图作地面（比高清底图小一个量级，保留 3D 起伏）
-      const resp = await fetch(assetUrl('/api/playback/map') + '?' + mapq + (Q.miniMap ? '&res=mini' : ''));
+      const resp = await fetch((Q.miniMap ? mapStaticUrl('map-mini') : null) ?? mapStaticUrl('map') ?? serverMapUrl('map', mapq, Q.miniMap ? '&res=mini' : ''));
       if (resp.ok) {
         mapMetaInfo = JSON.parse(resp.headers.get('X-Map-Meta') || '{}');
         const url = URL.createObjectURL(await resp.blob());
@@ -296,12 +297,26 @@ export function initPlayback(container, store) {
       }
     } catch (e) { console.warn('底图加载失败（回退网格）:', e); }
     try {
-      const resp = await fetch(assetUrl('/api/playback/terrain') + '?' + mapq);
-      if (resp.ok) {
-        const meta = JSON.parse(resp.headers.get('X-Terrain-Meta') || '{}');
+      const terrainBin = mapStaticUrl('terrain');
+      let tmeta = {}; let tbuf = null;
+      if (terrainBin) {
+        // 静态资产面：meta 来自打包器物化的 terrain.json sidecar
+        const m = await fetch(mapStaticUrl('terrain-meta'));
+        if (m.ok) tmeta = await m.json();
+        const b = await fetch(terrainBin);
+        if (b.ok) tbuf = await b.arrayBuffer();
+      } else {
+        const resp = await fetch(serverMapUrl('terrain', mapq));
+        if (resp.ok) {
+          tmeta = JSON.parse(resp.headers.get('X-Terrain-Meta') || '{}');
+          tbuf = await resp.arrayBuffer();
+        }
+      }
+      {
+        const meta = tmeta;
         const n = meta.size || 512;
-        const buf = await resp.arrayBuffer();
-        if (buf.byteLength === n * n * 2) {
+        const buf = tbuf;
+        if (buf && buf.byteLength === n * n * 2) {
           const u16 = new Uint16Array(buf);
           heightMeta = meta;
           // 预转米制高度（行 0=南，行主序；zmin 缺省 0）
@@ -319,7 +334,7 @@ export function initPlayback(container, store) {
     // 近黑），第 4 通道在独立灰度图里（tile1/mask1/hmap1 的 R）。
     // 低/中档跳过分层地表：直接走整图烘焙底图（省 4–8 张纹理下载与显存）
     if (Q.groundLayers) try {
-      const mresp = await fetch(assetUrl('/api/playback/groundmeta') + '?' + mapq);
+      const mresp = await fetch(mapStaticUrl('groundmeta') ?? serverMapUrl('groundmeta', mapq));
       if (mresp.ok) {
         const L = await mresp.json();
         const need = L.height_blend
@@ -329,7 +344,7 @@ export function initPlayback(container, store) {
         let ok = true;
         for (const k of need) {
           try {
-            const r = await fetch(assetUrl('/api/playback/groundtex') + '?' + mapq + '&k=' + k);
+            const r = await fetch(mapStaticUrl('groundtex', k) ?? serverMapUrl('groundtex', mapq, '&k=' + k));
             if (!r.ok) { ok = false; break; }
             const u = URL.createObjectURL(await r.blob());
             texs[k] = await new THREE.TextureLoader().loadAsync(u);
@@ -360,7 +375,7 @@ export function initPlayback(container, store) {
     // 中/低档跳过场景 GLB（单图 11–67MB 下载 + 大块显存，是画质档最大的分流项）
     if (Q.scenery) try {
       const gltf = await new Promise((res) => {
-        new GLTFLoader().load(assetUrl('/api/playback/scenery') + '?' + mapq,
+        new GLTFLoader().load(mapStaticUrl('scenery') ?? serverMapUrl('scenery', mapq),
           (g) => res(g), undefined, () => res(null));
       });
       if (gltf && gltf.scene) {
@@ -872,7 +887,7 @@ export function initPlayback(container, store) {
     const gP = (cfg && cfg.gun_origin)
       ? [tP[0] + cfg.gun_origin[0], tP[1] + cfg.gun_origin[1], tP[2] + cfg.gun_origin[2]]
       : tP.slice();
-    return { turretNode, gunNodes, tP, gP, itr: sd.initial_turret_rotation || null };
+    return { turretNode, gunNodes, tP, gP, itr: (sd && sd.initial_turret_rotation) || null };
   }
 
   // GLB 根位姿（每刻；与 armor viewer applyPose 同式：pos 镜像 + poseFromYPR(−yaw, pitch, 0)）

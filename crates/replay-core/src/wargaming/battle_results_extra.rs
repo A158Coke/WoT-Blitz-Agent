@@ -38,25 +38,14 @@ pub struct PlayerSettlement {
     pub gun_marks: Option<u32>,
 }
 
-fn read_varint(b: &[u8], o: &mut usize) -> Option<u64> {
-    let mut v = 0u64;
-    let mut s = 0u32;
-    loop {
-        let x = *b.get(*o)?;
-        *o += 1;
-        v |= ((x & 0x7f) as u64) << s;
-        if x & 0x80 == 0 { return Some(v); }
-        s += 7;
-        if s > 63 { return None; }
-    }
-}
-
 /// 跳过一个未知字段；返回 false = 流不合法。
+use crate::replay::combat::pb_varint;
+
 fn skip_field(b: &[u8], o: &mut usize, wire_type: u64) -> bool {
     match wire_type {
-        0 => read_varint(b, o).is_some(),
+        0 => pb_varint(b, o).is_some(),
         1 => { *o += 8; *o <= b.len() }
-        2 => match read_varint(b, o) {
+        2 => match pb_varint(b, o) {
             Some(len) => { *o += len as usize; *o <= b.len() }
             None => false,
         },
@@ -70,10 +59,10 @@ fn parse_player_entry(b: &[u8]) -> Option<PlayerSettlement> {
     let mut s = PlayerSettlement::default();
     let mut o = 0usize;
     while o < b.len() {
-        let key = read_varint(b, &mut o)?;
+        let key = pb_varint(b, &mut o)?;
         let (field, wt) = (key >> 3, key & 7);
         if wt == 0 {
-            let v = read_varint(b, &mut o)?;
+            let v = pb_varint(b, &mut o)?;
             let v32 = v as i32;
             match field {
                 1 => s.hitpoints_left = Some(v32),
@@ -102,20 +91,20 @@ pub fn parse_settlement_extras(proto: &[u8]) -> Vec<PlayerSettlement> {
     let mut out = Vec::new();
     let mut o = 0usize;
     while o < proto.len() {
-        let Some(key) = read_varint(proto, &mut o) else { break };
+        let Some(key) = pb_varint(proto, &mut o) else { break };
         let (field, wt) = (key >> 3, key & 7);
         if field == 301 && wt == 2 {
-            let Some(len) = read_varint(proto, &mut o) else { break };
+            let Some(len) = pb_varint(proto, &mut o) else { break };
             let end = o + len as usize;
             if end > proto.len() { break }
             // 进两层：#301 → tag1 result_id（跳过）/ tag2 = PlayerResultsInfo
             let entry = &proto[o..end];
             let mut io = 0usize;
             while io < entry.len() {
-                let Some(ikey) = read_varint(entry, &mut io) else { break };
+                let Some(ikey) = pb_varint(entry, &mut io) else { break };
                 let (ifield, iwt) = (ikey >> 3, ikey & 7);
                 if ifield == 2 && iwt == 2 {
-                    let Some(ilen) = read_varint(entry, &mut io) else { break };
+                    let Some(ilen) = pb_varint(entry, &mut io) else { break };
                     let iend = io + ilen as usize;
                     if iend > entry.len() { break }
                     if let Some(s) = parse_player_entry(&entry[io..iend]) {

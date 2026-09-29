@@ -22,6 +22,68 @@ struct Cli {
     command: Commands,
 }
 
+
+/// CombatTimeline 的 CLI 打印（自 replay-core 移出——核心库不绑定 IO；字段均 pub，
+/// 表现层在消费方实现）。
+fn print_combat_timeline(tl: &CombatTimeline) {
+    println!();
+    println!("--- Combat Event Timeline ---");
+    println!("  Entities: {}", tl.entity_count);
+    println!("  Deaths: {}", tl.death_count);
+    println!("  Total damage tracked: {}", tl.total_damage_tracked);
+    println!();
+
+    if !tl.entity_names.is_empty() {
+        println!("  Player mapping ({}):", tl.entity_names.len());
+        for (eid, name) in tl.entity_names.iter() {
+            println!("    0x{:08x} = {}", eid, name);
+        }
+        println!();
+    }
+
+    let deaths = tl.death_events();
+    if !deaths.is_empty() {
+        println!("  Deaths:");
+        for (t, _, name) in &deaths {
+            println!("    t={:.1}s  {}", t, name);
+        }
+        println!();
+    }
+
+    let health = tl.health_timeline();
+    if !health.is_empty() {
+        println!("  Health changes (damage > 100):");
+        println!("    {:>8} {:<25} {:>10} {:>8}", "Time", "Player", "Damage", "HP left");
+        println!("    {}", "-".repeat(55));
+        for (t, _, name, hp, dmg) in health.iter().filter(|(_, _, _, _, d)| *d > 100) {
+            println!("    {:>7.1}s {:<25} -{:>8} {:>8}", t, name, dmg, hp);
+        }
+    }
+}
+
+/// ShotEvent 推断结果的 CLI 打印（同上自核心库移出）。
+fn print_shot_inference(shots: &[wotb_agent::replay::combat::ShotEvent]) {
+    let hits = shots.iter().filter(|s| s.hit).count();
+    let kills = shots.iter().filter(|s| s.is_kill).count();
+    let total_dmg: u32 = shots.iter().map(|s| s.damage).sum();
+
+    println!();
+    println!("--- Shot Event Inference ---");
+    println!("  Shots (damage counter): {}", shots.len());
+    println!("  Hits (matched to HP decrease): {}", hits);
+    println!("  Kills: {}", kills);
+    println!("  Total damage: {}", total_dmg);
+    println!();
+    println!("  {:>7} {:>6} {:<25} {:>6} {:>6} {:>4}", "Time", "Dmg", "Target", "TgtHP", "TgtDmg", "Kill");
+    println!("  {}", "-".repeat(60));
+    for s in shots {
+        let kill = if s.is_kill { "KILL" } else { "" };
+        let hp = s.target_hp_after.map(|h| h.to_string()).unwrap_or_else(|| "-".to_string());
+        println!("  {:>6.1}s {:>6} {:<25} {:>6} {:>6} {:>4}",
+            s.timestamp, s.damage, s.target_name, hp, s.target_damage, kill);
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Parse a single replay file
@@ -1155,9 +1217,9 @@ fn main() -> Result<()> {
                 println!("\n========================================================");
                 println!("  Combat Event Analysis: {}", file.display());
                 println!("========================================================");
-                timeline.print_timeline();
+                print_combat_timeline(&timeline);
 
-                timeline.print_shots(&shots);
+                print_shot_inference(&shots);
                 println!("\n========================================================");
                 if let Some(path) = shots_json {
                     std::fs::write(&path, serde_json::to_string_pretty(&shot_replay)?)?;

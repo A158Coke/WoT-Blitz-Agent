@@ -60,6 +60,19 @@ def scan(with_hash: bool = False) -> dict:
     # ---- game_data / tank_images / vendor ----
     report["game_data"] = dir_stats(data / "game_data", "*.json")
     report["tank_images"] = dir_stats(data / "cache" / "tank_images", "*.webp")
+
+    # ---- 发布资产包（契约 §13：GLB/地图入清单；--hashes 时逐文件附 sha256）----
+    def file_list(root_dir: Path, pattern: str):
+        if not root_dir.is_dir():
+            return []
+        return [file_info(f, with_hash) for f in sorted(root_dir.rglob(pattern)) if f.is_file()]
+
+    report["release_pack"] = {
+        "glb_models": file_list(data / "cache" / "models", "*.glb"),
+        "map_minimaps": file_list(data / "cache" / "maps", "*"),
+        "map_terrain_cache": file_list(data / "maps" / "_cache", "*"),
+        "note": "WotBTools 部署按本节清单校验并分发到其资产平面（assetBase 指向）",
+    }
     report["vendor_three"] = dir_stats(root / "web" / "vendor" / "three")
 
     # ---- 地图底图（export_mobile_maps.py 产物优先，退化看桌面缓存）----

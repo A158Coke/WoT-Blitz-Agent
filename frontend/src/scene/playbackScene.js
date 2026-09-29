@@ -4,6 +4,7 @@
 import * as THREE from 'three'
 
 import { loadPlaybackData } from './replaySource.js'
+import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
@@ -283,7 +284,7 @@ export function initPlayback(container, store) {
     const mapq = mid ? ('id=' + mid) : ('name=' + encodeURIComponent(DATA.meta.map_name || ''));
     try {
       // 低档 res=mini：客户端小地图作地面（比高清底图小一个量级，保留 3D 起伏）
-      const resp = await fetch('/api/playback/map?' + mapq + (Q.miniMap ? '&res=mini' : ''));
+      const resp = await fetch(assetUrl('/api/playback/map') + '?' + mapq + (Q.miniMap ? '&res=mini' : ''));
       if (resp.ok) {
         mapMetaInfo = JSON.parse(resp.headers.get('X-Map-Meta') || '{}');
         const url = URL.createObjectURL(await resp.blob());
@@ -295,7 +296,7 @@ export function initPlayback(container, store) {
       }
     } catch (e) { console.warn('底图加载失败（回退网格）:', e); }
     try {
-      const resp = await fetch('/api/playback/terrain?' + mapq);
+      const resp = await fetch(assetUrl('/api/playback/terrain') + '?' + mapq);
       if (resp.ok) {
         const meta = JSON.parse(resp.headers.get('X-Terrain-Meta') || '{}');
         const n = meta.size || 512;
@@ -318,7 +319,7 @@ export function initPlayback(container, store) {
     // 近黑），第 4 通道在独立灰度图里（tile1/mask1/hmap1 的 R）。
     // 低/中档跳过分层地表：直接走整图烘焙底图（省 4–8 张纹理下载与显存）
     if (Q.groundLayers) try {
-      const mresp = await fetch('/api/playback/groundmeta?' + mapq);
+      const mresp = await fetch(assetUrl('/api/playback/groundmeta') + '?' + mapq);
       if (mresp.ok) {
         const L = await mresp.json();
         const need = L.height_blend
@@ -328,7 +329,7 @@ export function initPlayback(container, store) {
         let ok = true;
         for (const k of need) {
           try {
-            const r = await fetch('/api/playback/groundtex?' + mapq + '&k=' + k);
+            const r = await fetch(assetUrl('/api/playback/groundtex') + '?' + mapq + '&k=' + k);
             if (!r.ok) { ok = false; break; }
             const u = URL.createObjectURL(await r.blob());
             texs[k] = await new THREE.TextureLoader().loadAsync(u);
@@ -359,7 +360,7 @@ export function initPlayback(container, store) {
     // 中/低档跳过场景 GLB（单图 11–67MB 下载 + 大块显存，是画质档最大的分流项）
     if (Q.scenery) try {
       const gltf = await new Promise((res) => {
-        new GLTFLoader().load('/api/playback/scenery?' + mapq,
+        new GLTFLoader().load(assetUrl('/api/playback/scenery') + '?' + mapq,
           (g) => res(g), undefined, () => res(null));
       });
       if (gltf && gltf.scene) {
@@ -815,10 +816,10 @@ export function initPlayback(container, store) {
       try {
         const [loader, sd] = await Promise.all([
           Promise.resolve(GLTFLoader),
-          fetch('/api/tank/' + tankId).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch(assetUrl('/api/tank/') + tankId).then(r => r.ok ? r.json() : null).catch(() => null),
         ]);
         const model = await new Promise((res) =>
-          new loader().load(`/glb/${tankId}/model.glb`, g => res(g.scene), undefined, () => res(null)));
+          new loader().load(assetUrl(`/glb/${tankId}/model.glb`), g => res(g.scene), undefined, () => res(null)));
         if (!model) return null;
         model.scale.setScalar(1);
         // hide_elements 拆件全部渲染（与装甲检视器同规则；位于部件子树内，姿态随父节点自动跟随）

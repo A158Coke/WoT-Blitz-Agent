@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: WASM 产物构建（wasm-bindgen 版本随 Cargo.lock）
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.lock -Pattern 'name = "wasm-bindgen"' -Context 0,1 |
+            ForEach-Object { $_.Context.PostContext } | Select-String 'version').ToString() -replace '.*"(.*)".*', '$1'
+          cargo install wasm-bindgen-cli --version $v --locked
+          cargo build -p wotb-replay-wasm --release --target wasm32-unknown-unknown
+          wasm-bindgen target\wasm32-unknown-unknown\release\wotb_replay_wasm.wasm `
+            --out-dir frontend\public\wasm --target web --out-name wotb_replay_wasm
+          # 前端构建放最后：dist 拷入 public/wasm 产物，rust-embed 随 exe 嵌入
+          npm --prefix frontend run build
+
+      - name: 资产清单（含 sha256；GLB/地图包入库备查）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          python scripts/asset_manifest.py --json release/asset_manifest.json --hashes
+
+      - name: 自包含可执行（bundle：data/ + 前端 + wasm 全嵌入）
+        shell: pwsh
+        run: cargo build --release --features bundle
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item target/release/wotb-agent.exe release/
+          Copy-Item config.toml.example release/
+          Copy-Item README.md release/
+          Compress-Archive -Path release/* -DestinationPath "wotb-agent-${{ github.ref_name }}-win64.zip" -Force
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            wotb-agent-*-win64.zip
+            release/asset_manifest.json

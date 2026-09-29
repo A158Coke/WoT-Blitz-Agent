@@ -2,6 +2,8 @@
 // 渲染语义（位姿滤波/炮塔随动/弹道动画/分层地表/画质档/GLB 姿态）一行不改；
 // 唯一改动是原 DOM 面板触点（$('timer') 等）全部改写 store（playbackStore.js）。
 import * as THREE from 'three'
+
+import { loadPlaybackData } from './replaySource.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
@@ -1249,17 +1251,14 @@ export function initPlayback(container, store) {
   // ---------- 数据加载 ----------
   // 注：hull_yaw/turret_yaw 由后端相位解卷绕（连续域）后落盘，朴素线性插值即物理正确，
   // 前端不再二次去缠绕（旧版前端 unwrapAngleArray 已由后端数据契约取代）。
-  async function loadData(file) {
+  async function loadData(source) {
+    // source = 路径字符串（服务端通道，兼容既有调用）或 { kind:'local', file }（本地 WASM 通道）
     store.err = '';
     store.loading = true;
     try {
-      // 数据端点固定在根路径（/api/playback/data）；GLB/坦克数据同为根路径
-      const resp = await fetch('/api/playback/data', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      DATA = await resp.json();
+      DATA = await loadPlaybackData(
+        typeof source === 'string' ? { kind: 'server', file: source } : source,
+      );
       startPlayback();
       store.hasData = true;
     } catch (e) {

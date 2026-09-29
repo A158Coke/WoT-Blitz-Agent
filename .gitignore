@@ -87,3 +87,6 @@ mobile/maps/
 tmp_*.png
 tmp_bake_test/
 glb_cache*.7z
+
+# WASM 构建产物（scripts/build-wasm.ps1 生成，随包不随库）
+frontend/public/wasm/

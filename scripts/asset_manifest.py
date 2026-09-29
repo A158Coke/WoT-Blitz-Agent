@@ -27,22 +27,34 @@ def dir_stats(p: Path, pattern: str = "*"):
             "bytes": sum(f.stat().st_size for f in files)}
 
 
-def file_info(p: Path):
-    return {"path": str(p), "exists": p.is_file(),
+def file_hash(p: Path):
+    import hashlib
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def file_info(p: Path, with_hash: bool = False):
+    info = {"path": str(p), "exists": p.is_file(),
             "bytes": p.stat().st_size if p.is_file() else 0}
+    if with_hash and info["exists"]:
+        info["sha256"] = file_hash(p)
+    return info
 
 
-def scan() -> dict:
+def scan(with_hash: bool = False) -> dict:
     root = PROJECT_ROOT
     data = root / "data"
     report = {}
 
     # ---- 核心 pb/JSON 数据 ----
     report["core_data"] = {
-        "tanks.pb": file_info(data / "tanks.pb"),
-        "models.pb": file_info(data / "models.pb"),
-        "tank_cache.json": file_info(data / "tank_cache.json"),
-        "data_version.json": file_info(data / "data_version.json"),
+        "tanks.pb": file_info(data / "tanks.pb", with_hash),
+        "models.pb": file_info(data / "models.pb", with_hash),
+        "tank_cache.json": file_info(data / "tank_cache.json", with_hash),
+        "data_version.json": file_info(data / "data_version.json", with_hash),
     }
 
     # ---- game_data / tank_images / vendor ----
@@ -115,9 +127,11 @@ def scan() -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", type=Path, default=DEFAULT_JSON)
+    ap.add_argument("--hashes", action="store_true",
+                    help="核心数据文件附 sha256（契约 §13：清单可校验性）")
     args = ap.parse_args()
 
-    r = scan()
+    r = scan(with_hash=args.hashes)
     args.json.parent.mkdir(parents=True, exist_ok=True)
     args.json.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
 

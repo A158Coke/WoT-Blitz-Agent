@@ -21,6 +21,15 @@ function loadFile() {
   const v = store.filePath.trim()
   if (v) scene.loadData(v)
 }
+// 本地文件通道（契约 §6：文件不出本机，浏览器 WASM 解析）——产出与服务端通道同形
+function onLocalFile(e) {
+  const f = e.target.files && e.target.files[0]
+  if (f) {
+    store.filePath = f.name
+    scene.loadData({ kind: 'local', file: f })
+  }
+  e.target.value = ''
+}
 function onSeekInput(e) {
   scene.seekFraction(e.target.value / 1000)
 }
@@ -127,6 +136,8 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
       <h2>全场实时回放</h2>
       <div class="row">
         <input type="text" v-model="store.filePath" placeholder=".wotbreplay 文件路径（或 URL 加 ?file=）" @keydown.enter="loadFile">
+        <input ref="localFile" type="file" accept=".wotbreplay" style="display:none" @change="onLocalFile" />
+        <button type="button" @click="$refs.localFile.click()">本地文件</button>
         <button id="loadBtn" :disabled="store.loading" @click="loadFile">{{ store.loading ? '解析中…' : '加载' }}</button>
       </div>
       <div class="row" id="qSel">

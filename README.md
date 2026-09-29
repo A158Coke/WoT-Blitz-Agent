@@ -367,6 +367,7 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 | `src/main.rs` / `src/lib.rs` | 入口：桌面 CLI 与库形态（移动端壳路径依赖本 crate，共用全部业务模块） |
 | `src/agent/` | LLM Agent：工具编排与自然语言对话 |
 | `crates/replay-core/` | **回放解析核心库**（零网络依赖，原生/WASM 双目标）：内部领域模型、事件解码、实时回放时间线、三数据切面投影（架构契约第 4/5 节） |
+| `crates/replay-wasm/` | **浏览器通道入口**（契约第 6 节纯客户端回放）：.wotbreplay 字节 → 核心库 → 三切面信封 JSON；`scripts/build-wasm.ps1` 构建到 `frontend/public/wasm/` |
 | `src/replay/` | 兼容垫片（re-export 核心库）+ 服务端增值标注（loadout 弹种表，依赖 BlitzKit 坦克表 IO） |
 | `src/wargaming/` | WG API、坦克/模型/地图资产、3D 装甲查看器与实时回放前端 |
 | `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
@@ -377,7 +378,7 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 | `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
 | `data/cache/` | 运行时缓存（gitignore）：`models/` 坦克 GLB、`maps/` 地图资产、`tank_images/` 封面、`terrain/` 地形高度场、`screenshots/` 截图 |
 | `data/replay_samples/` | 示例回放（仓库内置 3 个） |
-| `scripts/` | 构建/打包脚本（`package.ps1` + `zipdir.py` + `build-all.ps1`；另有移动端底图导出等辅助脚本） |
+| `scripts/` | 构建/打包脚本（`package.ps1` / `build-all.ps1` / `build-wasm.ps1` / `asset_manifest.py --hashes`；另有移动端底图导出等辅助脚本） |
 
 ## 环境要求
 

@@ -22,16 +22,36 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      - name: 发布前测试（坏 tag 不出包）
+        run: cargo test --workspace
+
       - name: 前端依赖
         working-directory: frontend
         run: npm ci
 
-      - name: WASM 产物构建（wasm-bindgen 版本随 Cargo.lock）
+      - name: 解析 wasm-bindgen 版本（随 Cargo.lock）
         shell: pwsh
+        id: wbgver
         run: |
           $v = (Select-String -Path Cargo.lock -Pattern 'name = "wasm-bindgen"' -Context 0,1 |
             ForEach-Object { $_.Context.PostContext } | Select-String 'version').ToString() -replace '.*"(.*)".*', '$1'
-          cargo install wasm-bindgen-cli --version $v --locked
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # cargo install 每次约 5-10 分钟——按版本缓存二进制，命中即跳过安装
+      - name: wasm-bindgen-cli 二进制缓存
+        id: wbg-bin
+        uses: actions/cache@v4
+        with:
+          path: ~\.cargo\bin\wasm-bindgen.exe
+          key: wasm-bindgen-cli-${{ steps.wbgver.outputs.version }}-windows
+
+      - name: 安装 wasm-bindgen-cli（未命中缓存时）
+        if: steps.wbg-bin.outputs.cache-hit != 'true'
+        run: cargo install wasm-bindgen-cli --version ${{ steps.wbgver.outputs.version }} --locked
+
+      - name: WASM 产物构建
+        shell: pwsh
+        run: |
           cargo build -p wotb-replay-wasm --release --target wasm32-unknown-unknown
           wasm-bindgen target\wasm32-unknown-unknown\release\wotb_replay_wasm.wasm `
             --out-dir frontend\public\wasm --target web --out-name wotb_replay_wasm

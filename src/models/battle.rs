@@ -139,3 +139,41 @@ impl BattleSummary {
         }
     }
 }
+
+#[cfg(test)]
+impl PlayerSummary {
+    /// 测试辅助：全默认值 + 指定账号/昵称。
+    pub fn for_test(account_id: u32, nickname: &str) -> Self {
+        Self {
+            account_id,
+            nickname: nickname.to_string(),
+            team: 0,
+            platoon_id: None,
+            clan_tag: None,
+            tank_id: 0,
+            tank_name: String::new(),
+            base_xp: 0,
+            credits_earned: 0,
+            n_shots: 0,
+            n_hits_dealt: 0,
+            n_penetrations_dealt: 0,
+            damage_dealt: 0,
+            damage_blocked: 0,
+            damage_assisted_1: 0,
+            damage_assisted_2: 0,
+            n_hits_received: 0,
+            n_penetrations_received: 0,
+            n_enemies_damaged: 0,
+            n_enemies_destroyed: 0,
+            mm_rating: None,
+            display_rating: None,
+            death_reason: None,
+            survived: None,
+            life_time_secs: None,
+            killer_id: None,
+            n_enemies_spotted: None,
+            destruction_assistance: None,
+            gun_marks: None,
+        }
+    }
+}

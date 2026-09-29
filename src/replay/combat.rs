@@ -1151,6 +1151,53 @@ pub fn collect_kill_feed(packets: &[(u32, f32, &[u8])]) -> Vec<KillFeedEvent> {
     out
 }
 
+// ---------- 0x0c 战斗反馈计数（作者 Avatar method12；主文档 §3.10【已破解→使用中】） ----------
+
+/// 0x0c 事件码（baseType，WotbTools PROVEN）；未列出的码原样透传，不猜语义。
+pub mod feedback_code {
+    pub const DAMAGE_DEALT: u16 = 1;
+    pub const SPOTTED: u16 = 2;
+    pub const KILL: u16 = 3;
+    pub const BLOCKED: u16 = 5;
+    pub const DESTRUCTION_ASSIST: u16 = 15;
+    pub const TOTAL_ASSIST: u16 = 17;
+}
+
+/// 一条战斗反馈计数事件：作者个人过程计数的带时标广播。
+/// args 6B = [eventCode u16][count u16][value u16]（envelope = 作者 Avatar 实体）。
+/// count/value 的累计口径未与结算逐项复核——消费方以 [`super::facets 互验`]/CLI 对账为准，
+/// 对不上保持原样透传并在诊断层标注，不猜语义。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackCounterEvent {
+    pub clock: f32,
+    /// 作者 Avatar 实体 id（envelope）
+    pub avatar_eid: u32,
+    pub event_code: u16,
+    pub count: u16,
+    pub value: u16,
+}
+
+/// 收集战斗反馈计数流（作者 Avatar 专属；队友无对应广播，点亮归因只有结算总量）。
+/// 解析健壮性：args <6B 或截断的包跳过（帧错误不猜）；事件按包序即时钟序（作者流单调）。
+pub fn collect_feedback_counters(packets: &[(u32, f32, &[u8])]) -> Vec<FeedbackCounterEvent> {
+    let mut out = Vec::new();
+    for (_, clock, p) in packets {
+        if p.len() < 12 + 6 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != 0x0C { continue; }
+        let alen = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
+        if alen < 6 || 12 + alen > p.len() { continue; }
+        let a = &p[12..12 + alen];
+        out.push(FeedbackCounterEvent {
+            clock: *clock,
+            avatar_eid: u32::from_le_bytes([p[0], p[1], p[2], p[3]]),
+            event_code: u16::from_le_bytes([a[0], a[1]]),
+            count: u16::from_le_bytes([a[2], a[3]]),
+            value: u16::from_le_bytes([a[4], a[5]]),
+        });
+    }
+    out
+}
+
 /// PERIOD (subtype=3) 解析结果：战局阶段时间线
 /// 消息体 = protobuf field3 嵌套 { field1 varint: period, field2 fixed64: 阶段剩余秒, field3 varint: 阶段时长 }
 /// 实测 J39：period 1=准备(60s) → 2=倒计时(7s) → 3=战斗(duration=420s)；
@@ -1311,6 +1358,33 @@ mod arena_tests {
         assert_eq!(arena_subtype_name(17), "RELOAD_TIME_LIST");
         assert_eq!(arena_subtype_name(27), "UNKNOWN_TYPE");
         assert_eq!(arena_subtype_name(28), "UNKNOWN");
+    }
+
+    /// 0x0c 反馈计数：合成包帧 [eid][mid=0x0C][alen=6][code u16][count u16][value u16]，
+    /// 帧/字段解码 + 非 0x0c 方法不误收 + args 截断包跳过（帧错误不猜）。
+    #[test]
+    fn feedback_counter_decode() {
+        let mk = |mid: u32, args: &[u8]| {
+            let mut p = Vec::new();
+            p.extend_from_slice(&0x5Au32.to_le_bytes()); // eid
+            p.extend_from_slice(&mid.to_le_bytes());
+            p.extend_from_slice(&(args.len() as u32).to_le_bytes());
+            p.extend_from_slice(args);
+            p
+        };
+        let ok = mk(0x0C, &[2, 0, 5, 0, 3, 0]);
+        let other = mk(0x01, &[1, 0, 2, 0, 3, 0, 0]);
+        let truncated = mk(0x0C, &[2, 0, 5]);
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 10.0, &ok), (8, 11.0, &other), (8, 12.0, &truncated),
+        ];
+        let ev = collect_feedback_counters(&packets);
+        assert_eq!(ev.len(), 1, "只应收录合法 0x0c 包");
+        assert_eq!(ev[0].avatar_eid, 0x5A);
+        assert_eq!(ev[0].event_code, feedback_code::SPOTTED);
+        assert_eq!(ev[0].count, 5);
+        assert_eq!(ev[0].value, 3);
+        assert!((ev[0].clock - 10.0).abs() < 1e-6);
     }
 }
 

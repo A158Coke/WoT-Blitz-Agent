@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod data;
+pub mod facets;
 #[cfg(feature = "bundle")]
 pub mod bundle;
 pub mod models;

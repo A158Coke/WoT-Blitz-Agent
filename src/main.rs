@@ -43,6 +43,20 @@ enum Commands {
         #[arg(long)]
         tank_cache: Option<PathBuf>,
     },
+    /// Export consumer facets for one replay (playback / ai-review / hall-of-fame JSON)
+    Facets {
+        /// Path to the .wotbreplay file
+        file: PathBuf,
+        /// Comma-separated parts: playback,ai,hof
+        #[arg(long, default_value = "playback,ai,hof")]
+        parts: String,
+        /// Output directory (default: alongside the replay file)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Tank cache file path (JSON)
+        #[arg(long)]
+        tank_cache: Option<PathBuf>,
+    },
     /// Scan a directory for replays and aggregate stats
     Scan {
         /// Directory containing .wotbreplay files
@@ -565,7 +579,7 @@ fn main() -> Result<()> {
 
             // 未消费数据段（type=8 按 method、type=7 按 prop、type=32 按帧型；其余按 type）
             let mut un: std::collections::BTreeMap<String, u64> = Default::default();
-            let consumed8 = [0x00u32, 0x01, 0x07, 0x08, 0x0d, 0x14, 0x1b, 0x1d, 0x23, 0x24, 0x26, 0x30];
+            let consumed8 = [0x00u32, 0x01, 0x07, 0x08, 0x0c, 0x0d, 0x14, 0x1b, 0x1d, 0x23, 0x24, 0x26, 0x30];
             let consumed7 = [0u32, 1, 2, 3, 4, 9, 10, 11];
             for (t, _, p) in &raw_packets {
                 let key = match t {
@@ -615,6 +629,9 @@ fn main() -> Result<()> {
             dataset.diagnostics.degradation = deg.into_iter().collect();
 
             println!("{}", serde_json::to_string_pretty(&dataset)?);
+        }
+        Commands::Facets { file, parts, out, tank_cache } => {
+            wotb_agent::facets::export_cli(&file, &parts, out.as_deref(), tank_cache.as_deref())?;
         }
         Commands::Scan { dir, mode, days, output, tank_cache, fetch_tanks, app_id: _, server: _ } => {
             let resolver = if fetch_tanks {

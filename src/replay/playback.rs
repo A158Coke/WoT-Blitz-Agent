@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::bail;
 use serde::Serialize;
 
-use super::combat::{self, CombatTimeline, GunPitchLimits, ShotReplayData};
+use super::combat::{self, AoiPresence, GunPitchLimits, ShotReplayData};
 use super::filter::FilteredTimeline;
 
 /// 位姿网格步长（秒）——与现有 render_timeline / prop2 密集采样同惯例
@@ -240,6 +240,9 @@ pub struct PeriodPoint {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaybackData {
+    /// 切面契约版本（当前 1；不兼容变更递增；前端忽略未知键）
+    #[serde(default)]
+    pub version: u32,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -248,6 +251,10 @@ pub struct PlaybackData {
     /// 按时刻排序的击杀事件
     pub kills: Vec<KillEvent>,
     pub periods: Vec<PeriodPoint>,
+    /// AoI 可见窗口（仅收录车辆实体；Type33/5 物化开段、Type4 关段，重入 = 多段）。
+    /// 语义来源 = collect_aoi_lifecycle（协议精确边界）；渲染插值防护仍看 coverage。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visibility: Vec<AoiPresence>,
 }
 
 /// 位置保留 2 位小数（0.01m）；角度 3 位（0.057°，prop2 coarse 步进 ~0.35° 之下）
@@ -341,26 +348,39 @@ fn to_playback_shot(s: &ShotReplayData, name_to_eid: &HashMap<String, u32>) -> P
     }
 }
 
-/// 构建全场回放数据。fail 点：回放无任何实体姿态流（非对战文件/损坏）。
+/// 构建全场回放数据（兼容入口）：单次扫描建内部模型 → 回放切面投影。
+/// fail 点不变：回放无任何实体姿态流（非对战文件/损坏）。
 pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData> {
-    let packets = input.packets;
+    let model = crate::replay::model::ReplayModel::scan(&crate::replay::model::ScanInput {
+        packets: input.packets,
+        roster: &input.players,
+        author_account_id: input.author_account_id,
+        pitch_limits: input.pitch_limits,
+    })?;
+    from_model(&model, input)
+}
 
-    // 实体索引：type=10 + prop2（车辆筛选 = 双流交集）
-    let (st10, prop2) = combat::build_entity_indexes(packets);
-    let timeline = CombatTimeline::parse_packets(packets);
-    let entity_names = &timeline.entity_names;
-
+/// 从内部模型投影回放切面：位姿滤波/0.1s 网格/角度解卷绕/击杀归属增强都在本层完成，
+/// 模型只提供原始采样与事件。
+pub fn from_model(
+    model: &crate::replay::model::ReplayModel,
+    input: &PlaybackInput,
+) -> anyhow::Result<PlaybackData> {
     // 作者昵称 = battle_results 联表内作者账号的昵称（回放自身数据，不依赖文件名）
     let author_nickname = input.players.iter()
         .find(|p| p.account_id == input.author_account_id)
         .map(|p| p.nickname.clone())
         .unwrap_or_default();
-    // 作者车辆实体 = type=5 昵称精确匹配
-    let author_player_eid = combat::resolve_author_player_eid_by_nick(packets, &author_nickname);
+    let author_player_eid = model.timeline.author_eid;
+
+    // 实体索引：模型原始流（type=10 + prop2，车辆筛选 = 双流交集）
+    let st10 = &model.timeline.poses;
+    let prop2 = &model.timeline.turret;
+    let entity_names = &model.timeline.entity_names;
 
     // 车辆实体 = st10 ∧ prop2 ∧ 采样数达标（BTreeMap 保证确定性顺序）
     let mut candidates: BTreeMap<u32, usize> = BTreeMap::new();
-    for (eid, samples) in &st10 {
+        for (eid, samples) in st10.iter() {
         if samples.len() >= MIN_ST10_SAMPLES && prop2.contains_key(eid) {
             candidates.insert(*eid, samples.len());
         }
@@ -377,8 +397,8 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         }
     }
 
-    // 全部弹道（作者 + 他人；时间轴末端扩展与列表共用）
-    let shots_raw = collect_all_shots(packets, author_nickname.as_str(), input.pitch_limits, author_player_eid)?;
+    // 全部弹道（模型一次扫描产物；时间轴末端扩展与列表共用）
+    let shots_raw = &model.timeline.shots;
 
     // 时刻轴：全局 [min覆盖起点, max覆盖终点/阶段末/末弹] 网格
     let mut t_start = f32::MAX;
@@ -392,11 +412,11 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
             t_end = t_end.max(last + 0.5);
         }
     }
-    let periods = combat::parse_arena_periods(&combat::collect_arena_updates(packets));
-    for p in &periods {
+    let periods = &model.timeline.periods;
+    for p in periods {
         t_end = t_end.max(p.clock);
     }
-    for s in &shots_raw {
+    for s in shots_raw.iter() {
         t_end = t_end.max(s.fire_time + flight_secs(&s.ball_a, &s.ball_b, &s.launch_velocity));
     }
     if !t_start.is_finite() || t_end <= t_start {
@@ -417,16 +437,10 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         duration: r2(t_start + (samples_n.saturating_sub(1)) as f32 * GRID_DT),
     };
 
-    // 血量链与死亡（全实体一次解析，循环内查表）
-    let initial_hp = combat::collect_initial_hp(packets);
-    let hp_events = combat::parse_hp_events(packets);
-    let mut death_at: HashMap<u32, f32> = HashMap::new();
-    for (t, eid, _) in timeline.death_events() {
-        death_at.entry(eid).or_insert(t);
-    }
+    // 血量链与死亡终态（模型一次扫描产出，循环内查表）
+    let initial_hp = &model.timeline.initial_hp;
 
     let mut vehicles_out: Vec<VehicleTrack> = Vec::with_capacity(candidates.len());
-    let mut cause_by_eid: HashMap<u32, u8> = HashMap::new();
     for eid in candidates.keys() {
         let tl = FilteredTimeline::build(&st10[eid]);
         let Some(tl) = tl else { continue };
@@ -485,36 +499,17 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
             });
         }
 
-        // HP 链：满血锚点 + method1 事件（同值去重）；击杀者 = hp==0 事件 source
-        let mut hp: Vec<(f32, u16)> = Vec::new();
-        let mut killer_eid = 0u32;
-        let mut cause = 255u8;
-        if let Some((t0, hp0)) = initial_hp.get(eid) {
-            hp.push((r2(*t0), *hp0));
-        }
-        for e in &hp_events {
-            if e.victim != *eid {
-                continue;
-            }
-            // overkill 时服务器 HP 略负（int16 语义），按 u16 读出回绕（如 -3 → 65533）；
-            // 真实 max HP << 32767，负值一律钳 0（死亡）
-            let hp_v = if e.hp > 32767 { 0 } else { e.hp };
-            if hp.last().map(|(_, h)| *h) == Some(hp_v) {
-                continue;
-            }
-            hp.push((r2(e.clock), hp_v));
-            if hp_v == 0 {
-                killer_eid = e.source;
-                cause = e.cause;
-            }
-        }
-        if killer_eid != 0 {
-            cause_by_eid.insert(*eid, cause);
-        }
+        // HP 链：模型已按同值去重语义构建（含满血锚点，此处仅做落盘舍入）；
+        // 击杀者/死因 = 死亡终态记录（hp==0 事件 + prop1 时刻合并）
+        let hp: Vec<(f32, u16)> = model.timeline.hp_series.get(eid).map(|s| {
+            s.iter().map(|(t, h)| (r2(*t), *h)).collect()
+        }).unwrap_or_default();
+        let death = model.timeline.deaths.get(eid);
+        let killer_eid = death.map(|d| d.killer_eid).unwrap_or(0);
 
         // 发射弹种全局 id（配置推断证据；去重上限 16）
         let mut shell_ids: Vec<u32> = Vec::new();
-        for s in &shots_raw {
+        for s in shots_raw.iter() {
             if s.shooter_eid != *eid || s.shell_id == 0 || shell_ids.len() >= 16 { continue; }
             if !shell_ids.contains(&s.shell_id) {
                 shell_ids.push(s.shell_id);
@@ -536,7 +531,7 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
             turret_yaw,
             gun_pitch,
             hp,
-            death_t: death_at.get(eid).copied().map(r2),
+            death_t: death.map(|d| r2(d.t)),
             killer_eid,
             shell_ids,
             turret_index: None,
@@ -545,34 +540,11 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         });
     }
 
-    // wrapper6（VEHICLE_KILLED）击杀播报：补全击杀者归属 + >50% 助攻 + 非默认死因
-    // （WotbTools PROVEN 283 例；开局初始化记录用 |t − death_t| ≤ 5s 门控隔离）
-    let kill_feed: std::collections::HashMap<u32, crate::replay::combat::KillFeedEvent> =
-        crate::replay::combat::collect_kill_feed(input.packets).into_iter()
-            .filter(|k| {
-                vehicles_out.iter().find(|v| v.eid == k.victim_eid)
-                    .and_then(|v| v.death_t).map(|dt| (dt - k.clock).abs())
-                    .map(|dt| dt <= 5.0)
-                    .unwrap_or(false)
-            })
-            .map(|k| (k.victim_eid, k))
-            .collect();
-    let mut kills: Vec<KillEvent> = vehicles_out.iter()
-        .filter_map(|v| v.death_t.map(|t| {
-            let wf = kill_feed.get(&v.eid);
-            KillEvent {
-                t,
-                killer_eid: if v.killer_eid != 0 { v.killer_eid }
-                    else { wf.map(|k| k.killer_eid).unwrap_or(0) },
-                victim_eid: v.eid,
-                cause: cause_by_eid.get(&v.eid).copied()
-                    .unwrap_or(if v.killer_eid != 0 || wf.is_some() { 0 } else { 3 }),
-                assister_eid: wf.and_then(|k| k.assister_eid),
-                death_reason: wf.and_then(|k| k.death_reason),
-            }
-        }))
+    // 击杀事件：模型统一产出（击杀播报归属增强，|t − death_t| ≤ 5s 门控已在模型内），
+    // 回放切面按候选车集过滤——与原逐车内联组装逐位等价
+    let kills: Vec<KillEvent> = model.kill_events().into_iter()
+        .filter(|k| candidates.contains_key(&k.victim_eid))
         .collect();
-    kills.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
 
     let mut shots: Vec<PlaybackShot> = shots_raw.iter()
         .map(|s| to_playback_shot(s, &name_to_eid))
@@ -588,13 +560,27 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         })
         .collect();
 
-    Ok(PlaybackData { meta, vehicles: vehicles_out, shots, kills, periods: periods_out })
+    // AoI 可见窗口（仅收录车辆实体；Type33/5 物化开段、Type4 关段，重入 = 多段）
+    let visibility: Vec<AoiPresence> = model.timeline.presence.iter()
+        .filter(|p| candidates.contains_key(&p.eid))
+        .cloned()
+        .collect();
+
+    Ok(PlaybackData {
+        version: 1,
+        meta,
+        vehicles: vehicles_out,
+        shots,
+        kills,
+        periods: periods_out,
+        visibility,
+    })
 }
 
 /// 合并作者严格路径 + 他人宽松路径（与 web `replay_shots_handler` 同构；时间轴构建需全部弹道）。
 /// 作者严格路径是 fail-fast 设计（边界数据缺失即 bail）——全场回放不应因此整场不可用：
 /// 失败时降级为宽松路径提取**全部**发射（含作者，按 shooter_eid 补回 is_author 标记）。
-fn collect_all_shots(
+pub(crate) fn collect_all_shots(
     packets: &[(u32, f32, &[u8])],
     author_nick: &str,
     pitch_limits: &GunPitchLimits,

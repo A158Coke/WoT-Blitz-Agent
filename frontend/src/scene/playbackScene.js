@@ -1023,14 +1023,24 @@ export function initPlayback(container, store) {
       tr.mesh.position.copy(head.clone().add(tail).multiplyScalar(0.5));
       tr.mesh.lookAt(head);
       if (f >= 1) {
-        scene.remove(tr.mesh); tracers.splice(i, 1);
+        // 与 trajLines 同款释放：只 remove 不 dispose 会泄漏 GPU 侧 geometry/material
+        // （一场数百发 + 反复拖进度条，显存单调增长）
+        scene.remove(tr.mesh);
+        tr.mesh.geometry.dispose(); tr.mesh.material.dispose();
+        tracers.splice(i, 1);
         spawnImpact(tr);
       }
     }
     for (let i = impacts.length - 1; i >= 0; i--) {
       const im = impacts[i];
       const left = im.until - T;
-      if (left <= 0) { scene.remove(im.g); impacts.splice(i, 1); continue; }
+      if (left <= 0) {
+        scene.remove(im.g);
+        im.ball.geometry.dispose(); im.ball.material.dispose();
+        im.ring.geometry.dispose(); im.ring.material.dispose();
+        impacts.splice(i, 1);
+        continue;
+      }
       const op = Math.min(1, left / 1.2);
       im.ball.material.opacity = op; im.ring.material.opacity = op * 0.8;
       im.ring.scale.setScalar(1 + (1 - Math.min(1, left / 2.2)) * 1.6);
@@ -1226,10 +1236,17 @@ export function initPlayback(container, store) {
   }
   function seekTo(t) {
     T = Math.max(DATA.meta.t_start, Math.min(DATA.meta.duration, t));
-    // 重置动态层
-    for (const tr of tracers) scene.remove(tr.mesh);
+    // 重置动态层（dispose 对齐各对象自身的移除路径，防 seek 循环累积显存）
+    for (const tr of tracers) {
+      scene.remove(tr.mesh);
+      tr.mesh.geometry.dispose(); tr.mesh.material.dispose();
+    }
     tracers.length = 0;
-    for (const im of impacts) scene.remove(im.g);
+    for (const im of impacts) {
+      scene.remove(im.g);
+      im.ball.geometry.dispose(); im.ball.material.dispose();
+      im.ring.geometry.dispose(); im.ring.material.dispose();
+    }
     impacts.length = 0;
     for (const tl of trajLines) {
       scene.remove(tl.mesh); tl.mesh.geometry.dispose(); tl.mesh.material.dispose();
@@ -1318,8 +1335,10 @@ export function initPlayback(container, store) {
       destroyed = true;
       removeEventListener('keydown', onKeydown);
       removeEventListener('resize', onResize);
+      if (controls) { try { controls.dispose(); } catch (_) {} }
       if (renderer) {
         renderer.dispose();
+        try { renderer.forceContextLoss(); } catch (_) {}
         renderer.domElement.remove();
       }
       if (labelRenderer) {

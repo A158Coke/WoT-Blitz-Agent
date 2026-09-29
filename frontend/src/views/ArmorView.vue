@@ -3,16 +3,24 @@
 // DOM/CSS/JS 原样平移（见 scene/tankViewer.js 头注），本组件只做宿主：
 // 从路由参数注入 window.__INITIAL_TANK__ / __INITIAL_SHOOTER__，挂载后初始化场景。
 // URL 参数保持旧版契约：?shooter= &config= &shell= &shot= &heatmap=1 &world=1 &view= 等。
-import { onMounted } from 'vue'
+import { onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { initTankViewer } from '../scene/tankViewer.js'
 
 const route = useRoute()
+let viewer = null
 
 onMounted(() => {
     window.__INITIAL_TANK__ = Number(route.params.tankId) || 0
     window.__INITIAL_SHOOTER__ = Number(route.query.shooter) || Number(route.params.tankId) || 0
-    initTankViewer()
+    viewer = initTankViewer()
+})
+
+// 离开路由必须销毁：rAF 循环 + WebGL 上下文不释放，反复进出会耗尽浏览器
+// WebGL 上下文上限（~16 个）出现 "context lost" 黑屏
+onBeforeUnmount(() => {
+    if (viewer?.destroy) viewer.destroy()
+    viewer = null
 })
 </script>
 

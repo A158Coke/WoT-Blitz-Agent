@@ -3,18 +3,29 @@
 // 依赖根级路由：/api/tank、/glb、/api/tank_filter、/api/shells、/api/penetrate、
 // /api/replay_shot、/api/hold、/api/ready（见 src/web/mod.rs）。
 // 调用前须设置 window.__INITIAL_TANK__ / __INITIAL_SHOOTER__（ArmorView 从路由参数注入）。
-// 已知限制：无 destroy 钩子，路由离开后 rAF 循环残留（旧版每 Window 全新页面，语义等价待补）。
+// 生命周期：返回 { destroy }——SPA 路由离开时必须调用（ArmorView onBeforeUnmount）：
+// 取消 rAF 循环、摘除 window 监听器、释放 WebGL 上下文；不调用则多次进出路由会
+// 耗尽浏览器 WebGL 上下文上限（~16 个）出现"context lost"黑屏。
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 
 export function initTankViewer() {
 
-        window.addEventListener('error', function(e) {
+        // window 级监听统一经 onWin 登记，destroy 时成对摘除
+        const cleanups = [];
+        let rafId = 0;
+        let destroyed = false;   // destroy 后迟到的 init/ animate 不再启动渲染
+        const onWin = (type, fn) => {
+            window.addEventListener(type, fn);
+            cleanups.push(() => window.removeEventListener(type, fn));
+        };
+
+        onWin('error', function(e) {
             var el = document.getElementById('loading');
             if (el) { el.textContent = 'JS Error: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''); el.style.color = '#f44336'; el.style.whiteSpace = 'pre-wrap'; }
         });
-        window.addEventListener('unhandledrejection', function(e) {
+        onWin('unhandledrejection', function(e) {
             var el = document.getElementById('loading');
             if (el) { el.textContent = 'Promise Rejection: ' + (e.reason && (e.reason.message || e.reason)); el.style.color = '#f44336'; el.style.whiteSpace = 'pre-wrap'; }
         });
@@ -3124,7 +3135,7 @@ export function initTankViewer() {
                 rmbStartTurret = currentTurretDeg;
                 rmbStartGun = currentGunDeg;
             });
-            window.addEventListener('mousemove', function(e) {
+            onWin('mousemove', function(e) {
                 if (!rmbDown) return;
                 const dx = e.clientX - rmbStartX;
                 const dy = e.clientY - rmbStartY;
@@ -3177,13 +3188,13 @@ export function initTankViewer() {
                 document.getElementById('gun-val').textContent = currentGunDeg.toFixed(0) + '°';
                 updateTurretGun(currentTurretDeg, currentGunDeg);
             });
-            window.addEventListener('mouseup', function(e) {
+            onWin('mouseup', function(e) {
                 if (e.button === 2) rmbDown = false;
             });
 
             document.getElementById('turret-controls').style.display = 'block';
 
-            window.addEventListener('resize', function() {
+            onWin('resize', function() {
                 const view = document.getElementById('canvas-container');
                 camera.aspect = view.clientWidth / view.clientHeight;
                 camera.updateProjectionMatrix();
@@ -3199,7 +3210,7 @@ export function initTankViewer() {
             await populateTankLists(initTargetId, initShooterId);
             await loadTarget(initTargetId);
             await loadShooter(initShooterId);
-            animate();
+            if (!destroyed) animate();   // await 期间路由已离开则不再启动渲染
         }
 
         let turretNode = null, gunNodesList = [];
@@ -3902,7 +3913,8 @@ export function initTankViewer() {
         }
 
         function animate() {
-            requestAnimationFrame(animate);
+            if (destroyed) return;
+            rafId = requestAnimationFrame(animate);
             controls.update();
             if (penetrationMode && armorModel) {
                 if (SESS && heatFrames < 5) {
@@ -3923,5 +3935,22 @@ export function initTankViewer() {
             if (trajInfoPos) updateTrajInfoPos();
         }
 
+        /// 路由离开清理：停 rAF、摘 window 监听、释放控制器与 WebGL 上下文。
+        /// canvas 由 ArmorView 的容器 DOM 一并移除，这里只处理 JS 侧句柄。
+        function destroy() {
+            destroyed = true;
+            cancelAnimationFrame(rafId);
+            while (cleanups.length) { try { cleanups.pop()(); } catch (_) {} }
+            try { if (controls) controls.dispose(); } catch (_) {}
+            if (renderer) {
+                try { renderer.dispose(); } catch (_) {}
+                try { renderer.forceContextLoss(); } catch (_) {}
+                if (renderer.domElement && renderer.domElement.parentNode) {
+                    renderer.domElement.parentNode.removeChild(renderer.domElement);
+                }
+            }
+        }
+
         init();
+        return { destroy };
     }

@@ -108,8 +108,12 @@ def main() -> None:
     map_n = 0
     with_terrain = 0
     missing_scale = []
+    seen_spaces: dict[str, str] = {}   # space → 首个物化 key（变体图共享资产）
     for e in maps:
         key, space = e["key"], e["space"]
+        if space in seen_spaces:
+            continue  # 同 space 变体：资产只物化一份，index 多 id 指向同一目录
+        seen_spaces[space] = key
         mid = str(e["map_id"])
         mdir = out / "map" / key
         got = []
@@ -184,7 +188,7 @@ def main() -> None:
     index = {
         "version": 1,
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "maps": {str(e["map_id"]): {"key": e["key"], "display": e["display"]} for e in maps},
+        "maps": {str(e["map_id"]): {"key": seen_spaces.get(e["space"], e["key"]), "display": e["display"]} for e in maps},
     }
     (out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1),
                                     encoding="utf-8")

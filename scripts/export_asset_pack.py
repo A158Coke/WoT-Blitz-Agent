@@ -191,9 +191,13 @@ def main() -> None:
     files.append(out / "index.json")
 
     # ---- manifest（sha256，部署前校验包完整性） ----
-    manifest = {"version": 1, "generated": index["generated"],
-                "files": [{"path": str(f.relative_to(out)).replace("\\", "/"),
-                           "bytes": f.stat().st_size, "sha256": sha256(f)} for f in sorted(files)]}
+    # 按路径去重（map 段 cp 与 rglob 会重复登记同一文件）
+    uniq: dict[str, dict] = {}
+    for f in sorted(files):
+        rel = str(f.relative_to(out)).replace("\\", "/")
+        uniq.setdefault(rel, {"path": rel, "bytes": f.stat().st_size, "sha256": sha256(f)})
+    manifest_files = [uniq[k] for k in sorted(uniq)]
+    manifest = {"version": 1, "generated": index["generated"], "files": manifest_files}
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
                                        encoding="utf-8")
 

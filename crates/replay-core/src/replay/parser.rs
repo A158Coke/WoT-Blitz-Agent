@@ -34,11 +34,21 @@ impl<'a> ReplayParser<'a> {
 
         let mut replay = Replay::open(File::open(path)?)
             .with_context(|| format!("Failed to open replay: {}", path.display()))?;
+        self.parse_replay(&mut replay, &file_name)
+            .with_context(|| format!("Failed to parse replay: {}", path.display()))
+    }
 
+    /// 从已打开的回放对象构建结算汇总（与 [`Self::parse_file`] 同义；供 WASM/内存宿主
+    /// 复用——浏览器路径只有字节没有文件路径）。
+    pub fn parse_replay<R: std::io::Read + std::io::Seek>(
+        &self,
+        replay: &mut Replay<R>,
+        file_name: &str,
+    ) -> Result<BattleSummary> {
         // meta 可能缺失（.ok() 吞掉错误），battle_results 则必须存在
         let meta = replay.read_meta().ok();
         let br = replay.read_battle_results()
-            .with_context(|| format!("Failed to parse battle_results: {}", path.display()))?;
+            .context("Failed to parse battle_results")?;
         // 结算补充字段（crate 未暴露的 #301 字段：死亡原因/寿命/点亮/毁灭协助/炮印/击杀者）
         let settlements: std::collections::HashMap<u32, crate::wargaming::battle_results_extra::PlayerSettlement> =
             replay.read_battle_results_dat().ok()
@@ -160,7 +170,7 @@ impl<'a> ReplayParser<'a> {
         }
 
         let mut summary = BattleSummary::from_naive(br.timestamp_secs);
-        summary.file_name = file_name;
+        summary.file_name = file_name.to_string();
         summary.room_type = room_type;
         summary.map_id = map_id;
         summary.map_name = map_name;

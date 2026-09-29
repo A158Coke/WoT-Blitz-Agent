@@ -2464,6 +2464,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wotb-replay-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "wasm-bindgen",
+ "wotb-replay-core",
+ "wotbreplay-parser",
+]
+
+[[package]]
 name = "wotbreplay-parser"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

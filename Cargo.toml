@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/replay-core"]
+members = ["crates/replay-core", "crates/replay-wasm"]
 
 [package]
 name = "wotb-agent"

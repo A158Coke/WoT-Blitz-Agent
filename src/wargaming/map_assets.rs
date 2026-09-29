@@ -459,8 +459,8 @@ fn parse_heightmap(raw: &[u8]) -> Option<TerrainGrid> {
         return None;
     }
     let src: Vec<u16> = raw[8..]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>().0.iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     // tile 块重排（块行主序 → 行主序）
     let blocks = size / tile;

@@ -311,7 +311,7 @@ fn build_coverage(clocks: &[f32]) -> Vec<f32> {
 /// coverage 区段内的时刻判定（前端同式）
 #[allow(dead_code)]
 fn coverage_contains(cov: &[f32], t: f32) -> bool {
-    cov.chunks_exact(2).any(|p| t >= p[0] && t <= p[1])
+    cov.as_chunks::<2>().0.iter().any(|p| t >= p[0] && t <= p[1])
 }
 
 /// 弹道直线飞行时长（秒）：|to−from| / |launch_velocity|，速度不可信时 0.5s 兜底

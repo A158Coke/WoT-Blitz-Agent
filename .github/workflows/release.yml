@@ -73,18 +73,12 @@ jobs:
             -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
 
 
-      - name: 自包含可执行（bundle：data/ + 前端 + wasm 全嵌入）
-        shell: pwsh
-        run: cargo build --release --features bundle
-
       - name: 打包
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item target/release/wotb-agent.exe release/
-          Copy-Item config.toml.example release/
-          Copy-Item README.md release/
-          Compress-Archive -Path release/* -DestinationPath "wotb-agent-${{ github.ref_name }}-win64.zip" -Force
+          Compress-Archive -Path release/wasm/* `
+            -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
 
       - name: 发布
         uses: softprops/action-gh-release@v2

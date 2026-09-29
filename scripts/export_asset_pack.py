@@ -100,6 +100,16 @@ def main() -> None:
             if cp(f, f"tank_images/{f.name}"):
                 img_n += 1
 
+    # ---- 射击复现数据前提：碰撞盒 JSON（game_data/）+ per-tank 数据（tank/，dump-tank-data 产物） ----
+    gd = data / "game_data"
+    if gd.is_dir():
+        for f in sorted(gd.rglob("*.json")):
+            cp(f, f"game_data/{f.relative_to(gd).as_posix()}")
+    td = data / "tank_data"
+    if td.is_dir():
+        for f in sorted(td.rglob("*.json")):
+            cp(f, f"tank/{f.name}")
+
     # ---- 核心数据（前端展示名/弹种表的自足来源） ----
     core_n = 0
     for name in ["tanks.pb", "models.pb", "tank_cache.json", "data_version.json"]:

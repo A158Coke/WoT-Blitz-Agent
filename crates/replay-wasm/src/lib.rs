@@ -98,6 +98,15 @@ pub fn build_facets(bytes: &[u8]) -> anyhow::Result<ReplayFacets> {
     })
 }
 
+/// 轻量结算通道（Scan Report 用）：只解析 meta + battle_results——**不读包流、
+/// 不建时序模型**，单文件毫秒级，供一次数百文件的批量扫描。
+/// 返回 BattleSummary JSON（含全部战斗者结算行，字段见 core `models::battle`）。
+pub fn settlement_json(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
+    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    Ok(serde_json::to_string(&summary)?)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod js {
     use wasm_bindgen::prelude::*;
@@ -109,5 +118,13 @@ mod js {
         super::build_facets(bytes)
             .and_then(|f| f.envelope_json())
             .map_err(|e| JsValue::from_str(&format!("replay parse failed: {e:#}")))
+    }
+
+    /// JS 入口（批量 Scan 用）：`parseReplaySettlement(new Uint8Array(fileBuffer))`
+    /// → 结算 JSON 字符串（BattleSummary：花名册/胜负/地图/全部战斗者统计）。
+    #[wasm_bindgen(js_name = parseReplaySettlement)]
+    pub fn parse_replay_settlement(bytes: &[u8]) -> Result<String, JsValue> {
+        super::settlement_json(bytes)
+            .map_err(|e| JsValue::from_str(&format!("settlement parse failed: {e:#}")))
     }
 }

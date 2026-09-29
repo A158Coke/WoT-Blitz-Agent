@@ -64,6 +64,33 @@ pub fn global_resolver() -> Arc<TankResolver> {
     }).clone()
 }
 
+/// 导出全部 per-tank JSON（资产打包用）：初始化全局 resolver 后逐车物化。
+/// 返回导出份数。CLI `dump-tank-data` 与打包器消费。
+pub fn export_tank_data(out: &std::path::Path) -> anyhow::Result<usize> {
+    let resolver = crate::wargaming::tank_resolver::TankResolver::load_from_json_file(
+        crate::data::data_path("tank_cache.json").as_path(),
+    )
+    .unwrap_or_default();
+    set_global_resolver(resolver);
+    std::fs::create_dir_all(out)?;
+    let cache: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+        &std::fs::read_to_string(crate::data::data_path("tank_cache.json"))?,
+    )?;
+    let total = cache.len();
+    for (i, (tid, _)) in cache.iter().enumerate() {
+        let Ok(id) = tid.parse::<u32>() else {
+            eprintln!("  跳过非数字键 {tid}");
+            continue;
+        };
+        let value = tank_data_value(id);
+        std::fs::write(out.join(format!("{id}.json")), serde_json::to_vec_pretty(&value)?)?;
+        if (i + 1) % 100 == 0 {
+            eprintln!("  {}/{total}", i + 1);
+        }
+    }
+    Ok(total)
+}
+
 pub(crate) fn set_global_resolver(resolver: TankResolver) {
     let _ = GLOBAL_RESOLVER.set(Arc::new(resolver));
 }

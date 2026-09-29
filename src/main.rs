@@ -107,6 +107,12 @@ enum Commands {
     },
     /// Dump the map registry (id → key/space/display) as JSON for asset packing
     DumpMapIndex,
+    /// Export per-tank data JSONs (armor/configs/origins) for static asset packing
+    DumpTankData {
+        /// Output directory for {tank_id}.json files
+        #[arg(long, default_value = "data/tank_data")]
+        out: PathBuf,
+    },
     /// Export consumer facets for one replay (playback / ai-review / hall-of-fame JSON)
     Facets {
         /// Path to the .wotbreplay file
@@ -699,6 +705,10 @@ fn main() -> Result<()> {
         }
         Commands::DumpMapIndex => {
             println!("{}", wotb_agent::wargaming::map_assets::dump_map_index());
+        }
+        Commands::DumpTankData { out } => {
+            let total = wotb_agent::wargaming::tank_configs::export_tank_data(&out)?;
+            println!("导出 {total} 份 per-tank JSON → {}", out.display());
         }
         Commands::Scan { dir, mode, days, output, tank_cache, fetch_tanks, app_id: _, server: _ } => {
             let resolver = if fetch_tanks {

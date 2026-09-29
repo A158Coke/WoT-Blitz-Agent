@@ -19,7 +19,16 @@ fn main() {
                  或一键: powershell -ExecutionPolicy Bypass -File scripts\\build-all.ps1\n"
             );
         }
-        println!("cargo:warning=frontend/dist 不存在——debug 测试构建继续；release/bundle 构建前先 cd frontend && npm run build");
+        // debug 测试构建：rust-embed 宏在编译期硬性要求目录存在——生成占位 dist
+        // （frontend/dist 已 gitignore；占位页仅在被未构建前端的 debug 服务命中时可见）
+        let dir = index.parent().expect("dist 路径必有父目录");
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(
+            &index,
+            "<!doctype html><meta charset=\"utf-8\"><title>WotB Agent</title>\
+             <p>前端尚未构建：cd frontend && npm ci && npm run build</p>\n",
+        );
+        println!("cargo:warning=frontend/dist 不存在——已生成占位（debug 测试构建）；release/bundle 构建前先 cd frontend && npm run build");
     }
     println!("cargo:rerun-if-changed=build.rs");
 }

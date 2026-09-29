@@ -36,8 +36,7 @@ pub struct AggregatedReport {
     /// 自动击毁（溺水/坠桥等）的场数
     pub auto_destroyed_count: usize,
 
-    /// 每场战斗的排位评级变化记录
-    pub rating_changes: Vec<RatingChange>,
+    /// 排位评级摘要（首/末场 mm_rating；逐场走势序列随 Rating Trend 图一并移除）
     pub rating_start: Option<f32>,
     pub rating_end: Option<f32>,
     pub rating_delta: Option<f32>,
@@ -48,20 +47,6 @@ pub struct AggregatedReport {
     pub map_stats: Vec<MapStat>,
     /// 全部逐场战斗明细（用于展开/导出）
     pub battle_summaries: Vec<BattleSummary>,
-}
-
-/// 单场排位评级的增减记录。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RatingChange {
-    pub datetime: String,
-    pub timestamp: i64,
-    /// 该场结束后的 mm 评级
-    pub mm_rating: Option<f32>,
-    /// 该场结束后的显示评级
-    pub display_rating: Option<u32>,
-    pub won: bool,
-    pub tank_name: String,
-    pub damage_dealt: u32,
 }
 
 /// 单辆坦克的聚合使用统计。
@@ -114,7 +99,9 @@ impl AggregatedReport {
         let mut total_frags: u64 = 0;
         let mut total_block: u64 = 0;
         let mut total_assist: u64 = 0;
-        let mut rating_changes: Vec<RatingChange> = Vec::new();
+        let mut rating_start: Option<f32> = None;
+        let mut rating_end: Option<f32> = None;
+        let mut rating_seen_first = false;
         let mut tank_map: HashMap<u32, TankUsage> = HashMap::new();
         let mut map_map: HashMap<u32, MapStat> = HashMap::new();
         let mut map_damage: HashMap<u32, f64> = HashMap::new();
@@ -124,16 +111,12 @@ impl AggregatedReport {
                 total_frags += p.n_enemies_destroyed as u64;
                 total_block += p.damage_blocked as u64;
                 total_assist += (p.damage_assisted_1 + p.damage_assisted_2) as u64;
-                // —— 排位评级 —— 逐场抽取 mm_rating 变化，首场为起始、末场为结束
-                rating_changes.push(RatingChange {
-                    datetime: b.datetime.clone(),
-                    timestamp: b.timestamp,
-                    mm_rating: p.mm_rating,
-                    display_rating: p.display_rating,
-                    won: b.author_won,
-                    tank_name: b.author_tank_name.clone(),
-                    damage_dealt: b.author.damage_dealt,
-                });
+                // —— 排位评级 —— 首场记起始、逐场覆盖末值（与原序列 first/last 同语义）
+                if !rating_seen_first {
+                    rating_start = p.mm_rating;
+                    rating_seen_first = true;
+                }
+                rating_end = p.mm_rating;
             }
 
             let entry = tank_map.entry(b.author_tank_id).or_insert_with(|| {
@@ -178,8 +161,6 @@ impl AggregatedReport {
         // 用 a.max(1) 避免分母为 0（无场次时各 "场均" 皆 0）
         let n = total.max(1) as f64;
 
-        let rating_start = rating_changes.first().and_then(|r| r.mm_rating);
-        let rating_end = rating_changes.last().and_then(|r| r.mm_rating);
         let rating_delta = match (rating_start, rating_end) {
             (Some(s), Some(e)) => Some(e - s),
             _ => None,
@@ -249,7 +230,6 @@ impl AggregatedReport {
             avg_xp: total_xp as f64 / n,
             avg_battle_duration: total_duration / n,
             auto_destroyed_count: auto_destroyed,
-            rating_changes,
             rating_start,
             rating_end,
             rating_delta,
@@ -319,20 +299,6 @@ impl AggregatedReport {
             println!("  {}", "-".repeat(50));
             for m in self.map_stats.iter() {
                 println!("  {:<25} {:>4} {:>4.0}% {:>8.0}", m.map_name, m.battles, m.win_rate, m.avg_damage);
-            }
-            println!();
-        }
-
-        if !self.rating_changes.is_empty() {
-            println!("--- Rating Changes (last 10) ---");
-            println!("  {:<20} {:>8} {:>6} {:>25} {:>8}",
-                "DateTime", "Display", "W/L", "Tank", "Damage");
-            println!("  {}", "-".repeat(75));
-            for rc in self.rating_changes.iter().rev().take(10) {
-                let dr = rc.display_rating.map(|d| d.to_string()).unwrap_or("-".into());
-                let wl = if rc.won { "W" } else { "L" };
-                println!("  {:<20} {:>8} {:>6} {:>25} {:>8}",
-                    rc.datetime, dr, wl, rc.tank_name, rc.damage_dealt);
             }
             println!();
         }

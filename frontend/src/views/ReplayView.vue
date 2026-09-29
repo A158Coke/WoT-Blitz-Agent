@@ -1,7 +1,6 @@
 <script setup>
-// Replay 分析：批量扫描报告（含评级走势图）+ 射击复现（单场解析/射击者筛选/3D 复现链接/实时回放入口）。
-import { ref, computed, nextTick, onMounted } from 'vue'
-import Chart from 'chart.js/auto'
+// Replay 分析：批量扫描报告 + 射击复现（单场解析/射击者筛选/3D 复现链接/实时回放入口）。
+import { ref, computed, onMounted } from 'vue'
 import { scanReplays, replayShots, playerSearch } from '../api/stats.js'
 import { fmtInt, wrCls, wrText, fmtDur } from '../utils/format.js'
 import { isTauri, tauriDialogOpen, tauriInvoke, uploadReplay } from '../utils/tauri.js'
@@ -19,14 +18,10 @@ const report = ref(null)
 const showImport = ref(true) // 导入按钮：Tauri=对话框多选；浏览器=单文件上传
 const importFileEl = ref(null)
 
-let scanChart = null
-const ratingCanvas = ref(null)
-
 async function doScan(scanOverride) {
   scanning.value = true
   scanError.value = ''
   report.value = null
-  if (scanChart) { scanChart.destroy(); scanChart = null }
   // 后端按运行平台自动转换 Windows/WSL 路径风格
   const body = {
     dir: scanDir.value,
@@ -39,59 +34,11 @@ async function doScan(scanOverride) {
     const d = await scanReplays(body)
     if (d.error) { scanError.value = d.error; return }
     report.value = d
-    nextTick(renderScanRatingChart)
   } catch (e) {
     scanError.value = '⚠ 请求失败: ' + (e.message || e)
   } finally {
     scanning.value = false
   }
-}
-
-// 评级折线图：mm_rating 随场次变化，胜/负点着色
-function renderScanRatingChart() {
-  const el = ratingCanvas.value
-  if (!el || !report.value) return
-  const changes = report.value.rating_changes || []
-  const pts = changes.filter((c) => c.mm_rating != null)
-  if (!pts.length) return
-  if (scanChart) { scanChart.destroy(); scanChart = null }
-  const ctx = el.getContext('2d')
-  const fill = ctx.createLinearGradient(0, 0, 0, 220)
-  fill.addColorStop(0, 'rgba(255,138,61,0.22)')
-  fill.addColorStop(1, 'rgba(255,138,61,0)')
-  scanChart = new Chart(el, {
-    type: 'line',
-    data: {
-      labels: pts.map((c, i) => i + 1),
-      datasets: [{
-        data: pts.map((c) => c.mm_rating),
-        borderColor: '#ffb35c', borderWidth: 2,
-        backgroundColor: fill, fill: true, tension: 0.25,
-        pointRadius: pts.map((c) => (c.won ? 4 : 3)),
-        pointBackgroundColor: pts.map((c) => (c.won ? '#5fbf7a' : '#ff6b6b')),
-        pointBorderColor: 'transparent',
-      }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => {
-              const c = pts[items[0].dataIndex]
-              return `#${items[0].dataIndex + 1} · ${c.won ? '胜' : '负'} · ${c.tank_name || ''}`
-            },
-            label: (item) => ` rating ${item.parsed.y} · dmg ${pts[item.dataIndex].damage_dealt ?? '-'}`,
-          },
-        },
-      },
-      scales: {
-        x: { title: { display: true, text: 'Battle 场次', color: '#9c8f7f', font: { size: 11 } }, ticks: { color: '#9c8f7f', maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        y: { ticks: { color: '#9c8f7f' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-      },
-    },
-  })
 }
 
 function wrBarColor(wr) {
@@ -389,10 +336,6 @@ onMounted(() => {
           <div class="stat-box"><div class="lbl">Avg XP</div><div class="val">{{ fmtInt(report.avg_xp) }}</div></div>
           <div class="stat-box"><div class="lbl">Avg duration</div><div class="val">{{ fmtDur(report.avg_battle_duration) }}</div></div>
         </div>
-        <template v-if="(report.rating_changes || []).some((c) => c.mm_rating != null)">
-          <h4>Rating Trend 评级走势</h4>
-          <div style="height:220px;margin:6px 0;"><canvas ref="ratingCanvas"></canvas></div>
-        </template>
         <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:18px;margin-top:10px;">
           <div>
             <h4>Tanks</h4>

@@ -99,7 +99,7 @@ pub enum AiEvent {
     /// 可见性窗口（AoI 生命周期，本队视角；t_out = None 表示战斗结束仍在场）
     Visibility { t_in: f32, eid: u32, #[serde(skip_serializing_if = "Option::is_none")] t_out: Option<f32> },
     /// 作者战斗反馈计数（0x0c；code 语义见 combat::feedback_code）
-    Counter { t: f32, code: u16, count: u16, value: u16 },
+    Counter { t: f32, code: u8, count: u16, value: u16 },
     /// 累计伤害进度（prop10；相邻差 = 区段内伤害）
     DamageTick { t: f32, eid: u32, cumulative: u32 },
 }

@@ -48,13 +48,13 @@ impl CrossCheck {
 pub fn cross_check_author_counters(model: &ReplayModel, summary: &BattleSummary) -> Vec<CrossCheck> {
     let author = summary.players.iter()
         .find(|p| p.account_id == summary.author_account_id);
-    let mut max_by_code: HashMap<u16, (u32, u32)> = Default::default();
+    let mut max_by_code: HashMap<u8, (u32, u32)> = Default::default();
     for e in &model.timeline.counters {
         let slot = max_by_code.entry(e.event_code).or_insert((0, 0));
         slot.0 = slot.0.max(e.count as u32);
         slot.1 = slot.1.max(e.value as u32);
     }
-    let mk = |label: &'static str, code: u16, settlement: Option<u32>| {
+    let mk = |label: &'static str, code: u8, settlement: Option<u32>| {
         let (count, value) = max_by_code.get(&code).copied().unwrap_or((0, 0));
         CrossCheck { label, settlement, counter_count: count, counter_value: value }
     };
@@ -75,7 +75,7 @@ mod tests {
     fn cross_check_verdicts() {
         let mut model = ReplayModel::default();
         model.timeline.counters.push(crate::replay::combat::FeedbackCounterEvent {
-            clock: 1.0, avatar_eid: 1, event_code: feedback_code::KILL, count: 2, value: 2,
+            clock: 1.0, avatar_eid: 1, event_code: feedback_code::KILL, seq: 0, count: 2, value: 2,
         });
         let mut summary = BattleSummary::from_naive(0);
         let mut p = crate::models::battle::PlayerSummary::for_test(7, "a");

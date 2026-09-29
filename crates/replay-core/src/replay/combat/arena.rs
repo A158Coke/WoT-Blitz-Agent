@@ -286,24 +286,30 @@ pub fn kill_feed_from_updates(updates: &[ArenaUpdate]) -> Vec<KillFeedEvent> {
 
 /// 0x0c 事件码（baseType，WotbTools PROVEN）；未列出的码原样透传，不猜语义。
 pub mod feedback_code {
-    pub const DAMAGE_DEALT: u16 = 1;
-    pub const SPOTTED: u16 = 2;
-    pub const KILL: u16 = 3;
-    pub const BLOCKED: u16 = 5;
-    pub const DESTRUCTION_ASSIST: u16 = 15;
-    pub const TOTAL_ASSIST: u16 = 17;
+    pub const DAMAGE_DEALT: u8 = 1;
+    pub const SPOTTED: u8 = 2;
+    pub const KILL: u8 = 3;
+    pub const BLOCKED: u8 = 5;
+    pub const DESTRUCTION_ASSIST: u8 = 15;
+    pub const TOTAL_ASSIST: u8 = 17;
 }
 
 /// 一条战斗反馈计数事件：作者个人过程计数的带时标广播。
 /// args 6B = [eventCode u16][count u16][value u16]（envelope = 作者 Avatar 实体）。
-/// count/value 的累计口径未与结算逐项复核——消费方以 [`super::facets 互验`]/CLI 对账为准，
-/// 对不上保持原样透传并在诊断层标注，不猜语义。
+/// eventCode 为复合编码：低字节 = 事件基类型（1=累计伤害 2=点亮 3=击杀 5=挡伤
+/// 15=毁灭协助 17=总助攻），高字节 = 同类型内序号——2026-09-29 Canal 场互验确认
+/// （4 击杀事件 seq 0..3 与结算 n_enemies_destroyed=4 全对账；此前整 u16 直判
+/// 导致 seq≠0 的事件漏计，已修）。
+/// count/value 的逐项口径仍以互验报告为准，对不上保持原样透传，不猜语义。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackCounterEvent {
     pub clock: f32,
     /// 作者 Avatar 实体 id（envelope）
     pub avatar_eid: u32,
-    pub event_code: u16,
+    /// 事件基类型 = 原始 code 低字节
+    pub event_code: u8,
+    /// 同类型内序号 = 原始 code 高字节
+    pub seq: u8,
     pub count: u16,
     pub value: u16,
 }
@@ -318,10 +324,12 @@ pub fn collect_feedback_counters(packets: &[(u32, f32, &[u8])]) -> Vec<FeedbackC
         let alen = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
         if alen < 6 || 12 + alen > p.len() { continue; }
         let a = &p[12..12 + alen];
+        let raw_code = u16::from_le_bytes([a[0], a[1]]);
         out.push(FeedbackCounterEvent {
             clock: *clock,
             avatar_eid: u32::from_le_bytes([p[0], p[1], p[2], p[3]]),
-            event_code: u16::from_le_bytes([a[0], a[1]]),
+            event_code: (raw_code & 0xFF) as u8,
+            seq: (raw_code >> 8) as u8,
             count: u16::from_le_bytes([a[2], a[3]]),
             value: u16::from_le_bytes([a[4], a[5]]),
         });

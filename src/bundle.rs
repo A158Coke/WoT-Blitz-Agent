@@ -66,7 +66,19 @@ fn is_data_ready(dir: &Path) -> bool {
 }
 
 fn extract(base: &Path) -> anyhow::Result<()> {
-    extract_assets::<DataAssets>(base, "data")?;
+    // 先释放到临时目录再原子换入：is_data_ready 只认 tanks.pb——直接逐文件写入
+    // 时中途崩溃（断电/被杀）会留下"tanks.pb 已写、其余未写完"的残缺态，且被
+    // 误判为就绪永久停留；换名后要么完整、要么没有
+    let staging = base.join(format!(".data-release-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    extract_assets::<DataAssets>(&staging, "data")?;
+    let target = base.join("data");
+    if target.exists() {
+        // 上次残缺释放的残留（正常流程不会走到：is_data_ready 未过才会 extract）
+        let _ = std::fs::remove_dir_all(&target);
+    }
+    std::fs::rename(staging.join("data"), &target)?;
+    let _ = std::fs::remove_dir_all(&staging);
     Ok(())
 }
 

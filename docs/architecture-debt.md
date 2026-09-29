@@ -82,20 +82,21 @@ viewer/
 shooterId, query })` 显式参数替换 `window.__INITIAL_TANK__`。eslint 已就位
 （死代码已清），拆分时的 no-undef/no-unused-vars 即时兜底。
 
-## 附：次级观察清单（未实施，按需取用）
+## 附：次级观察清单（2026-09-29 第三轮后剩余）
 
-- `blitzkit.rs` `models_vec` 为 `Vec`，`model_info` 线性 `find` + 深克隆——
-  `TankResolver::from_blitzkit` 构建期 O(N²)。改 `HashMap<u32, TankModelInfo>`
-  + 返回引用可消。
+已实施（本轮）：blitzkit models_map HashMap 索引 + `model_info` 返回
+`&'static`（构建期 O(N²) 与每请求深克隆消除）；tools.rs 共享 Runtime +
+find_chrome 探测缓存；bundle.rs 首释临时目录 + 原子换名（残缺态防误判）；
+tankViewer 穿透 resolution uniform 每帧全场景 traverse → 模式进入/resize
+事件驱动。`armor_tank_data_handler` 双份组装一项已随 viewer 三分自然消解
+（单行委托 tank_data_value_prefixed）。
+
+仍未实施：
+
 - `scanner.rs` 批量扫描串行，可加可选 `rayon` feature（WASM 目标保持串行）。
 - replay-core 错误处理三元混用（anyhow 中文 bail + 库内 eprintln），建议
-  `thiserror` 定义 `ReplayError`；与库内诊断输出走 notes 通道。
+  `thiserror` 定义 `ReplayError`（`NotBattleReplay`/`LayoutDrift`/`AmbiguousPairing`），
+  诊断输出走 notes 通道。
 - `CombatEvent.entity_name` 每事件 clone 昵称 String，可改 `Rc<str>` 或只存 eid。
-- `bundle.rs` `is_data_ready` 仅以 tanks.pb 判定，首释中途崩溃停留残缺态——
-  先释放到临时目录再原子 rename。
-- `agent/tools.rs` 每次工具调用新建 Tokio Runtime；view_tank 无头服务器无
-  端口注册表；find_chrome 探测无缓存。
-- tankViewer 穿透模式 `refreshPenetrationResolution()` 每帧全场景 traverse，
-  实际只需 resize 时跑。
-- `armor_tank_data_handler` 与 `/api/tank` 主实现仍是两份相近 JSON 组装
-  （历史契约差异：前缀与 resolver 来源），可再收敛。
+- view_tank 每次调用新起一个绑定随机端口的服务器线程（与旧标签页共存是
+  既定行为，泄漏有界；如需收敛改为单服务器 + 热切换数据面，属行为重设计）。

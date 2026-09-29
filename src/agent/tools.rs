@@ -421,11 +421,10 @@ impl AgentTools {
         let target_name = resolver.resolve(target).unwrap_or_else(|| format!("tank_{}", target));
         let shooter_name = shooter.map(|id| resolver.resolve(id).unwrap_or_else(|| format!("tank_{}", id)));
 
+        // 服务器线程与旧标签页共存是既定行为（每次 view_tank 新端口新页签，
+        // 旧页签靠旧服务器存活）；泄漏有界，见架构债文档次级清单
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new();
-            if let Ok(rt) = rt {
-                let _ = rt.block_on(crate::wargaming::viewer::serve(resolver, target, shooter));
-            }
+            let _ = tool_runtime().block_on(crate::wargaming::viewer::serve(resolver, target, shooter));
         });
 
         let desc = match (&shooter_name, shooter) {
@@ -764,8 +763,7 @@ impl AgentTools {
         };
         let view2 = view.clone();
         let handle = std::thread::spawn(move || -> Result<String> {
-            let rt = tokio::runtime::Runtime::new()?;
-            let port = rt.block_on(crate::wargaming::viewer::start_viewer_server(resolver2, target, shooter_id))?;
+            let port = tool_runtime().block_on(crate::wargaming::viewer::start_viewer_server(resolver2, target, shooter_id))?;
             let url = url.replace("PORT", &port.to_string());
             // WSL 调 Windows 侧浏览器：--screenshot 输出路径转 Windows 形式（/mnt/d/x → D:\x）
             let is_win_browser = chrome2.contains("/mnt/");
@@ -838,8 +836,7 @@ impl AgentTools {
         let fname2 = crate::data::data_path("cache/screenshots").join(format!("replay_shot_{:02}.png", shot_no)).to_string_lossy().to_string();
 
         let handle = std::thread::spawn(move || -> Result<String> {
-            let rt = tokio::runtime::Runtime::new()?;
-            let (port, shell_slot, target_cfg) = rt.block_on(crate::wargaming::viewer::start_viewer_server_for_replay(
+            let (port, shell_slot, target_cfg) = tool_runtime().block_on(crate::wargaming::viewer::start_viewer_server_for_replay(
                 std::path::Path::new(&file), resolver, shot_no))?;
             let is_win = chrome.contains("/mnt/");
             let fname_abs = std::env::current_dir()
@@ -965,7 +962,21 @@ fn format_candidates(cands: &[TankCandidate]) -> String {
 }
 
 /// 探测 Chrome/Chromium 可执行文件：CHROME_PATH 环境变量 → 常见 Linux 命令 → WSL Windows 安装路径。
+/// 工具线程共享的 Tokio Runtime（block_on 可多线程并发；此前 view_tank/截图
+/// 每次调用各建一个完整 runtime——线程池+reactor 全套分配只为单次 block_on）。
+fn tool_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("tool runtime"))
+}
+
+/// Chrome/Edge 探测结果缓存（PATH 子进程 --version ×5 + 文件系统探测，
+/// 每次截图都重跑一遍纯属浪费；进程内环境不变，首次结果即最终结果）。
 fn find_chrome() -> Option<String> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(find_chrome_uncached).clone()
+}
+
+fn find_chrome_uncached() -> Option<String> {
     if let Ok(p) = std::env::var("CHROME_PATH") {
         let p = p.trim().to_string();
         if !p.is_empty() && Path::new(&p).exists() {

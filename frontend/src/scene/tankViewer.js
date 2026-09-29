@@ -841,6 +841,7 @@ export function initTankViewer() {
             this.classList.toggle('active', penetrationMode);
             this.textContent = penetrationMode ? '关闭热力图' : '穿透热力图';
             applyPenetrationMode(penetrationMode);
+            refreshPenetrationResolution();
         });
 
         function retagSpacedSections(model) {
@@ -1148,6 +1149,7 @@ export function initTankViewer() {
                 const btn = document.getElementById('penetration-btn');
                 btn.classList.add('active'); btn.textContent = '关闭热力图';
                 applyPenetrationMode(true);
+                refreshPenetrationResolution();
             }
             const shotNo = parseInt(QP.get('shot'), 10);
             const isShotReplay = !isNaN(shotNo);
@@ -3178,6 +3180,7 @@ export function initTankViewer() {
                 camera.aspect = view.clientWidth / view.clientHeight;
                 camera.updateProjectionMatrix();
                 renderer.setSize(view.clientWidth, view.clientHeight);
+                refreshPenetrationResolution();
                 });
         }
 
@@ -3901,7 +3904,6 @@ export function initTankViewer() {
                         fetch('/api/ready?sess=' + encodeURIComponent(SESS)).catch(()=>{});
                     }
                 }
-                refreshPenetrationResolution();
                 renderSpacedArmorPass();
                 renderer.render(scene, camera);                       // 背景/网格（autoClear 已置 false）
                 renderer.clearDepth();                                 // 清除深度，让 exclude 深度遮罩生效

@@ -1101,25 +1101,34 @@ fn parse_model_gun(gb: &[u8]) -> Result<Option<GunModelInfo>> {
 }
 
 /// 读取并解析 models.pb（进程内缓存，只解析一次）；文件缺失或解析失败返回 None。
-fn models_vec() -> &'static Option<Vec<TankModelInfo>> {
+/// 按 tank_id 建索引：此前 Vec + 逐次线性 find + 整体深克隆——TankResolver 构建
+/// 逐车查询为 O(N²)，且每请求两次深克隆嵌套结构（见架构债次级清单）。
+fn models_map() -> &'static Option<std::collections::HashMap<u32, TankModelInfo>> {
     use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<Vec<TankModelInfo>>> = OnceLock::new();
+    static CACHE: OnceLock<Option<std::collections::HashMap<u32, TankModelInfo>>> = OnceLock::new();
     CACHE.get_or_init(|| {
         let bytes = std::fs::read(crate::data::data_path("models.pb")).ok()?;
-        parse_models_pb(&bytes).ok().filter(|v| !v.is_empty())
+        let vec = parse_models_pb(&bytes).ok().filter(|v| !v.is_empty())?;
+        // 重复 id 保留首条（与原 Vec::find 的"首个匹配"语义一致）
+        let mut map = std::collections::HashMap::with_capacity(vec.len());
+        for m in vec {
+            map.entry(m.tank_id).or_insert(m);
+        }
+        Some(map)
     })
 }
 
-pub fn model_info(tank_id: u32) -> Option<TankModelInfo> {
-    models_vec().as_ref().and_then(|v| v.iter().find(|t| t.tank_id == tank_id)).cloned()
+/// tank_id → models.pb 模型信息（返回共享引用，零克隆）。
+pub fn model_info(tank_id: u32) -> Option<&'static TankModelInfo> {
+    models_map().as_ref().and_then(|m| m.get(&tank_id))
 }
 
 /// models.pb 内全部坦克 id（升序去重）——有模型车辆的权威清单，
 /// `fetch-models` 全量预热以此为枚举源（tank_cache 含无模型车，比它更准）。
 pub fn load_model_ids() -> Vec<u32> {
-    let mut ids: Vec<u32> = models_vec()
+    let mut ids: Vec<u32> = models_map()
         .as_ref()
-        .map(|v| v.iter().map(|t| t.tank_id).collect())
+        .map(|m| m.keys().copied().collect())
         .unwrap_or_default();
     ids.sort_unstable();
     ids.dedup();

@@ -58,6 +58,20 @@ jobs:
           # 前端构建放最后：dist 拷入 public/wasm 产物，rust-embed 随 exe 嵌入
           npm --prefix frontend run build
 
+      - name: WASM 消费产物打包（供 WotBTools 直接取用，免自建）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release/wasm | Out-Null
+          Copy-Item frontend/public/wasm/wotb_replay_wasm.js release/wasm/
+          Copy-Item frontend/public/wasm/wotb_replay_wasm_bg.wasm release/wasm/
+          $sha = (git rev-parse HEAD).Trim()
+          @{ upstream_commit = $sha
+             tag = '${{ github.ref_name }}'
+             bindgen = (wasm-bindgen --version) } | ConvertTo-Json |
+            Set-Content release/wasm/fingerprint.json
+          Compress-Archive -Path release/wasm/* `
+            -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
+
       - name: 资产清单（含 sha256；GLB/地图包入库备查）
         shell: pwsh
         env:
@@ -84,4 +98,5 @@ jobs:
         with:
           files: |
             wotb-agent-*-win64.zip
+            wotb-replay-wasm-*.zip
             release/asset_manifest.json

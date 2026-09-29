@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/replay-core"]
+
 [package]
 name = "wotb-agent"
 version = "0.1.0"
@@ -5,6 +8,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+wotb-replay-core = { path = "crates/replay-core" }
 wotbreplay-parser = { version = "0.4", features = ["meta", "raw-payload"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::models::battle::BattleSummary;
+use super::TankNames;
 use crate::replay::parser::{ReplayParser, list_replays_in_dir};
 
 /// 批量扫描器：内部持有 ReplayParser，按目录逐个解析回放。
@@ -92,7 +93,7 @@ impl<'a> ReplayScanner<'a> {
         Self { parser: ReplayParser::new() }
     }
 
-    pub fn with_resolver(resolver: &'a crate::wargaming::tank_resolver::TankResolver) -> Self {
+    pub fn with_resolver<R: TankNames>(resolver: &'a R) -> Self {
         Self { parser: ReplayParser::with_resolver(resolver) }
     }
 

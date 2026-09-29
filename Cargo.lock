@@ -2448,6 +2448,18 @@ dependencies = [
  "tokio-util",
  "toml",
  "webbrowser",
+ "wotb-replay-core",
+ "wotbreplay-parser",
+]
+
+[[package]]
+name = "wotb-replay-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
  "wotbreplay-parser",
 ]
 

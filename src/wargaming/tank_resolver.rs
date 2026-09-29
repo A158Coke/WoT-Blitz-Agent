@@ -99,6 +99,14 @@ pub(crate) fn strip_ws(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// 核心库的坦克名最小接口：核心库不绑定 IO，本实现读 tank_cache.json。
+impl wotb_replay_core::replay::TankNames for TankResolver {
+    fn resolve(&self, tank_id: u32) -> Option<String> {
+        TankResolver::resolve(self, tank_id)
+    }
+}
+
+
 impl TankResolver {
     pub fn new() -> Self {
         Self { cache: HashMap::new(), name_index: Vec::new() }

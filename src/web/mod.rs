@@ -518,7 +518,7 @@ async fn scan_handler(
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let filter = crate::replay::scanner::ScanFilter::from_mode(&mode, days);
         let scanner = match &resolver {
-            Some(r) => crate::replay::scanner::ReplayScanner::with_resolver(r),
+            Some(r) => crate::replay::scanner::ReplayScanner::with_resolver(r.as_ref()),
             None => crate::replay::scanner::ReplayScanner::new(),
         };
         let battles = if files.is_empty() {
@@ -616,7 +616,7 @@ async fn prematch_handler(
 
         if let Some(rp) = &replay {
             let parser = match &resolver {
-                Some(r) => crate::replay::parser::ReplayParser::with_resolver(r),
+                Some(r) => crate::replay::parser::ReplayParser::with_resolver(r.as_ref()),
                 None => crate::replay::parser::ReplayParser::new(),
             };
             let summary = parser.parse_file(std::path::Path::new(rp))?;

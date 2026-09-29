@@ -366,10 +366,11 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 |------|------|
 | `src/main.rs` / `src/lib.rs` | 入口：桌面 CLI 与库形态（移动端壳路径依赖本 crate，共用全部业务模块） |
 | `src/agent/` | LLM Agent：工具编排与自然语言对话 |
-| `src/replay/` | 回放二进制解析（single/scan/combat/实时回放时间线 `playback.rs`） |
+| `crates/replay-core/` | **回放解析核心库**（零网络依赖，原生/WASM 双目标）：内部领域模型、事件解码、实时回放时间线、三数据切面投影（架构契约第 4/5 节） |
+| `src/replay/` | 兼容垫片（re-export 核心库）+ 服务端增值标注（loadout 弹种表，依赖 BlitzKit 坦克表 IO） |
 | `src/wargaming/` | WG API、坦克/模型/地图资产、3D 装甲查看器与实时回放前端 |
 | `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
-| `src/models/`、`src/data.rs` | BlitzKit 数据模型；运行时路径层（桌面/移动私有目录重定向） |
+| `src/models/`、`src/data.rs` | 服务端数据模型（report/config）；运行时路径层（桌面/移动私有目录重定向） |
 | `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
 | `docs/` | 项目文档：[索引](docs/index.md)、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |

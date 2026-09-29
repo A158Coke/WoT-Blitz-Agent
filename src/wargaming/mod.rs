@@ -14,4 +14,4 @@ pub mod blitzkit;
 pub mod model_fetch;
 pub mod data_version;
 pub mod heatmap_ready;
-pub mod battle_results_extra;
+pub use wotb_replay_core::wargaming::battle_results_extra;

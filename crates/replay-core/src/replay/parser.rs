@@ -5,14 +5,14 @@ use wotbreplay_parser::replay::Replay;
 use wotbreplay_parser::models::battle_results::TeamNumber;
 
 use crate::models::battle::{BattleSummary, AuthorStats, PlayerSummary};
-use crate::wargaming::tank_resolver::TankResolver;
+use super::TankNames;
 
 // 回放解析（单场）：用 `wotbreplay-parser` 读取 `.wotbreplay` ZIP 包的
 // meta 与 battle_results，提取成项目内部的 BattleSummary（含 14 名玩家战绩）。
 
-/// 单场回放解析器。持有可选的 `TankResolver`：有则可把 tank_id 解析成坦克名，否则退化为 `tank_{id}`。
+/// 单场回放解析器。持有可选的 [`TankNames`]：有则可把 tank_id 解析成坦克名，否则退化为 `tank_{id}`。
 pub struct ReplayParser<'a> {
-    tank_resolver: Option<&'a TankResolver>,
+    tank_resolver: Option<&'a dyn TankNames>,
 }
 
 impl<'a> ReplayParser<'a> {
@@ -21,8 +21,8 @@ impl<'a> ReplayParser<'a> {
         Self { tank_resolver: None }
     }
 
-    pub fn with_resolver(resolver: &'a TankResolver) -> Self {
-        Self { tank_resolver: Some(resolver) }
+    pub fn with_resolver<R: TankNames>(resolver: &'a R) -> Self {
+        Self { tank_resolver: Some(resolver as &'a dyn TankNames) }
     }
 
     /// 解析单个回放文件，返回该场战斗的汇总结构。

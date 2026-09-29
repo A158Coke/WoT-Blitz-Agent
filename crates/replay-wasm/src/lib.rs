@@ -28,21 +28,27 @@ pub struct ReplayFacets {
 }
 
 impl ReplayFacets {
-    /// 信封：`{"playback":{…},"ai":{…},"hof":{…}}`（解析即校验，坏 JSON 直接报错）
+    /// 信封：`{"playback":{…},"ai":{…},"hof":{…}}`。各切面串由 serde 序列化产出、
+    /// 自包含即合法 JSON 值，直接拼装即可——此前 from_str 回 parse 成 Value 再整体
+    /// to_string，PlaybackData（MB 级位姿网格）多付一整轮解析+序列化。
     pub fn envelope_json(&self) -> anyhow::Result<String> {
-        Ok(serde_json::json!({
-            "playback": serde_json::from_str::<serde_json::Value>(&self.playback)?,
-            "ai": serde_json::from_str::<serde_json::Value>(&self.ai)?,
-            "hof": serde_json::from_str::<serde_json::Value>(&self.hof)?,
-        })
-        .to_string())
+        let mut out = String::with_capacity(
+            self.playback.len() + self.ai.len() + self.hof.len() + 32);
+        out.push_str("{\"playback\":");
+        out.push_str(&self.playback);
+        out.push_str(",\"ai\":");
+        out.push_str(&self.ai);
+        out.push_str(",\"hof\":");
+        out.push_str(&self.hof);
+        out.push('}');
+        Ok(out)
     }
 }
 
 /// 字节 → 单次扫描 → 三切面。扫描一次共享给三个投影（与服务端 `/api/playback/data`
 /// 同一构建语义，JS 侧可用同一套渲染代码无缝切换数据源）。
 pub fn build_facets(bytes: &[u8]) -> anyhow::Result<ReplayFacets> {
-    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes.to_vec()))?;
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     let data = replay.read_data()?;
     let packets: Vec<(u32, f32, &[u8])> = data.packets.iter()

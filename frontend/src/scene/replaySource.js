@@ -4,6 +4,11 @@
 // WASM 产物由 scripts/build-wasm.ps1 构建到 frontend/public/wasm/（--target web），
 // 经动态 import 惰性加载；产物缺失时本地通道拒绝并提示，服务端通道不受影响。
 
+// 资产基址解析（契约 §13 同源/部署面二选一）——此前漏 import，serverMapUrl 内的
+// assetUrl 是未声明自由变量：运行时 ReferenceError 被 try/catch 吞成"回退网格"，
+// 全画质档地图/地形从此一个请求都不发（构建期无检查，npm run build 不报错）
+import { assetBase, assetUrl } from './assetBase.js'
+
 let wasmPromise = null
 
 async function loadWasm() {

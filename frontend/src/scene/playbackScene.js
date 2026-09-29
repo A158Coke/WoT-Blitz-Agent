@@ -272,7 +272,6 @@ export function initPlayback(container, store) {
   }
 
   async function loadMapImage() {
-    await resolveMapKey(mapq).catch(() => {});
     if (mapPlane) { scene.remove(mapPlane); mapPlane = null; }
     if (terrainMesh) { scene.remove(terrainMesh); terrainMesh = null; }
     if (mapScenery) { scene.remove(mapScenery); mapScenery = null; }
@@ -283,6 +282,10 @@ export function initPlayback(container, store) {
     // 显示名可能与解析器枚举名不一致，仅作后备
     const mid = DATA.meta.map_id || 0;
     const mapq = mid ? ('id=' + mid) : ('name=' + encodeURIComponent(DATA.meta.map_name || ''));
+    // 静态资产面的 key 解析（必须在 mapq 构造之后——曾放在函数首行引用未初始化的
+    // mapq，TDZ ReferenceError 让整个函数静默死亡，地图/地形/场景一个请求都不发，
+    // 全画质档回退占位网格）
+    await resolveMapKey(mapq).catch(() => {});
     try {
       // 低档 res=mini：客户端小地图作地面（比高清底图小一个量级，保留 3D 起伏）
       const resp = await fetch((Q.miniMap ? mapStaticUrl('map-mini') : null) ?? mapStaticUrl('map') ?? serverMapUrl('map', mapq, Q.miniMap ? '&res=mini' : ''));
@@ -1304,7 +1307,9 @@ export function initPlayback(container, store) {
     if (!renderer) initScene();   // 渲染器惰性创建：此时画质档已定型（loader 选择/URL 参数）
     store.mapName = DATA.meta.map_name || ('map_' + DATA.meta.map_id);
     buildWorld();
-    loadMapImage();
+    // catch 兜底：loadMapImage 内部各段有自己的 try，但裸调用时任何漏网异常
+    // 都会变成静默的 unhandled rejection（地图消失且控制台无痕）
+    loadMapImage().catch(e => console.warn('地图资产加载失败（回退网格）:', e));
     buildVehicles();
     buildRoster();
     T = DATA.meta.t_start;

@@ -1,6 +1,17 @@
 [workspace]
 members = ["crates/replay-core", "crates/replay-wasm"]
 
+# 跨 crate 共用的依赖集中声明版本与 feature（此前 root 与两个 crate 三处重复，
+# 规模增长后必然漂移）。crate 内用 `foo.workspace = true` 引用。
+[workspace.dependencies]
+wotb-replay-core = { path = "crates/replay-core" }
+wotbreplay-parser = { version = "0.4", features = ["meta", "raw-payload"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# 全仓库无 chrono 类型参与 serde 序列化（均为 String/时间戳）——serde feature 闲置，已去
+chrono = "0.4"
+
 [package]
 name = "wotb-agent"
 version = "0.1.0"
@@ -8,16 +19,16 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-wotb-replay-core = { path = "crates/replay-core" }
-wotbreplay-parser = { version = "0.4", features = ["meta", "raw-payload"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+wotb-replay-core.workspace = true
+wotbreplay-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 toml = "0.8"
-anyhow = "1"
+anyhow.workspace = true
 flate2 = "1"
 regex = "1"
 clap = { version = "4", features = ["derive", "env"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

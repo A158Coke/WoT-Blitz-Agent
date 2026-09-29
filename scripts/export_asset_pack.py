@@ -104,6 +104,19 @@ def main() -> None:
         if cp(data / name, f"data/{name}"):
             core_n += 1
 
+    # 精简展示名表（id → 名称）：客户端路径 tank_name 的自足来源（wotbagent 数据，不依赖消费方 tankopedia）
+    tc = data / "tank_cache.json"
+    if tc.is_file():
+        names = {}
+        for tid, info in json.loads(tc.read_text(encoding="utf-8")).items():
+            name = (info or {}).get("name")
+            if name:
+                names[str(tid)] = name
+        (out / "data" / "tank_names.json").write_text(
+            json.dumps(names, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        files.append(out / "data" / "tank_names.json")
+        core_n += 1
+
     # ---- 地图（按注册表逐张物化；对齐四个端点的文件选择语义） ----
     map_n = 0
     with_terrain = 0

@@ -200,6 +200,10 @@ impl TankResolver {
         self.cache.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
     /// 从 JSON 文件加载坦克缓存（`tank_cache.json`）。
     pub fn load_from_json_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)

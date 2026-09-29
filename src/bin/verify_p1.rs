@@ -205,7 +205,7 @@ fn main() -> anyhow::Result<()> {
                 if diffs.len() >= 50 {
                     let n = diffs.len();
                     let m = median(diffs);
-                    if best.map_or(true, |(bm, _, _)| m < bm) { best = Some((m, *eid, n)); }
+                    if best.is_none_or(|(bm, _, _)| m < bm) { best = Some((m, *eid, n)); }
                 }
             }
             if let Some((m, eid, n)) = best {
@@ -214,7 +214,7 @@ fn main() -> anyhow::Result<()> {
             }
             // 角度制解释的量纲 sanity：raw 值域
             let mut raws: Vec<f32> = prop9.iter().map(|x| x.1).collect();
-            let (mn, mx) = (raws.len().checked_sub(1).map(|i| { raws.sort_by(|a, b| a.partial_cmp(b).unwrap()); (raws[0], raws[i]) }).unwrap_or((0.0, 0.0)));
+            let (mn, mx) = raws.len().checked_sub(1).map(|i| { raws.sort_by(|a, b| a.partial_cmp(b).unwrap()); (raws[0], raws[i]) }).unwrap_or((0.0, 0.0));
             println!("  B5' prop9 raw 值域 [{:.4}, {:.4}]（rad 解释值域应为 ±π≈±3.14；角度制应为 ±180）", mn, mx);
         }
 
@@ -302,7 +302,8 @@ fn main() -> anyhow::Result<()> {
             println!("  P2-2调试: arena updates {} 条子类型分布 {:?}", ups.len(), hist);
         }
         for u in wotb_agent::replay::combat::collect_arena_updates(&pkts).iter().filter(|u| u.subtype == 6).take(3) {
-            println!("  P2-2调试: s6 t={:.2} payload={}", u.clock, u.payload_hex);
+            let hex: String = u.payload.iter().map(|b| format!("{b:02x}")).collect();
+            println!("  P2-2调试: s6 t={:.2} payload={}", u.clock, hex);
         }
         let kf = wotb_agent::replay::combat::collect_kill_feed(&pkts);
         let post = kf.iter().filter(|k| k.clock > 10.0).count();

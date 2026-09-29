@@ -48,7 +48,7 @@ impl ShellKindTable {
                         if s.id == 0 || s.shell_type.is_empty() { continue; }
                         // field1 = (局部 id << 8) | (国家序×16+1)：剥掉低字节得 shells.xml 局部 id，
                         // 再按回放基数（国家序×16+10）组全局 id 与回放 shell_id 同域
-                        let gid = (((s.id >> 8) as u32) << 8) | base;
+                        let gid = ((s.id >> 8) << 8) | base;
                         by_global.entry(gid).or_insert_with(|| s.shell_type.clone());
                     }
                 }
@@ -163,7 +163,7 @@ pub fn collect_player_loadouts(packets: &[(u32, f32, &[u8])], br: &BattleResults
                     for s in &gun.shells {
                         if s.id == 0 { continue; }
                         v.push(ShellEntry {
-                            global_id: (((s.id >> 8) as u32) << 8) | base.unwrap_or(0),
+                            global_id: ((s.id >> 8) << 8) | base.unwrap_or(0),
                             kind: s.shell_type.clone(),
                             damage: s.damage as u32,
                             penetration: s.penetration as u32,

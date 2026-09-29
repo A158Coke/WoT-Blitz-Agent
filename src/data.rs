@@ -52,10 +52,11 @@ pub fn cache_path(rel: &str) -> PathBuf {
 
 /// APK 内置资产读取钩子（移动端全量版由 Tauri 入口注入，经 JNI AssetManager 直读
 /// APK 内资产；桌面/CLI 不注入恒为 None）。大资产（GLB/地形）不落盘、按需直读。
-static EMBEDDED_ASSET_READER: OnceLock<fn(&str) -> Option<Vec<u8>>> = OnceLock::new();
+type EmbeddedAssetReader = fn(&str) -> Option<Vec<u8>>;
+static EMBEDDED_ASSET_READER: OnceLock<EmbeddedAssetReader> = OnceLock::new();
 
 /// 注入内置资产读取函数（仅首次生效）。必须在任何资产访问前调用。
-pub fn set_embedded_asset_reader(f: fn(&str) -> Option<Vec<u8>>) -> bool {
+pub fn set_embedded_asset_reader(f: EmbeddedAssetReader) -> bool {
     EMBEDDED_ASSET_READER.set(f).is_ok()
 }
 

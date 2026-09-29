@@ -165,6 +165,7 @@ impl WgApiClient {
         println!("========================================================");
     }
 
+    #[allow(clippy::too_many_arguments)]   // 报表打印的平铺参数，语义清晰
     fn print_section(battles: u32, wins: u32, losses: u32, dmg: u64, frags: u64,
         shots: u64, hits: u64, xp: u64, spotted: u64)
     {

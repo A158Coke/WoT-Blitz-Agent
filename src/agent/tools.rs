@@ -707,11 +707,11 @@ impl AgentTools {
         let shell_filter = args["shell"].as_str().map(|s| s.trim().to_string());
         let shooter_tank = blitzkit::tank_full(shooter_id);
         let shell_idx = shell_filter.as_ref().and_then(|f| {
-            shooter_tank.as_ref().and_then(|t| t.turrets.first().and_then(|tu| tu.guns.first()).map(|g| {
+            shooter_tank.as_ref().and_then(|t| t.turrets.first().and_then(|tu| tu.guns.first()).and_then(|g| {
                 g.shells.iter().position(|s| {
                     Self::shell_label(&s.shell_type).eq_ignore_ascii_case(f) || s.shell_type.eq_ignore_ascii_case(f)
                 })
-            }).flatten())
+            }))
         });
         if let Some(f) = &shell_filter {
             if shell_idx.is_none() {
@@ -1007,9 +1007,9 @@ fn find_chrome() -> Option<String> {
 /// WSL 路径 → Windows 路径（/mnt/d/Class/x → D:\Class\x）；非 /mnt/ 路径返回 None。
 fn wsl_to_windows_path(p: &str) -> Option<String> {
     let rest = p.strip_prefix("/mnt/")?;
-    let mut it = rest.splitn(2, '/');
-    let drive = it.next()?;
-    let path = it.next()?;
+    let (drive, path) = rest.split_once('/')?;
+    
+    
     if drive.len() != 1 || path.is_empty() {
         return None;
     }

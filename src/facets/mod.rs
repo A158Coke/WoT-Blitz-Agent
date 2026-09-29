@@ -37,7 +37,7 @@ pub fn export_cli(
 
     // 结算（带可选坦克名解析）
     let resolver = tank_cache.filter(|p| p.exists())
-        .and_then(|p| TankResolver::load_from_json_file(&p).ok());
+        .and_then(|p| TankResolver::load_from_json_file(p).ok());
     let summary = match &resolver {
         Some(r) => crate::replay::parser::ReplayParser::with_resolver(r).parse_file(file)?,
         None => crate::replay::parser::ReplayParser::new().parse_file(file)?,

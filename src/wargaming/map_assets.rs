@@ -441,7 +441,7 @@ fn terrain_scale(entry: &MapEntry) -> Option<TerrainScale> {
     let dx = f(&max[0])? - f(&min[0])?;
     let dy = f(&max[1])? - f(&min[1])?;
     let span = dx.max(dy);
-    if !(zmax > zmin) || span <= 0.0 {
+    if zmax <= zmin || span <= 0.0 {
         return None;
     }
     Some(TerrainScale { zmax, zmin, span })

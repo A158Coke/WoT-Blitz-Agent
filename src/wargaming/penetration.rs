@@ -45,6 +45,7 @@ impl ShellType {
         matches!(self, ShellType::HEAT | ShellType::HE)
     }
     /// 从字符串解析弹种（tanks.pb 原始串：hc/hc_premium=HEAT、ap_cr*/apcr=APCR、ap_premium=AP、he_premium=HE）。
+    #[allow(clippy::should_implement_trait)]   // 语义即 FromStr，但改名会牵动全库调用点，留待后续
     pub fn from_str(s: &str) -> Self {
         let s = s.to_lowercase();
         match s.as_str() {
@@ -236,9 +237,8 @@ pub fn calculate(req: &PenetrationRequest) -> PenetrationResult {
     let mut first_armor_norm_deg = -1.0f32;
     let mut ricochet = false;
     let mut ricochet_remaining_pen = 0.0f32;
-    let mut layer_index: usize = 0;
 
-    for ah in &filtered_hits {
+    for (layer_index, ah) in filtered_hits.iter().enumerate() {
         let thickness = ah.thickness * thickness_coeff;
 
         // HEAT 间隙衰减：位于每层处理最前（对齐 blitzkit 顺序），并像 blitzkit
@@ -327,7 +327,7 @@ pub fn calculate(req: &PenetrationRequest) -> PenetrationResult {
             }
 
             // HE 命中非 Primary（间隙甲）：blitzkit 标 blocked，但穿深照常消耗
-            layer_penetrated = remaining_pen > eff && !(is_he && !ah.section.is_primary());
+            layer_penetrated = (ah.section.is_primary() || !is_he) && remaining_pen > eff;
         }
 
         total_effective += eff;
@@ -350,7 +350,6 @@ pub fn calculate(req: &PenetrationRequest) -> PenetrationResult {
             remaining_pen -= eff; // HE 的 blocked 层同样消耗穿深
         }
 
-        layer_index += 1;
     }
 
     // —— HE 判定 & 溅射伤害（对齐 BlitzKit）—— totalSpaced = 非 Primary 层（外部 flat + 间隙角度等效）等效厚度和；

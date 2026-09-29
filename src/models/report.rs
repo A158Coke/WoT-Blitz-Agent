@@ -192,14 +192,14 @@ impl AggregatedReport {
             t.avg_damage = t.total_damage as f64 / n;
             t.avg_frags = t.total_frags as f64 / n;
         }
-        tank_usage.sort_by(|a, b| b.battles.cmp(&a.battles));
+        tank_usage.sort_by_key(|t| std::cmp::Reverse(t.battles));
 
         let mut map_stats: Vec<MapStat> = map_map.into_values().collect();
         for m in &mut map_stats {
             m.win_rate = m.wins as f64 / m.battles as f64 * 100.0;
             m.avg_damage = map_damage.remove(&m.map_id).unwrap_or(0.0) / m.battles as f64;
         }
-        map_stats.sort_by(|a, b| b.battles.cmp(&a.battles));
+        map_stats.sort_by_key(|m| std::cmp::Reverse(m.battles));
 
         let date_range = if total > 0 {
             let min_ts = battles.iter().map(|b| b.timestamp).min().unwrap_or(0);

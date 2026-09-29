@@ -428,7 +428,7 @@ fn parse_tank_main(sub: &[u8], tank_id: u32) -> Result<Option<TankFullData>> {
             (20, 2) => {
                 let tlen = sr.varint()? as usize;
                 let turret_bytes = sr.bytes(tlen)?;
-                if let Some(tur) = parse_turret(&turret_bytes)? {
+                if let Some(tur) = parse_turret(turret_bytes)? {
                     tank.turrets.push(tur);
                 }
             }
@@ -493,7 +493,7 @@ fn parse_turret(tb: &[u8]) -> Result<Option<TurretData>> {
             (9, 2) => {
                 let glen = tr.varint()? as usize;
                 let gb = tr.bytes(glen)?;
-                if let Some(g) = parse_gun(&gb)? {
+                if let Some(g) = parse_gun(gb)? {
                     turret.guns.push(g); has_gun = true;
                 }
             }
@@ -562,7 +562,7 @@ fn parse_gun(gb: &[u8]) -> Result<Option<GunData>> {
             (5, 5) => { gun.caliber_factor = f32::from_le_bytes(gr.bytes(4)?.try_into().unwrap()) as f64; if gun.caliber_factor > 1.0 { saw_caliber = true; } },
             (8, 2) => { let l = gr.varint()? as usize; name_bytes = gr.bytes(l)?; },
             (9, 0) => gun.shell_count = gr.varint()? as u32,
-            (10, 2) => { let l = gr.varint()? as usize; let sb = gr.bytes(l)?; if let Some(s) = parse_shell(&sb)? { gun.shells.push(s); } },
+            (10, 2) => { let l = gr.varint()? as usize; let sb = gr.bytes(l)?; if let Some(s) = parse_shell(sb)? { gun.shells.push(s); } },
             (12, 5) => { gun.aim_time = f32::from_le_bytes(gr.bytes(4)?.try_into().unwrap()) as f64; },
             (13, 5) => { gun.dispersion = f32::from_le_bytes(gr.bytes(4)?.try_into().unwrap()) as f64; },
             _ => gr.skip_field(w5)?,
@@ -615,7 +615,7 @@ fn parse_shell(sb: &[u8]) -> Result<Option<ShellData>> {
 /// 从本地化 name 块提取英文名（在 `en` 本地化子消息中，格式 `\x02en\x12<len><name>`）。
 fn extract_name(name_bytes: &[u8]) -> String {
     let marker: [u8; 4] = [0x02, b'e', b'n', 0x12];
-    if let Some(pos) = name_bytes.windows(4).position(|w| w == &marker) {
+    if let Some(pos) = name_bytes.windows(4).position(|w| w == marker) {
         let mut j = pos + 4;
         if let Some(nlen) = read_varint(name_bytes, &mut j) {
             if j + nlen as usize <= name_bytes.len() {

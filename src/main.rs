@@ -615,7 +615,7 @@ fn main() -> Result<()> {
             dataset.diagnostics.shots_author = author_shots.len();
             dataset.diagnostics.shots_others = others.shots.len();
             let mut deg: std::collections::BTreeMap<String, u64> = Default::default();
-            let mut bump = |q: &Option<wotb_agent::replay::combat::ShotQuality>, deg: &mut std::collections::BTreeMap<String, u64>| {
+            let bump = |q: &Option<wotb_agent::replay::combat::ShotQuality>, deg: &mut std::collections::BTreeMap<String, u64>| {
                 let Some(q) = q else { return };
                 if q.shooter_pos_from_muzzle { *deg.entry("shooter_pos_from_muzzle".into()).or_insert(0) += 1; }
                 if q.shooter_pitch_from_velocity { *deg.entry("shooter_pitch_from_velocity".into()).or_insert(0) += 1; }
@@ -1122,7 +1122,7 @@ fn main() -> Result<()> {
             // 缓存缺失时俯仰走回退路径并打质量标记）
             let br = replay.read_battle_results().ok();
             let author_nick = br.as_ref()
-                .map(|br| wotb_agent::replay::combat::author_nick_from_battle_results(br))
+                .map(wotb_agent::replay::combat::author_nick_from_battle_results)
                 .or_else(|| replay.read_meta().ok().map(|m| m.player_name.clone()))
                 .unwrap_or_default();
             // 实际搭载 comp blob：俯仰锚定按实际搭载的炮对号（多炮车非顶级主炮范围不同）
@@ -1366,6 +1366,7 @@ fn main() -> Result<()> {
 /// 链路：下载 BlitzKit pb（--offline 可跳过）→ 重建 tank_cache.json → 提取 game_data/
 /// （版本变化或 --force 全量重提，否则增量补缺失的新坦克）→ 刷新 data_version.json 清单。
 /// 注意顺序：必须先写新 tanks.pb 再调 load_tanks（OnceLock 进程内缓存），否则读到旧数据。
+#[allow(clippy::too_many_arguments)]   // CLI 子命令参数透传，聚合结构反而不透明
 fn cmd_update_data(
     game_dir: Option<&Path>,
     output: &Path,

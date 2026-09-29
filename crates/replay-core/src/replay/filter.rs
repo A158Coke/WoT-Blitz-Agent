@@ -96,6 +96,12 @@ pub struct AvatarFilter {
     reset_flag: bool,
 }
 
+impl Default for AvatarFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AvatarFilter {
     pub fn new() -> Self {
         Self {
@@ -190,7 +196,7 @@ impl AvatarFilter {
             self.got_new_input = false;
             let newest_time = self.input_at(0).time;
             let older_time = self.input_at(7).time;   // (cur+7)%8 ≡ (cur−1)&7，与二进制同槽
-            let latency_frames = LATENCY_FRAMES.min(7.0).max(0.0);
+            let latency_frames = LATENCY_FRAMES.clamp(0.0, 7.0);
             let ratio = (7.0 - latency_frames) / 7.0;
             self.ideal_latency = (time - (older_time + (newest_time - older_time) * ratio as f64)) as f32;
             self.ideal_latency = self.ideal_latency.max(LATENCY_MINIMUM);
@@ -484,11 +490,11 @@ mod referee {
         out
     }
 
-    fn median(v: &mut Vec<f32>) -> f32 {
+    fn median(v: &mut [f32]) -> f32 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if v.is_empty() { 0.0 } else { v[v.len() / 2] }
     }
-    fn percentile(v: &mut Vec<f32>, p: usize) -> f32 {
+    fn percentile(v: &mut [f32], p: usize) -> f32 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if v.is_empty() { 0.0 } else { v[v.len() * p / 100] }
     }

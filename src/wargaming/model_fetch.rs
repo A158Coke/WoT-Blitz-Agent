@@ -69,12 +69,9 @@ pub async fn fetch_all_models(force: bool, concurrency: usize) -> Result<(usize,
     );
     anyhow::ensure!(!PROGRESS.running.swap(true, Ordering::SeqCst), "已有模型下载任务在运行");
     // 提前返回的路径都要复位 running
-    match fetch_all_models_inner(force, concurrency, ids).await {
-        out => {
-            PROGRESS.running.store(false, Ordering::SeqCst);
-            out
-        }
-    }
+    let out = fetch_all_models_inner(force, concurrency, ids).await;
+    PROGRESS.running.store(false, Ordering::SeqCst);
+    out
 }
 
 async fn fetch_all_models_inner(
@@ -147,7 +144,7 @@ async fn fetch_all_models_inner(
 
             // done 计数即全局进度（Web /api/models/status 直接轮询 PROGRESS）
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if d % PROGRESS_STEP == 0 || d == total {
+            if d.is_multiple_of(PROGRESS_STEP) || d == total {
                 eprintln!("  [{}/{}] downloaded={} cached={} failed={}",
                     d, total,
                     downloaded.load(Ordering::Relaxed),

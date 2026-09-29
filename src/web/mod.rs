@@ -24,6 +24,7 @@ use rust_embed::RustEmbed;
 #[exclude = "release/**"]
 struct SpaAssets;
 
+pub mod assets;
 pub mod sessions;
 
 /// 配置缓存：按 config.toml 的 mtime 判定是否需要重新解析。
@@ -132,7 +133,7 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
     )
     .ok()
     .unwrap_or_default();
-    crate::wargaming::viewer::set_global_resolver(viewer_resolver);
+    crate::wargaming::tank_configs::set_global_resolver(viewer_resolver);
 
     Router::new()
         .route("/", get(spa_index_handler))
@@ -162,15 +163,15 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         // Phase 3 已切流：实时回放由 Vue SPA 接管（vue-router PlaybackView + scene/playbackScene.js）
         .route("/playback", get(spa_index_handler))
         // 3D 场景资产（回放 GLB 车模/部件数据；与 /armor_view 前缀版共用 handler）
-        .route("/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
-        .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
+        .route("/glb/{tank_id}/{filename}", get(crate::web::assets::glb_handler))
+        .route("/api/tank/{tank_id}", get(crate::web::assets::tank_data_handler))
         // Phase 4 已切流：装甲检视器 Vue 版走根级数据端点（旧 /armor_view 前缀版保留兼容）
-        .route("/api/tank_filter", get(crate::wargaming::viewer::tank_filter_handler))
-        .route("/api/shells/{tank_id}", get(crate::wargaming::viewer::shells_handler))
-        .route("/api/penetrate", post(crate::wargaming::viewer::penetrate_handler))
+        .route("/api/tank_filter", get(crate::web::assets::tank_filter_handler))
+        .route("/api/shells/{tank_id}", get(crate::web::assets::shells_handler))
+        .route("/api/penetrate", post(crate::web::assets::penetrate_handler))
         .route("/api/replay_shot", get(replay_shots_embedded_handler))
-        .route("/api/hold", get(crate::wargaming::heatmap_ready::hold_handler))
-        .route("/api/ready", get(crate::wargaming::heatmap_ready::ready_handler))
+        .route("/api/hold", get(crate::web::assets::hold_handler))
+        .route("/api/ready", get(crate::web::assets::ready_handler))
         .route("/api/playback/data", post(playback_data_handler))
         .route("/api/playback/map", get(crate::wargaming::playback_viewer::playback_map_handler))
         .route("/api/playback/terrain", get(crate::wargaming::playback_viewer::playback_terrain_handler))
@@ -181,19 +182,19 @@ pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::Pa
         .route("/api/prematch", post(prematch_handler))
         .route("/api/tanks", get(tanks_handler))
         .route("/api/tank_detail/{tank_id}", get(tank_detail_handler))
-        .route("/api/tank_image/{tank_id}", get(tank_image_handler))
+        .route("/api/tank_image/{tank_id}", get(crate::web::assets::tank_image_handler))
         .route("/screenshots/{*path}", get(screenshots_handler))
         // Phase 4 已切流：/armor_view/view/{id} 由 Vue SPA 接管（vue-router ArmorView）；
         // 旧 /armor_view 前缀数据路由保留（standalone viewer 与旧书签兼容）；vendor 路由已随
         // web/vendor 退役删除（Phase 5，three/KaTeX 已 npm 打包进 SPA 产物）
         .route("/armor_view/view/{tank_id}", get(spa_index_handler))
         .route("/armor_view/", get(armor_view_root))
-        .route("/armor_view/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
+        .route("/armor_view/glb/{tank_id}/{filename}", get(crate::web::assets::glb_handler))
         .route("/armor_view/api/tank/{tank_id}", get(armor_tank_data_handler))
-        .route("/armor_view/api/tank_filter", get(crate::wargaming::viewer::tank_filter_handler))
-        .route("/armor_view/api/tank_image/{tank_id}", get(crate::wargaming::viewer::tank_image_handler))
-        .route("/armor_view/api/shells/{tank_id}", get(crate::wargaming::viewer::shells_handler))
-        .route("/armor_view/api/penetrate", post(crate::wargaming::viewer::penetrate_handler))
+        .route("/armor_view/api/tank_filter", get(crate::web::assets::tank_filter_handler))
+        .route("/armor_view/api/tank_image/{tank_id}", get(crate::web::assets::tank_image_handler))
+        .route("/armor_view/api/shells/{tank_id}", get(crate::web::assets::shells_handler))
+        .route("/armor_view/api/penetrate", post(crate::web::assets::penetrate_handler))
         .route("/armor_view/api/replay_shot", get(replay_shots_embedded_handler))
         .route("/api/models/status", get(models_status_handler))
         .route("/api/models/download_all", post(models_download_all_handler))
@@ -291,7 +292,7 @@ async fn armor_view_root() -> axum::response::Redirect {
 
 /// 3D 检视坦克数据：model_url 加 `/armor_view` 前缀，否则 iframe 内会去请求顶层 `/glb/...`（404）。
 async fn armor_tank_data_handler(axum::extract::Path(tank_id): axum::extract::Path<u64>) -> Json<Value> {
-    Json(crate::wargaming::viewer::tank_data_value_prefixed(tank_id as u32, "/armor_view"))
+    Json(crate::wargaming::tank_configs::tank_data_value_prefixed(tank_id as u32, "/armor_view"))
 }
 
 /// 发起一次对话：命令投递给该会话的 actor（串行执行），返回 session_id。
@@ -847,7 +848,7 @@ fn replay_shots_blocking(
             });
             let shells = player_shells.get(nick).map(|v| v.as_slice()).unwrap_or(&[]);
             let hp = nick_hp.get(nick).copied().unwrap_or(0);
-            if let Some((idx, _, _)) = crate::wargaming::viewer::resolve_config_index(tank, comp, shells, hp) {
+            if let Some((idx, _, _)) = crate::wargaming::tank_configs::resolve_config_index(tank, comp, shells, hp) {
                 nick_cfg.insert(nick.clone(), idx as u64);
             }
         }
@@ -875,7 +876,7 @@ fn replay_shots_blocking(
         let shooter_tank = team_tank_of(&s.shooter_name).map(|(_, t)| t);
         if s.shell_id != 0 {
             if let Some(st) = shooter_tank {
-                if let Some(idx) = crate::wargaming::viewer::shell_index_by_global_id(st, s.shell_id) {
+                if let Some(idx) = crate::wargaming::tank_configs::shell_index_by_global_id(st, s.shell_id) {
                     v["shooter_shell_idx"] = json!(idx);
                 }
             }
@@ -951,7 +952,7 @@ async fn playback_data_handler(
     if !path.exists() {
         return (axum::http::StatusCode::NOT_FOUND, format!("replay not found: {}", file)).into_response();
     }
-    crate::wargaming::playback_viewer::playback_data_response(&path).await
+    crate::wargaming::playback_viewer::playback_data_response(&path, state.tank_cache.resolver()).await
 }
 
 /// 内嵌 3D 查看器的复现数据端点：返回最近一次解析的射击复现数据。
@@ -1030,7 +1031,7 @@ async fn tank_detail_handler(
     let dmg_max = shells.iter().filter_map(|s| s.get("damage").and_then(|d| d.as_f64())).fold(f64::NEG_INFINITY, f64::max);
     let dmg_max = if dmg_max.is_finite() { Some(dmg_max as u64) } else { None };
 
-    let configs = crate::wargaming::viewer::build_configs(tank_id as u32);
+    let configs = crate::wargaming::tank_configs::build_configs(tank_id as u32);
     // 收藏车标记来自 tanks.pb field13==2（tank_cache.json 不含此字段）
     let is_collector = crate::wargaming::blitzkit::tank_full(tank_id as u32)
         .map(|t| t.is_collector)
@@ -1060,38 +1061,6 @@ async fn tank_detail_handler(
     })).into_response()
 }
 
-/// 坦克封面图代理：`data/cache/tank_images/` 缓存优先，回退 BlitzKit CDN 并落盘（与 3D 查看器共用缓存目录）。
-async fn tank_image_handler(axum::extract::Path(tank_id): axum::extract::Path<u64>) -> Response {
-    let dir = crate::data::data_path("cache/tank_images");
-    let cache_path = dir.join(format!("{}.webp", tank_id));
-    if let Ok(bytes) = std::fs::read(&cache_path) {
-        return image_response(bytes);
-    }
-    let url = format!("https://api.blitzkit.app/tanks/{}/icons/big.webp", tank_id);
-    match reqwest::get(&url).await {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(bytes) = resp.bytes().await {
-                let vec = bytes.to_vec();
-                let _ = std::fs::create_dir_all(dir);
-                if std::fs::write(&cache_path, &vec).is_ok() {
-                    eprintln!("[web-image-cache] cached {} ({} bytes)", cache_path.display(), vec.len());
-                }
-                return image_response(vec);
-            }
-            (axum::http::StatusCode::BAD_GATEWAY, "empty image body").into_response()
-        }
-        Ok(resp) => (axum::http::StatusCode::BAD_GATEWAY, format!("BlitzKit icon returned {}", resp.status())).into_response(),
-        Err(e) => (axum::http::StatusCode::BAD_GATEWAY, format!("BlitzKit icon unreachable: {}", e)).into_response(),
-    }
-}
-
-fn image_response(bytes: Vec<u8>) -> Response {
-    (
-        [(axum::http::header::CONTENT_TYPE, "image/webp")],
-        bytes,
-    ).into_response()
-}
-
 /// Agent 工具生成的截图（screenshots/，render_heatmap 输出）；仅允许纯文件名，防路径穿越。
 async fn screenshots_handler(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
     if path.contains("..") || path.contains('/') || path.contains('\\') {
@@ -1119,8 +1088,8 @@ async fn models_status_handler() -> Response {
     let (ready_tanks, total_tanks) = tokio::task::spawn_blocking(|| {
         let ids = crate::wargaming::blitzkit::load_model_ids();
         let ready = ids.iter().filter(|&&id| {
-            crate::wargaming::viewer::model_cache_path(id, "model.glb").exists()
-                && crate::wargaming::viewer::model_cache_path(id, "collision.glb").exists()
+            crate::wargaming::tank_configs::model_cache_path(id, "model.glb").exists()
+                && crate::wargaming::tank_configs::model_cache_path(id, "collision.glb").exists()
         }).count();
         (ready, ids.len())
     }).await.unwrap_or((0, 0));

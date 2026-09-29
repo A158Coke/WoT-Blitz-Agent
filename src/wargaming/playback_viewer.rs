@@ -16,6 +16,7 @@
 //!   hull_yaw/turret_yaw 为后端解卷绕连续域（可超 ±π），直接线性插值即物理正确。
 
 use axum::response::{IntoResponse, Response};
+use crate::wargaming::tank_resolver::TankResolver;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::collections::HashMap;
@@ -45,20 +46,21 @@ fn cache_put(c: &'static Cache, key: String, v: Arc<Vec<u8>>) {
 }
 
 /// 解析回放 → PlaybackData → 未压缩 JSON 字节（缓存命中直接返回）。
-/// TankResolver 用 viewer 的全局单例（web serve 启动时已 set；standalone 自行 set）。
-pub fn build_playback_json(path: &Path) -> anyhow::Result<Arc<Vec<u8>>> {
+/// TankResolver 由调用方注入（web = AppState mtime 缓存实例；standalone = 自建；
+/// None 回退进程级 GLOBAL_RESOLVER）。
+pub fn build_playback_json(path: &Path, resolver: Option<Arc<TankResolver>>) -> anyhow::Result<Arc<Vec<u8>>> {
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy().to_string();
     if let Some((_, v)) = cache().lock().unwrap().iter().find(|(k, _)| k == &key) {
         return Ok(v.clone());
     }
-    let json = build_playback_json_uncached(path, &key)?;
+    let json = build_playback_json_uncached(path, &key, resolver)?;
     let arc = Arc::new(json);
     cache_put(cache(), key, arc.clone());
     Ok(arc)
 }
 
-fn build_playback_json_uncached(path: &Path, key: &str) -> anyhow::Result<Vec<u8>> {
+fn build_playback_json_uncached(path: &Path, key: &str, resolver: Option<Arc<TankResolver>>) -> anyhow::Result<Vec<u8>> {
     use wotbreplay_parser::replay::Replay;
 
     let mut replay = Replay::open(std::fs::File::open(path)?)?;
@@ -74,7 +76,9 @@ fn build_playback_json_uncached(path: &Path, key: &str) -> anyhow::Result<Vec<u8
     }).collect();
 
     let br = replay.read_battle_results().ok();
-    let resolver = crate::wargaming::viewer::global_resolver();
+    // resolver 由调用方注入（web 走 AppState 的 mtime 缓存解析器；standalone 传自建实例；
+    // 缺省回退进程级 GLOBAL_RESOLVER——它只在 tank_cache.json 离线刷新后短暂过期）
+    let resolver = resolver.unwrap_or_else(crate::wargaming::tank_configs::global_resolver);
     // 实际搭载 comp blob（俯仰锚定与变体标注共用一份收集）
     let valid_tanks: Vec<u32> = br.as_ref().map(|br| br.player_results.iter()
         .map(|pr| pr.info.tank_id).collect()).unwrap_or_default();
@@ -157,7 +161,7 @@ fn annotate_vehicle_configs(pb: &mut crate::replay::playback::PlaybackData,
             let comp = comps.get(&v.nickname).and_then(|c| {
                 ((c.tank_id & 0xFFFF) == (v.tank_id & 0xFFFF)).then_some((c.turret_local, c.gun_local))
             });
-            crate::wargaming::viewer::resolve_config_index(v.tank_id, comp, &v.shell_ids, v.max_hp)
+            crate::wargaming::tank_configs::resolve_config_index(v.tank_id, comp, &v.shell_ids, v.max_hp)
                 .map(|(_, ti, gi)| (ti, gi))
         });
         if let Some((ti, gi)) = *pair {
@@ -177,9 +181,9 @@ fn gzip_bytes(data: &[u8]) -> Vec<u8> {
 /// 数据响应：gzip JSON（浏览器 fetch 按 Content-Encoding 透明解压）。
 /// 全场时间线构建（多 MB JSON）与 gzip 压缩都是 CPU 重活——整体 spawn_blocking
 /// （同文件 map/terrain/groundtex 系列均有此纪律，此前唯独最重的数据端点漏了）。
-pub async fn playback_data_response(path: &Path) -> Response {
+pub async fn playback_data_response(path: &Path, resolver: Option<std::sync::Arc<TankResolver>>) -> Response {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || playback_gzip_blocking(&path)).await {
+    match tokio::task::spawn_blocking(move || playback_gzip_blocking(&path, resolver)).await {
         Ok(Ok(gz)) => (
             [
                 (axum::http::header::CONTENT_TYPE, "application/json"),
@@ -199,7 +203,7 @@ pub async fn playback_data_response(path: &Path) -> Response {
 }
 
 /// [`playback_data_response`] 的阻塞实现：JSON 构建（自带缓存）→ gzip（结果缓存）。
-fn playback_gzip_blocking(path: &Path) -> anyhow::Result<axum::body::Bytes> {
+fn playback_gzip_blocking(path: &Path, resolver: Option<std::sync::Arc<TankResolver>>) -> anyhow::Result<axum::body::Bytes> {
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy().to_string();
     if let Some((_, b)) = GZ_BYTES_CACHE.get_or_init(|| Mutex::new(Vec::new()))
@@ -207,7 +211,7 @@ fn playback_gzip_blocking(path: &Path) -> anyhow::Result<axum::body::Bytes> {
     {
         return Ok((**b).clone());
     }
-    let json = build_playback_json(path)?;
+    let json = build_playback_json(path, resolver)?;
     let gz = gzip_bytes(&json);
     // Bytes::from(Vec) 取所有权零拷贝；Bytes 克隆共享底层缓冲
     let bytes = Arc::new(axum::body::Bytes::from(gz));
@@ -224,7 +228,7 @@ pub async fn playback_data_handler(Json(body): Json<serde_json::Value>) -> Respo
     if file.is_empty() {
         return (axum::http::StatusCode::BAD_REQUEST, "missing file").into_response();
     }
-    playback_data_response(Path::new(&file)).await
+    playback_data_response(Path::new(&file), None).await
 }
 
 /// 地图参数：?id=<回放数字 id>（首选，与客户端 arenaTypeID 同链）或 ?name=<显示名|键>。
@@ -312,10 +316,10 @@ pub async fn serve_standalone(replay_path: &Path) -> anyhow::Result<()> {
     let resolver = crate::wargaming::tank_resolver::TankResolver::load_from_json_file(
         crate::data::data_path("tank_cache.json").as_path(),
     ).unwrap_or_default();
-    crate::wargaming::viewer::set_global_resolver(resolver);
+    crate::wargaming::tank_configs::set_global_resolver(resolver.clone());
 
     // 预热缓存（启动即构建，首开页面零等待；失败不退出——页面仍可显示错误）
-    if let Err(e) = build_playback_json(replay_path) {
+    if let Err(e) = build_playback_json(replay_path, Some(Arc::new(resolver))) {
         eprintln!("[playback] 预构建失败（页面请求时将重试）: {e:?}");
     }
 
@@ -332,8 +336,8 @@ pub async fn serve_standalone(replay_path: &Path) -> anyhow::Result<()> {
         .route("/api/playback/scenery", get(playback_scenery_handler))
         .route("/api/playback/groundmeta", get(playback_groundmeta_handler))
         .route("/api/playback/groundtex", get(playback_groundtex_handler))
-        .route("/api/tank/{tank_id}", get(crate::wargaming::viewer::tank_data_handler))
-        .route("/glb/{tank_id}/{filename}", get(crate::wargaming::viewer::glb_handler))
+        .route("/api/tank/{tank_id}", get(crate::web::assets::tank_data_handler))
+        .route("/glb/{tank_id}/{filename}", get(crate::web::assets::glb_handler))
         .with_state(());
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));

@@ -118,14 +118,14 @@ async fn fetch_all_models_inner(
         set.spawn(async move {
             let _permit = permit;
 
-            let path = crate::wargaming::viewer::model_cache_path(tank_id, filename);
+            let path = crate::wargaming::tank_configs::model_cache_path(tank_id, filename);
             if force && path.exists() {
                 let _ = std::fs::remove_file(&path);
             }
             if path.exists() {
                 cached.fetch_add(1, Ordering::Relaxed);
             } else {
-                match crate::wargaming::viewer::ensure_glb_bytes(tank_id, filename).await {
+                match crate::web::assets::ensure_glb_bytes(tank_id, filename).await {
                     Ok(data) => {
                         downloaded.fetch_add(1, Ordering::Relaxed);
                         total_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);

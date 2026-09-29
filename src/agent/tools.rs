@@ -493,7 +493,7 @@ impl AgentTools {
         let info = resolver.resolve_info(target);
         let summary = info.and_then(|i| i.armor.clone());
         // 逐板厚度（models.pb 唯一来源；armor_cache.json 已退役）
-        let plates: Value = crate::wargaming::viewer::synth_armor_model(target)
+        let plates: Value = crate::wargaming::tank_configs::synth_armor_model(target)
             .and_then(|m| serde_json::to_value(m).ok())
             .unwrap_or(json!(null));
 

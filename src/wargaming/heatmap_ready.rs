@@ -21,32 +21,3 @@ pub fn mark_session_ready(sess: &str) {
 pub fn session_ready(sess: &str) -> bool {
     ready_set().lock().unwrap().contains(sess)
 }
-
-/// GET /api/hold?sess=X —— 长轮询：挂起直到会话就绪或超时（60s）。
-/// 挂起的 XHR 扣住 Chrome 虚拟时间，让截图等待模型加载 + 热力图渲染。
-pub async fn hold_handler(
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let sess = q.get("sess").map(|s| s.as_str()).unwrap_or("");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        if session_ready(sess) {
-            return "ready".into_response();
-        }
-        if std::time::Instant::now() >= deadline {
-            return "timeout".into_response();
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-    }
-}
-
-/// GET /api/ready?sess=X —— 页面通知服务器：热力图已渲染完成。
-pub async fn ready_handler(
-    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let sess = q.get("sess").map(|s| s.as_str()).unwrap_or("");
-    mark_session_ready(sess);
-    "ok".into_response()
-}

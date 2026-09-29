@@ -72,13 +72,6 @@ jobs:
           Compress-Archive -Path release/wasm/* `
             -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
 
-      - name: 资产清单（含 sha256；GLB/地图包入库备查）
-        shell: pwsh
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          New-Item -ItemType Directory -Force -Path release | Out-Null
-          python scripts/asset_manifest.py --json release/asset_manifest.json --hashes
 
       - name: 自包含可执行（bundle：data/ + 前端 + wasm 全嵌入）
         shell: pwsh
@@ -99,4 +92,3 @@ jobs:
           files: |
             wotb-agent-*-win64.zip
             wotb-replay-wasm-*.zip
-            release/asset_manifest.json

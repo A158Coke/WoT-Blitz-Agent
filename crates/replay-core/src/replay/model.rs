@@ -116,33 +116,40 @@ impl ReplayModel {
             *packet_histogram.entry(*t).or_insert(0) += 1;
         }
 
-        // 姿态/炮塔原始流 + prop 事件时间线（名字表/死亡广播）
-        let (poses, turret) = combat::build_entity_indexes(packets);
-        let ct = CombatTimeline::parse_packets(packets);
-        let initial_hp = combat::collect_initial_hp(packets);
-        let equipment = combat::collect_vehicle_equipment(packets);
-        let presence = combat::collect_aoi_lifecycle(packets);
-        let counters = combat::collect_feedback_counters(packets);
-        let kill_feed = combat::collect_kill_feed(packets);
-        let periods = combat::parse_arena_periods(&combat::collect_arena_updates(packets));
-        let hp_events = combat::parse_hp_events(packets);
-
         let author_nickname = input.roster.iter()
             .find(|p| p.account_id == input.author_account_id)
             .map(|p| p.nickname.clone())
             .unwrap_or_default();
         let author_eid = combat::resolve_author_player_eid_by_nick(packets, &author_nickname);
 
+        // —— 共享扫描（契约"包流只扫一遍"的落地）：位姿/炮塔/血量/名字/配件/发射等
+        // 全部索引只建一份，弹道两路提取（collect_all_shots）与实体档案并表均从此取数。
+        // 此前 scan 自身 9 遍 + 两条射击路径各自重扫，全量 pass 合计 ~40 遍。
+        let shared = combat::build_shot_scan_shared(packets, author_eid);
+
+        let ct = CombatTimeline::parse_packets(packets);
+        let presence = combat::collect_aoi_lifecycle(packets);
+        let counters = combat::collect_feedback_counters(packets);
+        // arena 流一次收集 {1,3,6}（comps/periods/kill_feed 三个消费方合用；
+        // 高频 RELOAD_TIME 等子类型在收集期即丢弃）
+        let arena_updates = combat::collect_arena_updates_filtered(
+            packets, |s| s == 1 || s == 3 || s == 6);
+        let kill_feed = combat::kill_feed_from_updates(&arena_updates);
+        let periods = combat::parse_arena_periods(&arena_updates);
+        let hp_events = &shared.hp_events;
+        let initial_hp = &shared.initial_hp;
+        let equipment = &shared.vehicle_equipment;
+
         // —— 血量链去重序列 + 死亡终态（一次遍历，语义与原逐车组装逐位一致） ——
         let mut hp_series: BTreeMap<u32, Vec<(f32, u16)>> = BTreeMap::new();
-        for (eid, (t0, h0)) in &initial_hp {
+        for (eid, (t0, h0)) in initial_hp.iter() {
             hp_series.entry(*eid).or_default().push((*t0, *h0));
         }
         let mut deaths: BTreeMap<u32, DeathRecord> = BTreeMap::new();
         for (t, eid, _) in ct.death_events() {
             deaths.entry(eid).or_insert(DeathRecord { t, killer_eid: 0, cause: 255 });
         }
-        for e in &hp_events {
+        for e in hp_events {
             // overkill 时服务器 HP 略负（int16 语义），按 u16 读出回绕 → 一律钳 0
             let hp_v = if e.hp > 32767 { 0 } else { e.hp };
             let series = hp_series.entry(e.victim).or_default();
@@ -168,13 +175,13 @@ impl ReplayModel {
         }
 
         // —— 弹道（作者严格 + 他人宽松合并；降级策略见 playback::collect_all_shots） ——
-        let shots = playback::collect_all_shots(packets, &author_nickname, input.pitch_limits, author_eid)?;
+        let shots = playback::collect_all_shots(&shared, author_eid, input.pitch_limits)?;
 
         // —— 实体档案并表（eid 并集 = 位姿 ∪ 炮塔 ∪ 名字 ∪ 锚点 ∪ 配件 ∪ 在场） ——
         let valid_tanks: Vec<u32> = input.roster.iter().map(|p| p.tank_id).collect();
-        let comps = playback::collect_comp_descriptors(packets, &valid_tanks);
-        let mut eids: Vec<u32> = poses.keys().copied()
-            .chain(turret.keys().copied())
+        let comps = playback::comp_descriptors_from_updates(&arena_updates, &valid_tanks);
+        let mut eids: Vec<u32> = shared.st10.keys().copied()
+            .chain(shared.prop2.keys().copied())
             .chain(ct.entity_names.keys().copied())
             .chain(initial_hp.keys().copied())
             .chain(equipment.keys().copied())
@@ -214,10 +221,10 @@ impl ReplayModel {
         Ok(Self {
             entities,
             timeline: Timeline {
-                poses,
-                turret,
-                hp_events,
-                initial_hp,
+                poses: shared.st10,
+                turret: shared.prop2,
+                hp_events: shared.hp_events,
+                initial_hp: shared.initial_hp,
                 hp_series,
                 deaths,
                 kill_feed,

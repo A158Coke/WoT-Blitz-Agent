@@ -214,15 +214,21 @@ pub fn collect_comp_descriptors(
     packets: &[(u32, f32, &[u8])],
     valid_tanks: &[u32],
 ) -> HashMap<String, CompDescriptor> {
+    comp_descriptors_from_updates(
+        &combat::collect_arena_updates_filtered(packets, |s| s == 1), valid_tanks)
+}
+
+/// [`collect_comp_descriptors`] 的共享扫描形态：从已收集的 ARENA_INFO（subtype=1）
+/// update 流提取（`ReplayModel::scan` 与 kill_feed/periods 合用一次 arena pass 时复用）。
+pub fn comp_descriptors_from_updates(
+    updates: &[combat::ArenaUpdate],
+    valid_tanks: &[u32],
+) -> HashMap<String, CompDescriptor> {
     let mut out: HashMap<String, CompDescriptor> = HashMap::new();
     let valid: Vec<u32> = valid_tanks.to_vec();
-    for u in combat::collect_arena_updates(packets) {
-        if u.subtype != 1 || u.payload_hex.len() < 30 { continue; }
-        // payload_hex → bytes（combat.rs 存 hex 串）
-        let Ok(args) = (0..u.payload_hex.len() / 2)
-            .map(|k| u8::from_str_radix(&u.payload_hex[k * 2..k * 2 + 2], 16))
-            .collect::<Result<Vec<u8>, _>>() else { continue };
-        if let Some(d) = CompDescriptor::parse_args(&args, &valid) {
+    for u in updates {
+        if u.subtype != 1 || u.payload.len() < 15 { continue; }
+        if let Some(d) = CompDescriptor::parse_args(&u.payload, &valid) {
             out.insert(d.nickname.clone(), d);
         }
     }
@@ -577,25 +583,27 @@ pub fn from_model(
     })
 }
 
-/// 合并作者严格路径 + 他人宽松路径（与 web `replay_shots_handler` 同构；时间轴构建需全部弹道）。
-/// 作者严格路径是 fail-fast 设计（边界数据缺失即 bail）——全场回放不应因此整场不可用：
-/// 失败时降级为宽松路径提取**全部**发射（含作者，按 shooter_eid 补回 is_author 标记）。
+/// 合并作者严格路径 + 他人宽松路径（共享扫描形态：预分析产物与渲染缓存两路复用，
+/// 见 [`combat::ShotScanShared`]）。作者严格路径是 fail-fast 设计（边界数据缺失即
+/// bail）——全场回放不应因此整场不可用：失败时降级为宽松路径提取**全部**发射
+/// （含作者，按 shooter_eid 补回 is_author 标记）。
 pub(crate) fn collect_all_shots(
-    packets: &[(u32, f32, &[u8])],
-    author_nick: &str,
-    pitch_limits: &GunPitchLimits,
+    shared: &combat::ShotScanShared,
     author_player_eid: u32,
+    pitch_limits: &GunPitchLimits,
 ) -> anyhow::Result<Vec<ShotReplayData>> {
-    match combat::extract_shot_replays_auto_with_limits(packets, author_nick, pitch_limits) {
+    // 滤波时间线缓存跨两路共享（按实体确定；此前两路各建一遍，每场 ~百万帧冗余分配）
+    let mut render_cache: HashMap<u32, FilteredTimeline> = HashMap::new();
+    match combat::extract_shot_replays_from_shared(shared, author_player_eid, pitch_limits, &mut render_cache) {
         Ok(mut all) => {
-            let others = combat::extract_other_shot_replays_with_limits(packets, author_player_eid, pitch_limits);
+            let others = combat::extract_other_shot_replays_from_shared(shared, author_player_eid, pitch_limits, &mut render_cache);
             all.extend(others.shots);
             all.sort_by(|a, b| a.fire_time.partial_cmp(&b.fire_time).unwrap());
             Ok(all)
         }
         Err(strict_err) => {
             eprintln!("[playback] 作者严格路径提取失败（{strict_err:#}），降级宽松全路径");
-            let mut all = combat::extract_other_shot_replays_with_limits(packets, 0, pitch_limits).shots;
+            let mut all = combat::extract_other_shot_replays_from_shared(shared, 0, pitch_limits, &mut render_cache).shots;
             for s in &mut all {
                 if author_player_eid != 0 && s.shooter_eid == author_player_eid {
                     s.is_author = true;
@@ -732,7 +740,8 @@ mod tests {
             // PlaybackShot 已精简掉锚点——探针在同模块直接调 collect_all_shots 取原始
             // ShotReplayData（含 shooter_render + fire_time）
             let author_eid = pb.meta.author_eid;
-            let shots_raw = collect_all_shots(&packets, &name, &GunPitchLimits::new(), author_eid)
+            let shared = combat::build_shot_scan_shared(&packets, author_eid);
+            let shots_raw = collect_all_shots(&shared, author_eid, &GunPitchLimits::new())
                 .unwrap_or_default();
             let mut checked = 0usize;
             let mut worst = 0.0f32;

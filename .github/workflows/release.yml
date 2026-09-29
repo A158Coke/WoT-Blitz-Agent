@@ -40,6 +40,8 @@ jobs:
 
       - name: 资产清单（含 sha256；GLB/地图包入库备查）
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           python scripts/asset_manifest.py --json release/asset_manifest.json --hashes

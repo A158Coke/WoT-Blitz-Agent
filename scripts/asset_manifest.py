@@ -13,9 +13,15 @@
 """
 
 import argparse
+import io
 import json
 import sys
 from pathlib import Path
+
+# Windows 运行器/GBK 控制台下 stdout 默认非 UTF-8，中文摘要会 UnicodeEncodeError 崩溃；
+# 统一强制 UTF-8（无法映射的字符替换，不中断）
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_JSON = PROJECT_ROOT / "mobile_assets" / "manifest.json"

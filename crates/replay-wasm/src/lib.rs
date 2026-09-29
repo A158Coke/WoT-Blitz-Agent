@@ -107,6 +107,42 @@ pub fn settlement_json(bytes: &[u8]) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&summary)?)
 }
 
+/// 射击复现通道：字节 → 全员射击链（作者严格路径 + 他人宽松路径合并，含弹道/
+/// 命中判定/逐发质量标记/双方渲染锚点）。形状与上游 Web `/api/replay/shots` 的
+/// shots 数组同构，供 WotBTools 射击复现视图直接消费（three.js 渲染在消费方）。
+pub fn shot_replays_json(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
+    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    let data = replay.read_data()?;
+    let packets: Vec<(u32, f32, &[u8])> = data.packets.iter()
+        .map(|pkt| {
+            let t = match &pkt.payload {
+                wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
+                wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
+                wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
+            };
+            (t, pkt.clock_secs, &pkt.raw_payload[..])
+        })
+        .collect();
+
+    let author_nick = summary.players.iter()
+        .find(|p| p.account_id == summary.author_account_id)
+        .map(|p| p.nickname.clone())
+        .unwrap_or_default();
+    let author_eid = wotb_replay_core::replay::combat::resolve_author_player_eid_by_nick(&packets, &author_nick);
+    let limits = GunPitchLimits::new();
+
+    // 作者严格路径 + 他人宽松路径合并（与 playback::collect_all_shots 同构；
+    // 严格路径失败降级宽松全路径——全场回放不应因单路径失败不可用）
+    let mut shots = wotb_replay_core::replay::combat::extract_shot_replays_auto_with_limits(
+        &packets, &author_nick, &limits).unwrap_or_default();
+    shots.extend(wotb_replay_core::replay::combat::extract_other_shot_replays_with_limits(
+        &packets, author_eid, &limits).shots);
+    shots.sort_by(|a, b| a.fire_time.partial_cmp(&b.fire_time).unwrap());
+
+    Ok(serde_json::to_string(&shots)?)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod js {
     use wasm_bindgen::prelude::*;
@@ -126,5 +162,13 @@ mod js {
     pub fn parse_replay_settlement(bytes: &[u8]) -> Result<String, JsValue> {
         super::settlement_json(bytes)
             .map_err(|e| JsValue::from_str(&format!("settlement parse failed: {e:#}")))
+    }
+
+    /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer))`
+    /// → 全员射击链 JSON 数组字符串（弹道/命中判定/质量标记/渲染锚点）。
+    #[wasm_bindgen(js_name = parseShotReplays)]
+    pub fn parse_shot_replays(bytes: &[u8]) -> Result<String, JsValue> {
+        super::shot_replays_json(bytes)
+            .map_err(|e| JsValue::from_str(&format!("shot replay parse failed: {e:#}")))
     }
 }

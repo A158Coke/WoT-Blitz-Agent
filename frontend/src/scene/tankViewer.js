@@ -9,6 +9,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { poseFromYPR } from './glbRig.js'
 
 export function initTankViewer() {
 
@@ -616,7 +617,6 @@ export function initTankViewer() {
             }
             return _emptySpacedTex;
         }
-        let penetrationActive = false;
         let spacedArmorScene = null;
         let primaryArmorScene = null;
 
@@ -775,7 +775,6 @@ export function initTankViewer() {
             rebuildHeatmapScenes();
             armorModel.visible = true;
             externalMeshes.forEach(function(node){ node.visible = true; });
-            penetrationActive = true;
         }
 
         function updatePenetrationUniforms(sh) {
@@ -1000,7 +999,7 @@ export function initTankViewer() {
             if (window.__dbgGroup) { scene.remove(window.__dbgGroup); window.__dbgGroup = null; }
             moduleMeshes = [];
             turretNode = null; gunNodesList = [];
-            gunBarrelNodes = []; gunMaskNodes = [];
+            gunBarrelNodes = [];
             configGunGroups = []; configTurretNodes = [];
             origMatrices = null; armorOrigMatrices = null;
         }
@@ -1163,7 +1162,6 @@ export function initTankViewer() {
                     window.__autoRelView = true;   // 默认相对视角（沿入射方向）
                     // 场景原生米制（1 单位 = 1 米，模型不缩放）：回放数据为真实米，直通使用
                     if (!armorPivotGun) { showShotError('炮管枢轴未安装（模型装配异常）'); return; }
-                    const gunLine = armorPivotGun.z;   // 受击坦克炮管离地高（米）
                     // ===== 模型保持默认朝向（车头 -Z），相机做相对调整 =====
                     // toModel = 正交旋转 Ry(π−hullYaw)（无镜像）：世界前向 (sin,0,+cos) 映到模型
                     // 前向 -Z、世界右方映到模型右方；含 z 取反的反射版会使相对视图左右互换。
@@ -1340,14 +1338,7 @@ export function initTankViewer() {
                     // 落到错误轴——坡地姿态错约 2×坡度（GB109 shot2 爬 15° 坡实测错 19°）。
                     // 符号实证：pitch 正=车头下坡（+15° 上坡全部 tick pitch≈−15.5）；
                     // roll 正=右倾（4 份回放反解 ball_a 车体偏移，垂直分量 std 收窄 2-13×）。
-                    function poseFromYPR(yaw, pitch, roll) {
-                        const qYpi = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-                        const qFrame = qYpi.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
-                        const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw || 0);
-                        const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch || 0);
-                        const qRoll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll || 0);
-                        return qYaw.multiply(qPitch).multiply(qRoll).multiply(qFrame);
-                    }
+                    // poseFromYPR = 共享 rig（scene/glbRig.js）
                     // 射手模型加载工厂（原命中/脱靶两分支大段重复：并行 fetch /api/tank +
                     // GLTFLoader 加载 → applyPose 摆位 → 炮闩 bake 前捕获 → 半透明材质克隆
                     // → scene.add）。resolve({ sd, sModel, breechGunLocal })；GLB 加载失败
@@ -1932,7 +1923,7 @@ export function initTankViewer() {
                                         const gameBoxRaw = cdBoxes ? (sPart2 === 0 ? cdBoxes.chassis
                                             : sPart2 === 1 ? cdBoxes.hull : sPart2 === 2 ? cdBoxes.turret
                                             : sPart2 === 3 ? cdBoxes.gun : null) : null;
-                                        let boxMin = null, boxMax = null, boxFrame = null;
+                                        let boxMin = null, boxMax, boxFrame = null;   // boxMax 无 null 初始化：首分支必然赋值
                                         let refNode = null, refRest = null;
                                         if (gameBoxRaw && gameBoxRaw.min && gameBoxRaw.max) {
                                             boxMin = gameBoxRaw.min; boxMax = gameBoxRaw.max;
@@ -2486,12 +2477,6 @@ export function initTankViewer() {
                                 vRaw.sort(function(a, b) { return a.dt - b.dt; });
                             }
                             const sRaw = (s.shooter_tick_samples || []).filter(function(t) { return !t.render; });
-                            const lerpAngle = function(a, b, t) {
-                                let d = b - a;
-                                while (d > Math.PI) d -= 2 * Math.PI;
-                                while (d < -Math.PI) d += 2 * Math.PI;
-                                return a + d * t;
-                            };
                             const interpTick = function(samples, dt) {
                                 if (!samples || !samples.length) return null;
                                 for (let i = 0; i < samples.length - 1; i++) {
@@ -2722,12 +2707,6 @@ export function initTankViewer() {
         function currentConfig() {
             return (tankData && tankData.configs && tankData.configs[currentConfigIdx]) || null;
         }
-
-        // 当前配置的炮盾(mask)有无：BlitzKit 真值语义 mask=0 视同无 mask
-        const hasMaskValue = () => {
-            const cfg = currentConfig();
-            return !!(cfg && typeof cfg.gun_mask === 'number' && cfg.gun_mask !== 0);
-        };
 
         const activeGunNumber = () => {
             const cfg = currentConfig();
@@ -3085,7 +3064,7 @@ export function initTankViewer() {
             document.getElementById('shooter-select').addEventListener('click', function() { openPicker('shooter'); });
 
             document.getElementById('tp-close').addEventListener('click', closePicker);
-            document.getElementById('tp-grid').addEventListener('click', function(e) {
+            document.getElementById('tp-grid').addEventListener('click', function() {
             });
             document.getElementById('tp-search').addEventListener('input', renderGrid);
             document.getElementById('tp-tier').addEventListener('change', renderGrid);
@@ -3215,7 +3194,6 @@ export function initTankViewer() {
 
         let turretNode = null, gunNodesList = [];
         let gunBarrelNodes = [];   // 精确名 gun_XX = 炮管本体（随炮塔+俯仰）
-        let gunMaskNodes = [];     // gun_XX_mask = 炮盾（只随炮塔，不随俯仰）
         let origMatrices = null;
         let currentConfigIdx = 0;
         let currentTurretDeg = 0, currentGunDeg = 0;
@@ -3269,7 +3247,6 @@ export function initTankViewer() {
             // 游戏装配语义【用户实证】：炮盾（gun_XX_mask）**随炮管俯仰**（焊在炮管摇篮上），
             // 与炮管本体同链。group 内其余节点 = 状态拆件（hide_elements 等），不参与姿态。
             gunBarrelNodes = gunNodesList.filter(n => /^gun_\d+(_mask)?$/.test(n.name || ''));
-            gunMaskNodes = [];
             origMatrices = new Map();
             if (turretNode) {
                 turretNode.updateMatrix();

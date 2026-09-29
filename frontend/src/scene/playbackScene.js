@@ -4,6 +4,7 @@
 import * as THREE from 'three'
 
 import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './replaySource.js'
+import { poseFromYPR } from './glbRig.js'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -893,15 +894,7 @@ export function initPlayback(container, store) {
     return { turretNode, gunNodes, tP, gP, itr: (sd && sd.initial_turret_rotation) || null };
   }
 
-  // GLB 根位姿（每刻；与 armor viewer applyPose 同式：pos 镜像 + poseFromYPR(−yaw, pitch, 0)）
-  function poseFromYPR(yaw, pitch, roll) {
-    const qYpi = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-    const qFrame = qYpi.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
-    const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw || 0);
-    const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch || 0);
-    const qRoll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll || 0);
-    return qYaw.multiply(qPitch).multiply(qRoll).multiply(qFrame);
-  }
+  // GLB 根位姿 = poseFromYPR(−yaw, pitch, 0)（共享 rig，见 scene/glbRig.js）
   function poseGlb(v) {
     v.glb.position.copy(v.group.position);
     v.glb.quaternion.copy(poseFromYPR(-yawAt(v, T), arrAt(v.def.hull_pitch, T), 0));
@@ -1004,7 +997,6 @@ export function initPlayback(container, store) {
     return t === DATA.meta.friendly_team ? 0x1e40af : 0x9b1c1c;
   }
   function spawnImpact(tr) {
-    const s = tr.shot;
     const g = new THREE.Group();
     const ball = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 10),
       new THREE.MeshBasicMaterial({ color: tr.color, transparent: true }));

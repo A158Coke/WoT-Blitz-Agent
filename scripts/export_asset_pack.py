@@ -20,7 +20,9 @@
 
 用法：
     wotb-agent dump-map-index > map_index.json      # 需游戏客户端在场（注册表源）
-    python scripts/export_asset_pack.py --map-index map_index.json --out release/asset_pack
+    python scripts/export_asset_pack.py --map-index map_index.json
+    # --out 缺省为仓库根 release/asset_pack；如显式指定请用绝对路径——
+    # 相对路径按 cwd 解析，曾在 frontend/dist 下误落 1.3GB 副本。
 
 仅打包已存在的文件（缺卷积贴图/场景的地图自动缩量）；manifest.json 附全量 sha256。
 """

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use rust_embed::{Embed, RustEmbed};
 
+// data/ 全量（含 replay_samples——此前另有 ReplaySamples 专用结构体把同批文件
+// 嵌入第二遍，exe 无谓多 ~7.4MB；提取路径 data/replay_samples 由 DataAssets 覆盖）
 #[derive(RustEmbed)]
 #[folder = "data/"]
 #[exclude = "sessions/*"]
@@ -17,10 +19,6 @@ use rust_embed::{Embed, RustEmbed};
 #[exclude = "cache/*"]
 #[exclude = "cache/**"]
 struct DataAssets;
-
-#[derive(RustEmbed)]
-#[folder = "data/replay_samples/"]
-struct ReplaySamples;
 
 const CONFIG_EXAMPLE: &str = include_str!("../config.toml.example");
 
@@ -69,7 +67,6 @@ fn is_data_ready(dir: &Path) -> bool {
 
 fn extract(base: &Path) -> anyhow::Result<()> {
     extract_assets::<DataAssets>(base, "data")?;
-    extract_assets::<ReplaySamples>(base, "data/replay_samples")?;
     Ok(())
 }
 

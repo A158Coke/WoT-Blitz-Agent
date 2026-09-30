@@ -91,7 +91,6 @@ const srError = ref('')
 const srParsed = ref(false)
 const srData = ref([])
 const srAuthorTank = ref(0)
-const srShells = ref([])
 const srPlayers = ref([])
 const srNotes = ref([])
 const srShooter = ref('all')
@@ -119,7 +118,6 @@ async function srParse() {
     const d = await replayShots(f)
     srData.value = d.shots || []
     srAuthorTank.value = d.author_tank_id || 0
-    srShells.value = d.author_shells || []
     srPlayers.value = d.players || []
     srNotes.value = d.extraction_notes || []
     srShooter.value = 'all'
@@ -188,7 +186,10 @@ function qualityTitle(s) {
   return issues.join('; ')
 }
 
-// 弹种徽标：shell_kind → AP/APCR/HEAT/HE + premium 标记；缺 kind 时槽位/id 兜底
+// 弹种徽标：shell_kind / 服务端注入 shell（按射手实际搭载配置解析的弹数据）→
+// AP/APCR/HEAT/HE + premium 标记 + 穿深。旧"作者 stock 表按槽位兜底"已删——
+// 他人行 shell_slot 恒 0 会错挂作者 AP 穿深、多炮坦克槽位/表域全错位（服务端
+// shell 注入覆盖 shell_id≠0 的全部发射）；kind 与 shell 均缺时才显示 id 兜底
 function shellBadge(s) {
   const kindOf = (t) => {
     t = (t || '').toLowerCase()
@@ -198,18 +199,17 @@ function shellBadge(s) {
     if (/^ap/.test(t)) return 'AP'
     return ''
   }
-  const sh = s.shell_slot != null ? srShells.value[s.shell_slot] : null
-  const t = s.shell_kind || (sh && sh.shell_type) || ''
+  const t = s.shell_kind || (s.shell && s.shell.type) || ''
   const label = kindOf(t)
   if (!label) {
-    if (s.is_author && sh) return { fallback: '槽' + s.shell_slot }
+    if (s.is_author && s.shell_slot != null) return { fallback: '槽' + s.shell_slot }
     if (s.shell_id) return { fallbackSmall: 'id' + s.shell_id }
     return {}
   }
   return {
     label,
     gold: /premium/.test(t),
-    pen: sh && sh.penetration ? sh.penetration + 'mm' : null,
+    pen: s.shell && s.shell.penetration ? s.shell.penetration + 'mm' : null,
   }
 }
 
@@ -246,13 +246,16 @@ function srViewerUrl(s) {
   const shooterTank = s.shooter_tank_id || srAuthorTank.value || 0
   const tid = s.target_tank_id || shooterTank || 0
   const sh = shooterTank ? '&shooter=' + shooterTank : ''
-  // 弹种下标：优先确定性 shell_id 匹配结果，回退作者槽位
-  const shIdx = s.shooter_shell_idx != null ? s.shooter_shell_idx : (s.is_author && s.shell_slot != null) ? s.shell_slot : null
+  // 弹种下标：服务端已按射手实际搭载配置解析（shooter_shell_cfg_idx 域）；
+  // 槽位兜底已删（type=28 有切弹竞态，且槽位域只对作者有意义）
+  const shIdx = s.shooter_shell_idx != null ? s.shooter_shell_idx : null
   const ammo = shIdx != null ? '&shell=' + shIdx : ''
+  // 射手实际搭载配置：3D 下拉弹表按此选定（scfg），多炮坦克不再错挂 stock 炮弹表
+  const scfg = s.shooter_config_idx != null ? '&scfg=' + s.shooter_config_idx : ''
   // 实际搭载配置：命中弹用目标配置，脱靶弹用射手配置
   const cfgId = s.target_tank_id ? s.target_config_idx : (s.shooter_config_idx ?? s.target_config_idx)
   const cfg = cfgId != null ? '&config=' + cfgId : ''
-  return `/armor_view/view/${tid}?heatmap=1&shot=${s.index}${sh}${ammo}${cfg}&world=1`
+  return `/armor_view/view/${tid}?heatmap=1&shot=${s.index}${sh}${ammo}${cfg}${scfg}&world=1`
 }
 function openShotInViewer(no) {
   const shot = srData.value.find((s) => s.index === no)

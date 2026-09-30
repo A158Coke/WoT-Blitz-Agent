@@ -485,12 +485,36 @@ fn build_configs_uncached(tank_id: u32) -> Vec<Value> {
 /// 返回首个包含该弹的配置中弹的下标。type=28 槽位快照存在切弹竞态（shot6 实测），
 /// shell_id 才是发射弹种的权威标识。
 pub fn shell_index_by_global_id(tank_id: u32, shell_id: u32) -> Option<usize> {
+    resolve_shell_by_global_id(tank_id, shell_id, None).map(|(_, si, _)| si)
+}
+
+/// 发射弹种解析（配置内下标 + 完整弹数据）：shell_id → (配置下标, 配置内弹下标, 弹数据)。
+/// 优先实际搭载配置（cfg_hint = shooter_config_idx，多炮坦克各炮弹表不同，hint 域
+/// 必须钉死——IS 发射 D-25T APCR 217mm 若按 stock D10T 表反查会错成 235mm）；
+/// hint 未命中（数据不全/未解析）再全配置扫描（从后往前 = 顶级偏好）。
+/// 弹数据取自匹配配置的 shells 数组（与 shell_global_ids 同源同序）。
+pub fn resolve_shell_by_global_id(
+    tank_id: u32,
+    shell_id: u32,
+    cfg_hint: Option<usize>,
+) -> Option<(usize, usize, Value)> {
     if shell_id == 0 { return None; }
-    build_configs(tank_id).iter().find_map(|c| {
-        c["shell_global_ids"].as_array().and_then(|a| {
-            a.iter().position(|s| s.as_u64() == Some(shell_id as u64))
-        })
-    })
+    let configs = build_configs(tank_id);
+    let pos_in = |c: &Value| -> Option<(usize, Value)> {
+        let gids = c.get("shell_global_ids")?.as_array()?;
+        let shells = c.get("shells")?.as_array()?;
+        let si = gids.iter().position(|g| g.as_u64() == Some(shell_id as u64))?;
+        Some((si, shells.get(si)?.clone()))
+    };
+    if let Some(ci) = cfg_hint {
+        if let Some(c) = configs.get(ci) {
+            if let Some((si, sh)) = pos_in(c) {
+                return Some((ci, si, sh));
+            }
+        }
+    }
+    configs.iter().enumerate().rev().find_map(|(ci, c)|
+        pos_in(c).map(|(si, sh)| (ci, si, sh)))
 }
 
 /// 实际搭载配置解析（共享证据链，射击复现与实时回放同步使用）：

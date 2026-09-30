@@ -872,12 +872,19 @@ fn replay_shots_blocking(
         if let Some(idx) = nick_cfg.get(&s.shooter_name) {
             v["shooter_config_idx"] = json!(idx);
         }
-        // 发射弹种在射手弹表中的下标（确定性；type=28 槽位快照有切弹竞态）
+        // 发射弹种解析注入（按射手实际搭载配置的弹表）：shell_id → 配置内下标 → 完整弹
+        // 数据。此前前端徽标/下拉各自兜底——他人行错挂作者 stock 表 slot0 穿深、多炮坦克
+        // 槽位/扫描下标套 stock 表全错位（IS 发射 D-25T APCR 217mm 显示 235mm）。
+        // 注入后消费面只读 shell/shooter_shell_idx；shooter_shell_idx 语义 = 
+        // shooter_shell_cfg_idx 配置内的弹下标（与前端 &scfg= 选定的弹表同域）。
         let shooter_tank = team_tank_of(&s.shooter_name).map(|(_, t)| t);
+        let shooter_cfg = nick_cfg.get(&s.shooter_name).copied().map(|x| x as usize);
         if s.shell_id != 0 {
             if let Some(st) = shooter_tank {
-                if let Some(idx) = crate::wargaming::tank_configs::shell_index_by_global_id(st, s.shell_id) {
-                    v["shooter_shell_idx"] = json!(idx);
+                if let Some((ci, si, sh)) = crate::wargaming::tank_configs::resolve_shell_by_global_id(st, s.shell_id, shooter_cfg) {
+                    v["shooter_shell_cfg_idx"] = json!(ci);
+                    v["shooter_shell_idx"] = json!(si);
+                    v["shell"] = sh;
                 }
             }
         }

@@ -35,16 +35,25 @@ pub fn build_viewer_router(
 ) -> axum::Router {
     set_global_resolver(tank_resolver);
 
-    // 页面已切流至 Vue SPA（crate::web 嵌入产物）；根路径重定向到检视路由
+    // 页面已切流至 Vue SPA（crate::web 嵌入产物）；根路径重定向到检视路由。
+    // 原 query（headless/shot/shell/scfg 等查看参数）必须透传——307 重定向不合并
+    // query，丢了它们无头截图与射击复现参数全部失效
     let _ = base_prefix;
     let redirect_target = match shooter_id {
         Some(s) if s != tank_id => format!("/armor_view/view/{tank_id}?shooter={s}"),
         _ => format!("/armor_view/view/{tank_id}"),
     };
     Router::new()
-        .route("/", get(move || {
-            let target = redirect_target.clone();
-            async move { axum::response::Redirect::temporary(&target) }
+        .route("/", get(move |raw: axum::extract::RawQuery| {
+            let base = redirect_target.clone();
+            async move {
+                let target = match raw.0 {
+                    Some(q) if !q.is_empty() =>
+                        format!("{base}{}{q}", if base.contains('?') { "&" } else { "?" }),
+                    _ => base,
+                };
+                axum::response::Redirect::temporary(&target)
+            }
         }))
         .route("/armor_view/view/{tank_id}", get(|| async { crate::web::spa_index_response() }))
         .route("/assets/{*path}", get(|axum::extract::Path(path): axum::extract::Path<String>| async move {
@@ -264,8 +273,9 @@ pub(crate) async fn shells_handler(axum::extract::Path(tank_id): axum::extract::
             let caliber_mm = parse_gun_caliber(&g.name).map(|c| c.round() as u32).unwrap_or(120);
             let shells: Vec<Value> = g.shells.iter().map(|s| json!({
                 "type": s.shell_type,
-                // 全局弹种 id（与回放 shell_id 同域）：射击复现按 shell_id 反查槽位弹种用
-                "global_id": crate::replay::loadout::blitzkit_shell_global_id(&t.nation, s.id as u64),
+                // 全局弹种 id（与回放 shell_id 同域）：射击复现按 shell_id 反查槽位弹种用。
+                // s.id 是 items 形式 (局部 id<<8)|国家序×16+1，须剥低字节取局部 id 再组回放域
+                "global_id": crate::replay::loadout::blitzkit_shell_global_id(&t.nation, (s.id >> 8) as u64),
                 "name": s.name,
                 "penetration": s.penetration,
                 "damage": s.damage,

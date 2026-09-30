@@ -836,7 +836,7 @@ impl AgentTools {
         let fname2 = crate::data::data_path("cache/screenshots").join(format!("replay_shot_{:02}.png", shot_no)).to_string_lossy().to_string();
 
         let handle = std::thread::spawn(move || -> Result<String> {
-            let (port, shell_slot, target_cfg) = tool_runtime().block_on(crate::wargaming::viewer::start_viewer_server_for_replay(
+            let (port, shell_slot, target_cfg, shooter_cfg) = tool_runtime().block_on(crate::wargaming::viewer::start_viewer_server_for_replay(
                 std::path::Path::new(&file), resolver, shot_no))?;
             let is_win = chrome.contains("/mnt/");
             let fname_abs = std::env::current_dir()
@@ -847,11 +847,13 @@ impl AgentTools {
             } else {
                 format!("--screenshot={}", fname_abs)
             };
-            // 实际搭载配置（comp blob/弹种/血量证据链）：目标模型按其选炮塔/主炮变体
+            // 实际搭载配置（comp blob/弹种/血量证据链）：目标模型按其选炮塔/主炮变体；
+            // 射手配置（scfg）= 射手弹表域，shell 下标与 3D 端下拉同域对齐
             let cfg_arg = target_cfg.map(|c| format!("&config={}", c)).unwrap_or_default();
+            let scfg_arg = shooter_cfg.map(|c| format!("&scfg={}", c)).unwrap_or_default();
             let url = format!(
-                "http://127.0.0.1:{}/?headless=1&heatmap=1&clean=1&shot={}&shell={}{}&dist=9",
-                port, shot_no, shell_slot, cfg_arg
+                "http://127.0.0.1:{}/?headless=1&heatmap=1&clean=1&shot={}&shell={}{}{}&dist=9",
+                port, shot_no, shell_slot, cfg_arg, scfg_arg
             );
             let out = std::process::Command::new(&chrome)
                 .args([

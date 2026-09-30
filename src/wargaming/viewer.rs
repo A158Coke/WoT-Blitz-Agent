@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::web::assets::wsl_ip;
 
-use crate::wargaming::tank_configs::{resolve_config_index, shell_index_by_global_id};
+use crate::wargaming::tank_configs::{resolve_config_index, resolve_shell_by_global_id};
 use crate::wargaming::tank_resolver::TankResolver;
 use crate::web::assets::build_viewer_router;
 
@@ -41,15 +41,16 @@ pub async fn start_viewer_server(tank_resolver: TankResolver, tank_id: u32, shoo
     start_viewer_server_with_data(tank_resolver, tank_id, Some(shooter_id), None).await
 }
 
-/// 为回放射击复现启动无头查看器：解析回放 → 挂载 /api/replay_shot → 返回
-/// (端口, shell 弹表下标, 目标实际配置下标)。shell 参数按发射弹种 shell_id 在
-/// 射手弹表中的确定性下标传递（type=28 槽位快照存在切弹竞态，仅作兜底）；
-/// 配置下标供 `&config=N` 选择目标/射手模型的炮塔/主炮变体。
+/// 为回放射击复现启动无头查看器：解析回放 → 挂载 /api/replay_shot →
+/// (端口, shell 弹表下标, 目标实际配置下标, 射手实际配置下标)。shell 参数 =
+/// 发射弹种 shell_id 在射手实际搭载配置（`&scfg=` 返回值 4）弹表中的确定性下标
+/// （type=28 槽位快照存在切弹竞态，仅作兜底）；配置下标供 `&config=`/`&scfg=`
+/// 选择目标/射手模型的炮塔/主炮变体与射手弹表。
 pub async fn start_viewer_server_for_replay(
     replay_path: &std::path::Path,
     tank_resolver: TankResolver,
     shot_no: usize,
-) -> anyhow::Result<(u16, u32, Option<usize>)> {
+) -> anyhow::Result<(u16, u32, Option<usize>, Option<usize>)> {
     use wotbreplay_parser::replay::Replay;
     let mut replay = Replay::open(std::fs::File::open(replay_path)?)?;
     let meta = replay.read_meta().ok();
@@ -116,12 +117,6 @@ pub async fn start_viewer_server_for_replay(
 
     let viewed_tank = target_tank.or(shooter_tank).unwrap_or(0);
     let shell_slot = shot.shell_slot;
-    // 发射弹种的权威标识 = shell_id（type=28 槽位快照存在切弹竞态）；
-    // URL 的 shell 参数按「弹种在射手弹表中的下标」传递
-    let shell_for_url = shooter_tank
-        .and_then(|st| shell_index_by_global_id(st, shot.shell_id))
-        .map(|i| i as u32)
-        .unwrap_or(shell_slot);
     // 实际搭载配置下标（目标/射手）：comp blob → 发射弹种 → 初始血量 证据链，注入每发数据
     //（comps 已在俯仰锚定表构建时收集）
     let initial_hp_all = crate::replay::combat::collect_initial_hp(&raw_packets);
@@ -154,25 +149,38 @@ pub async fn start_viewer_server_for_replay(
         for s in arr.iter_mut() {
             let shooter_name = s["shooter_name"].as_str().unwrap_or("").to_string();
             let target_name = s["target_name"].as_str().unwrap_or("").to_string();
-            if let Some(idx) = tank_of(&shooter_name).and_then(|t| cfg_of(&shooter_name, t)) {
+            let shooter_cfg = tank_of(&shooter_name).and_then(|t| cfg_of(&shooter_name, t));
+            if let Some(idx) = shooter_cfg {
                 s["shooter_config_idx"] = json!(idx);
             }
             if let Some(idx) = tank_of(&target_name).and_then(|t| cfg_of(&target_name, t)) {
                 s["target_config_idx"] = json!(idx);
             }
+            // 发射弹种解析注入（按射手实际搭载配置弹表；与 Web /api/replay/shots 同构）：
+            // shell 数据 + cfg 域钉死的弹下标，3D 下拉/徽标不再套 stock 表
             let shell_id = s["shell_id"].as_u64().unwrap_or(0) as u32;
             if let Some(st) = tank_of(&shooter_name) {
-                if shell_id != 0 {
-                    if let Some(si) = shell_index_by_global_id(st, shell_id) {
-                        s["shooter_shell_idx"] = json!(si);
-                    }
+                if let Some((ci, si, sh)) =
+                    crate::wargaming::tank_configs::resolve_shell_by_global_id(st, shell_id, shooter_cfg) {
+                    s["shooter_shell_cfg_idx"] = json!(ci);
+                    s["shooter_shell_idx"] = json!(si);
+                    s["shell"] = sh;
                 }
             }
         }
     }
     eprintln!("[replay_shot] 配置下标注入完成（shot={}，viewed_cfg={:?}）", shot_no, viewed_cfg);
+    // URL 的 shell 参数 = 发射弹种在射手实际搭载配置弹表中的下标（scfg 域，
+    // 与 3D 端 loadShooter 按 &scfg= 选定的弹表同域）；槽位仅作完全兜底
+    let (shell_for_url, shooter_shell_cfg) = shooter_tank
+        .and_then(|st| {
+            let scfg = cfg_of(&shot.shooter_name, st);
+            resolve_shell_by_global_id(st, shot.shell_id, scfg)
+                .map(|(ci, si, _)| (si as u32, Some(ci)))
+        })
+        .unwrap_or((shell_slot, None));
     let port = start_viewer_server_with_data(tank_resolver, viewed_tank, shooter_tank, Some(replay_json)).await?;
-    Ok((port, shell_for_url, viewed_cfg))
+    Ok((port, shell_for_url, viewed_cfg, shooter_shell_cfg))
 }
 
 pub async fn start_viewer_server_with_data(

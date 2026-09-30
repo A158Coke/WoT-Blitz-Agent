@@ -37,7 +37,7 @@ pub struct AiBattleHeader {
     pub map_name: String,
     pub room_type: String,
     pub winner: u8,
-    /// 结算口径整秒时长（root5 尚未解码 → null，与 hof 一致；绝不以 meta 口径冒充）
+    /// 结算口径整秒时长（root5 尚未解码 → null；绝不以 meta 口径冒充——unknown ≠ 0）
     pub duration_secs: Option<u32>,
     /// 元数据口径时长（meta.json battleDuration；缺失/0 → None）
     #[serde(skip_serializing_if = "Option::is_none")]

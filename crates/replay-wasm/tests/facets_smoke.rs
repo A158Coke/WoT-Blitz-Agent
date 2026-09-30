@@ -1,5 +1,11 @@
-//! 真实样本冒烟：客户端路径（无 resolver/俯仰锚定/地图注册表）产出三切面并满足基本不变量。
-//! 样本取 data/replay_samples 最大的 .wotbreplay（整场对战）；无样本环境跳过。
+//! 真实样本冒烟（契约 v2 能力边界）：客户端路径（无 resolver/俯仰锚定/地图注册表）
+//! 产出的独立能力满足基本不变量。样本取 data/replay_samples 最大的 .wotbreplay
+//!（整场对战）；无样本环境跳过。
+//!
+//! 评审验收对映：
+//! 1. Result-only parse 不物化 Playback、不依赖 HoF facet —— `result_smoke`：
+//!    输出无 vehicles/时序键、体积比 Playback 小两个量级；
+//! 2. Agent 公开面无 HoF —— 编译级保证（`HofFacet` 已删除，giant envelope 已拆除）。
 
 use std::path::PathBuf;
 
@@ -13,8 +19,9 @@ fn largest_sample() -> Option<PathBuf> {
         .max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
 }
 
+/// 结果能力：BattleSummary 齐备，且**不含**时序物化（毫秒级通道的边界不变量）。
 #[test]
-fn client_path_facets_smoke() {
+fn result_smoke() {
     let Some(path) = largest_sample() else {
         eprintln!("无回放样本，跳过");
         return;
@@ -22,29 +29,42 @@ fn client_path_facets_smoke() {
     eprintln!("样本: {}", path.display());
     let bytes = std::fs::read(&path).unwrap();
 
-    let f = wotb_replay_wasm::build_facets(&bytes).expect("客户端路径构建成功");
+    let result: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).expect("结果能力构建成功"))
+            .unwrap();
+    let players = result["players"].as_array().unwrap().len();
+    assert!((8..=28).contains(&players), "花名册 {players}");
+    assert!(result["author_account_id"].as_u64().unwrap() > 0, "作者在册");
+    assert!(result["winner_team"].as_u64().map(|w| w == 1 || w == 2).unwrap_or(false));
+    // 时序物化键不得出现在结果通道（PlaybackData 专属键）
+    for key in ["vehicles", "shots", "kills", "periods", "visibility"] {
+        assert!(result.get(key).is_none(), "结果能力不得物化时序键 {key}");
+    }
+}
 
-    let hof: serde_json::Value = serde_json::from_str(&f.hof).unwrap();
-    assert_eq!(hof["version"], 1);
-    let entries = hof["entries"].as_array().unwrap().len();
-    assert!((8..=28).contains(&entries), "名人堂行数 {entries}");
+/// 时序能力：PlaybackData 齐备；体积与结果通道的量级差证明两者独立（非信封捆绑）。
+#[test]
+fn playback_smoke() {
+    let Some(path) = largest_sample() else {
+        eprintln!("无回放样本，跳过");
+        return;
+    };
+    let bytes = std::fs::read(&path).unwrap();
 
-    let ai: serde_json::Value = serde_json::from_str(&f.ai).unwrap();
-    assert_eq!(ai["version"], 1);
-    let rosters = ai["rosters"].as_array().unwrap().len();
-    assert!((10..=28).contains(&rosters), "花名册 {rosters}");
-    // 客户端路径已知边界如实透出：时长未知 = null，绝不 0/0.0
-    assert!(ai["battle"]["duration_secs"].is_null(), "结算时长未知必须 null");
-
-    let pb: serde_json::Value = serde_json::from_str(&f.playback).unwrap();
+    let playback_str = wotb_replay_wasm::playback_json(&bytes).expect("时序能力构建成功");
+    let pb: serde_json::Value = serde_json::from_str(&playback_str).unwrap();
     assert_eq!(pb["version"], 1);
     let nv = pb["vehicles"].as_array().unwrap().len();
     assert!((8..=28).contains(&nv), "车辆数 {nv}");
     assert!(pb["meta"]["samples"].as_u64().unwrap() > 600, "整场网格过短");
 
-    // 信封：playback/ai/hof 三键齐且为对象
-    let env: serde_json::Value = serde_json::from_str(&f.envelope_json().unwrap()).unwrap();
-    for k in ["playback", "ai", "hof"] {
-        assert!(env[k].is_object(), "信封缺 {k}");
-    }
+    // 结果通道（毫秒级）输出体积必须比全场时序小两个量级——Result-only 消费
+    // 不被迫物化 ~MB 级 Playback（契约 v2 拆分动机）
+    let result_str = wotb_replay_wasm::result_json(&bytes).unwrap();
+    assert!(
+        result_str.len() * 100 < playback_str.len(),
+        "result {}B vs playback {}B——量级分离失效",
+        result_str.len(),
+        playback_str.len()
+    );
 }

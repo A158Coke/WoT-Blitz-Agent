@@ -113,12 +113,12 @@ enum Commands {
         #[arg(long, default_value = "data/tank_data")]
         out: PathBuf,
     },
-    /// Export consumer facets for one replay (playback / ai-review / hall-of-fame JSON)
+    /// Export consumer facets for one replay (playback / ai-review JSON；HoF 是消费方投影，不导出)
     Facets {
         /// Path to the .wotbreplay file
         file: PathBuf,
-        /// Comma-separated parts: playback,ai,hof
-        #[arg(long, default_value = "playback,ai,hof")]
+        /// Comma-separated parts: playback,ai
+        #[arg(long, default_value = "playback,ai")]
         parts: String,
         /// Output directory (default: alongside the replay file)
         #[arg(short, long)]

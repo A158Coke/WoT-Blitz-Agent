@@ -1,20 +1,24 @@
-//! 消费方数据切面（架构契约第 5 节）：Rust 内部模型 ≠ 对外 DTO。
+//! 消费方数据切面（架构契约 v2）：Rust 内部模型 ≠ 对外 DTO。
 //!
-//! 三个切面都是纯投影，依赖方向恒为 切面 → 模型（`replay::model`）：
+//! 能力边界：Agent 只暴露**结果解释**与**时序解释**两个维度，都是纯投影，
+//! 依赖方向恒为 投影 → 模型（`replay::model`）：
+//! - **结果能力（Result interpretation）** = `models::battle::BattleSummary`，
+//!   由 `ReplayParser` 直接产出（毫秒级，不读包流）；
 //! - **回放切面** = 全场时序（位姿网格/炮线/击杀/阶段/可见性），序列化形态即
 //!   `replay::playback::PlaybackData`（含 visibility；前端 `/api/playback/data` 已在线）；
-//! - **智能体评审切面** = 花名册 + 归一化事件流 + 结算锚点（→ Java → 大语言模型）；
-//! - **名人堂切面** = 结算精简行（→ Java → PostgreSQL）。
+//! - **智能体评审切面** = 花名册 + 归一化事件流 + 结算锚点（→ Java → 大语言模型）。
+//!
+//! 名人堂（HoF）不是 Agent 公开能力：它是消费方（WotBTools）产品域，由消费方
+//! 从结果能力自行投影——Agent 不感知消费方的下游产品（此前 `HofFacet` 已删除，
+//! giant envelope `{playback,ai,hof}` 已拆除，breaking，契约 v2）。
 //!
 //! 原则：unknown ≠ 0 ≠ false——缺失一律 null/Option；分发机制（npm 包/构建产物/
 //! 传输接口）不在本层定义，serde JSON 即契约本体。CLI/写盘 IO 胶水留在 wotb-agent
 //!（`facets::export_cli`）。
 
 pub mod ai_review;
-pub mod hof;
 
 pub use ai_review::AiReviewFacet;
-pub use hof::HofFacet;
 pub use crate::replay::playback::PlaybackData as PlaybackFacet;
 
 use std::collections::HashMap;

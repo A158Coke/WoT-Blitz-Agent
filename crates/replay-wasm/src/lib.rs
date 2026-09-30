@@ -1,13 +1,23 @@
-//! 浏览器通道解析入口（架构契约第 6 节）：`.wotbreplay` 字节 → 核心库 → 三数据切面。
+//! 浏览器通道解析入口（架构契约第 6 节）：`.wotbreplay` 字节 → 核心库 → 独立能力 JSON。
 //!
-//! 分层：纯逻辑 [`build_facets`] 不依赖任何平台 API，原生与 wasm32 同构、原生可测；
-//! wasm-bindgen 绑定（`js` 模块）仅在 wasm32 编译，JS 侧调用
-//! `parseReplayFacets(bytes)` 得到 `{"playback":{…},"ai":{…},"hof":{…}}` 信封。
+//! 能力边界（契约 v2）：Agent Rust Core 只暴露**结果解释**与**时序解释**两个维度，
+//! 消费方（WotBTools）按需取用——只要结果时不得被迫物化全场时序（~10MB 级），
+//! 时序消费也不依赖结果通道。名人堂（HoF）是消费方产品域：由消费方从结果能力
+//! 自行投影，Agent 公开面不感知（此前 giant envelope `{playback,ai,hof}` 已拆除，
+//! breaking，不做双 API 兼容）。
+//!
+//! JS 入口（wasm32，`js` 模块）：
+//! - `parseResult(bytes)`    → 结算 JSON（BattleSummary：花名册/胜负/地图/全员统计）；
+//!   只读 meta + battle_results，**不读包流、不建时序模型**，单文件毫秒级；
+//! - `parsePlayback(bytes)`  → PlaybackData JSON（位姿网格/弹道/击杀/阶段/可见性）；
+//! - `parseShotReplays(bytes)` → 全员射击链 JSON 数组（弹道/命中判定/质量标记/渲染锚点）。
 //!
 //! 客户端路径的已知取舍（与服务端路径的差异，均为数据可得性而非实现差异）：
 //! - 无 tank_cache / models.pb：`tank_name` 空串、`gun_pitch` 走车体 pitch 兜底、
 //!   无俯仰极限锚定（逐发质量标记如实透传）；前端可按 tank_id 自行映射展示名；
 //! - 无地图显示名注册表：`map_name` 为解析器枚举名，前端以 `map_id` 键控底图与语义。
+//!
+//! 纯逻辑不依赖平台 API，原生与 wasm32 同构、原生可测（tests/facets_smoke.rs）。
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -17,69 +27,63 @@ use wotb_replay_core::replay::model::{ReplayModel, ScanInput};
 use wotb_replay_core::replay::parser::ReplayParser;
 use wotb_replay_core::replay::playback::{PlaybackInput, PlaybackPlayer};
 
-/// 三切面产物（字段为已序列化的 JSON；[`ReplayFacets::envelope_json`] 组装单信封）。
-pub struct ReplayFacets {
-    /// 回放切面（PlaybackData：位姿网格/弹道/击杀/阶段/可见性）
-    pub playback: String,
-    /// 评审切面（花名册 + 类型化事件流 + 结算锚点）
-    pub ai: String,
-    /// 名人堂切面（结算精简行）
-    pub hof: String,
-}
-
-impl ReplayFacets {
-    /// 信封：`{"playback":{…},"ai":{…},"hof":{…}}`。各切面串由 serde 序列化产出、
-    /// 自包含即合法 JSON 值，直接拼装即可——此前 from_str 回 parse 成 Value 再整体
-    /// to_string，PlaybackData（MB 级位姿网格）多付一整轮解析+序列化。
-    pub fn envelope_json(&self) -> anyhow::Result<String> {
-        let mut out = String::with_capacity(
-            self.playback.len() + self.ai.len() + self.hof.len() + 32);
-        out.push_str("{\"playback\":");
-        out.push_str(&self.playback);
-        out.push_str(",\"ai\":");
-        out.push_str(&self.ai);
-        out.push_str(",\"hof\":");
-        out.push_str(&self.hof);
-        out.push('}');
-        Ok(out)
-    }
-}
-
-/// 字节 → 单次扫描 → 三切面。扫描一次共享给三个投影（与服务端 `/api/playback/data`
-/// 同一构建语义，JS 侧可用同一套渲染代码无缝切换数据源）。
-pub fn build_facets(bytes: &[u8]) -> anyhow::Result<ReplayFacets> {
-    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
-    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+/// 包流解码（三能力共用的类型映射步）：payload → (type, clock, raw)。
+fn decode_packets<R: std::io::Read + std::io::Seek>(
+    replay: &mut wotbreplay_parser::replay::Replay<R>,
+) -> anyhow::Result<Vec<(u32, f32, Vec<u8>)>> {
     let data = replay.read_data()?;
-    let packets: Vec<(u32, f32, &[u8])> = data.packets.iter()
+    Ok(data.packets.iter()
         .map(|pkt| {
             let t = match &pkt.payload {
                 wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
                 wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
                 wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
             };
-            (t, pkt.clock_secs, &pkt.raw_payload[..])
+            (t, pkt.clock_secs, pkt.raw_payload.to_vec())
         })
-        .collect();
+        .collect())
+}
 
-    let roster: Vec<PlaybackPlayer> = summary.players.iter()
+fn roster_of(summary: &wotb_replay_core::models::battle::BattleSummary) -> Vec<PlaybackPlayer> {
+    summary.players.iter()
         .map(|p| PlaybackPlayer {
             account_id: p.account_id,
             nickname: p.nickname.clone(),
             team: p.team,
             tank_id: p.tank_id,
         })
+        .collect()
+}
+
+/// 结果能力（Result interpretation）：字节 → BattleSummary JSON。
+/// 只解析 meta + battle_results——**不读包流、不建时序模型**，单文件毫秒级，
+/// 供批量扫描与消费方 HoF 投影（HoF 不是 Agent 公开能力，见契约 v2）。
+pub fn result_json(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
+    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    Ok(serde_json::to_string(&summary)?)
+}
+
+/// 时序能力（Temporal interpretation）：字节 → PlaybackData JSON。
+/// 单次扫描构建全场时序（与服务端 `/api/playback/data` 同一构建语义）。
+pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
+    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    let packets = decode_packets(&mut replay)?;
+    let packets: Vec<(u32, f32, &[u8])> = packets.iter()
+        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
         .collect();
+
     let limits = GunPitchLimits::new();
     let model = ReplayModel::scan(&ScanInput {
         packets: &packets,
-        roster: &roster,
+        roster: &roster_of(&summary),
         author_account_id: summary.author_account_id,
         pitch_limits: &limits,
     })?;
     let input = PlaybackInput {
         packets: &packets,
-        players: roster,
+        players: roster_of(&summary),
         author_account_id: summary.author_account_id,
         winner_team: summary.winner_team,
         map_id: summary.map_id,
@@ -88,41 +92,19 @@ pub fn build_facets(bytes: &[u8]) -> anyhow::Result<ReplayFacets> {
         tank_names: HashMap::new(),
     };
     let playback = wotb_replay_core::replay::playback::from_model(&model, &input)?;
-    let ai = wotb_replay_core::facets::AiReviewFacet::from_model(&model, &summary);
-    let hof = wotb_replay_core::facets::HofFacet::from_settlement(&summary);
-
-    Ok(ReplayFacets {
-        playback: serde_json::to_string(&playback)?,
-        ai: serde_json::to_string(&ai)?,
-        hof: serde_json::to_string(&hof)?,
-    })
-}
-
-/// 轻量结算通道（Scan Report 用）：只解析 meta + battle_results——**不读包流、
-/// 不建时序模型**，单文件毫秒级，供一次数百文件的批量扫描。
-/// 返回 BattleSummary JSON（含全部战斗者结算行，字段见 core `models::battle`）。
-pub fn settlement_json(bytes: &[u8]) -> anyhow::Result<String> {
-    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
-    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
-    Ok(serde_json::to_string(&summary)?)
+    Ok(serde_json::to_string(&playback)?)
 }
 
 /// 射击复现通道：字节 → 全员射击链（作者严格路径 + 他人宽松路径合并，含弹道/
 /// 命中判定/逐发质量标记/双方渲染锚点）。形状与上游 Web `/api/replay/shots` 的
 /// shots 数组同构，供 WotBTools 射击复现视图直接消费（three.js 渲染在消费方）。
+/// 注意：两路合并后 index 为局部值，消费方须按 time_s 全局重编号（契约 §shots）。
 pub fn shot_replays_json(bytes: &[u8]) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
-    let data = replay.read_data()?;
-    let packets: Vec<(u32, f32, &[u8])> = data.packets.iter()
-        .map(|pkt| {
-            let t = match &pkt.payload {
-                wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
-                wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
-                wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
-            };
-            (t, pkt.clock_secs, &pkt.raw_payload[..])
-        })
+    let packets = decode_packets(&mut replay)?;
+    let packets: Vec<(u32, f32, &[u8])> = packets.iter()
+        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
         .collect();
 
     let author_nick = summary.players.iter()
@@ -147,21 +129,21 @@ pub fn shot_replays_json(bytes: &[u8]) -> anyhow::Result<String> {
 mod js {
     use wasm_bindgen::prelude::*;
 
-    /// JS 入口：`parseReplayFacets(new Uint8Array(fileBuffer))` → 切面信封 JSON 字符串。
+    /// JS 入口（结果能力）：`parseResult(new Uint8Array(fileBuffer))` → BattleSummary
+    /// JSON 字符串。只读 meta + battle_results（毫秒级），不物化全场时序。
     /// 解析失败以字符串 Error 拒绝（含链式原因），不 panic 跨界。
-    #[wasm_bindgen(js_name = parseReplayFacets)]
-    pub fn parse_replay_facets(bytes: &[u8]) -> Result<String, JsValue> {
-        super::build_facets(bytes)
-            .and_then(|f| f.envelope_json())
-            .map_err(|e| JsValue::from_str(&format!("replay parse failed: {e:#}")))
+    #[wasm_bindgen(js_name = parseResult)]
+    pub fn parse_result(bytes: &[u8]) -> Result<String, JsValue> {
+        super::result_json(bytes)
+            .map_err(|e| JsValue::from_str(&format!("result parse failed: {e:#}")))
     }
 
-    /// JS 入口（批量 Scan 用）：`parseReplaySettlement(new Uint8Array(fileBuffer))`
-    /// → 结算 JSON 字符串（BattleSummary：花名册/胜负/地图/全部战斗者统计）。
-    #[wasm_bindgen(js_name = parseReplaySettlement)]
-    pub fn parse_replay_settlement(bytes: &[u8]) -> Result<String, JsValue> {
-        super::settlement_json(bytes)
-            .map_err(|e| JsValue::from_str(&format!("settlement parse failed: {e:#}")))
+    /// JS 入口（时序能力）：`parsePlayback(new Uint8Array(fileBuffer))` → PlaybackData
+    /// JSON 字符串（位姿网格/弹道/击杀/阶段/可见性）。
+    #[wasm_bindgen(js_name = parsePlayback)]
+    pub fn parse_playback(bytes: &[u8]) -> Result<String, JsValue> {
+        super::playback_json(bytes)
+            .map_err(|e| JsValue::from_str(&format!("playback parse failed: {e:#}")))
     }
 
     /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer))`

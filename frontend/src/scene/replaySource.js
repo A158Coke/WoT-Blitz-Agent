@@ -35,12 +35,11 @@ export async function loadFromServer(file) {
   return resp.json()
 }
 
-/** 本地通道：File/Blob → 浏览器文件接口 → WASM 解析 → 回放切面（契约 §6 纯客户端） */
+/** 本地通道：File/Blob → 浏览器文件接口 → WASM 解析 → PlaybackData（契约 v2 时序能力，纯客户端） */
 export async function loadFromLocalFile(fileObject) {
   const mod = await loadWasm()
   const bytes = new Uint8Array(await fileObject.arrayBuffer())
-  const envelope = JSON.parse(mod.parseReplayFacets(bytes))
-  return envelope.playback
+  return JSON.parse(mod.parsePlayback(bytes))
 }
 
 /**

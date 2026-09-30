@@ -14,7 +14,9 @@
 //!
 //! 客户端路径的已知取舍（与服务端路径的差异，均为数据可得性而非实现差异）：
 //! - 无 tank_cache / models.pb：`tank_name` 空串、`gun_pitch` 走车体 pitch 兜底、
-//!   无俯仰极限锚定（逐发质量标记如实透传）；前端可按 tank_id 自行映射展示名；
+//!   无俯仰极限锚定（逐发质量标记如实透传）；前端可按 tank_id 自行映射展示名。
+//!   俯仰锚定与弹种反解均可由消费方经可选参数注入（`limits_json` / `shells_json`，
+//!   数据源 = 静态资产面 / `dump-shell-kinds` 产物），注入后与服务端路径同级；
 //! - 无地图显示名注册表：`map_name` 为解析器枚举名，前端以 `map_id` 键控底图与语义。
 //!
 //! 纯逻辑不依赖平台 API，原生与 wasm32 同构、原生可测（tests/facets_smoke.rs）。
@@ -105,7 +107,13 @@ pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
 /// dep=max、ele=−min）。服务端路径由 TankResolver 注入同名锚定；客户端路径
 /// 缺省为空表——空表下 prop2 frac 无法按车型极限解码，逐发俯仰降级标记会
 /// 如实透传（质量边界，非错误）。
-pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>) -> anyhow::Result<String> {
+///
+/// `shells_json`：可选的全局弹种反解表（`wotb-agent dump-shell-kinds` 产物，
+/// {全局弹种 id: {type, penetration, damage, module_damage, explosion_radius}}）。
+/// 注入后每发输出补齐 `shell_kind`（与上游 annotate 同源）与 `shell`（完整弹
+/// 数据，徽标/判定直接消费）——消费方渲染侧不再需要自带弹种表或槽位兜底；
+/// 缺省时 shell_kind 保持空串、无 shell 字段（数据可得性边界，非错误）。
+pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>, shells_json: Option<&str>) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     let packets = decode_packets(&mut replay)?;
@@ -131,7 +139,27 @@ pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>) -> anyhow::Res
         &packets, author_eid, &limits).shots);
     shots.sort_by(|a, b| a.fire_time.partial_cmp(&b.fire_time).unwrap());
 
-    Ok(serde_json::to_string(&shots)?)
+    // 弹种反解注入（服务端 annotate + shell 字段注入的客户端等价）：表缺失时
+    // 原样输出（消费方按缺数据处理）
+    let mut out = serde_json::to_value(&shots)?;
+    if let Some(table) = shells_json.filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(s).ok())
+    {
+        if let Some(arr) = out.as_array_mut() {
+            for v in arr.iter_mut() {
+                let shell_id = v.get("shell_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                if shell_id == 0 { continue; }
+                let Some(entry) = table.get(&shell_id.to_string()) else { continue };
+                if v.get("shell_kind").and_then(|x| x.as_str()).map(str::is_empty).unwrap_or(true) {
+                    if let Some(t) = entry.get("type").and_then(|x| x.as_str()) {
+                        v["shell_kind"] = serde_json::Value::String(t.to_string());
+                    }
+                }
+                v["shell"] = entry.clone();
+            }
+        }
+    }
+    Ok(serde_json::to_string(&out)?)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -155,14 +183,17 @@ mod js {
             .map_err(|e| JsValue::from_str(&format!("playback parse failed: {e:#}")))
     }
 
-    /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer), limitsJson?)`
+    /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer), limitsJson?, shellsJson?)`
     /// → 全员射击链 JSON 数组字符串（弹道/命中判定/质量标记/渲染锚点）。
     /// `limitsJson` 可选：俯仰锚定表 JSON（{昵称: GunPitchRange}，消费方由资产面
     /// tank/{id}.json 的 pitch_limits 组装 dep=max、ele=−min）——注入后 prop2 俯仰
     /// 按车型极限解码（与服务端路径同级）；缺省空表时俯仰降级标记如实透传。
+    /// `shellsJson` 可选：全局弹种反解表 JSON（`wotb-agent dump-shell-kinds` 产物，
+    /// {全局弹种 id: {type, penetration, damage, module_damage, explosion_radius}}）——
+    /// 注入后每发补齐 `shell_kind` 与 `shell`（完整弹数据）；缺省时无弹种反解。
     #[wasm_bindgen(js_name = parseShotReplays)]
-    pub fn parse_shot_replays(bytes: &[u8], limits: Option<String>) -> Result<String, JsValue> {
-        super::shot_replays_json(bytes, limits.as_deref())
+    pub fn parse_shot_replays(bytes: &[u8], limits: Option<String>, shells: Option<String>) -> Result<String, JsValue> {
+        super::shot_replays_json(bytes, limits.as_deref(), shells.as_deref())
             .map_err(|e| JsValue::from_str(&format!("shot replay parse failed: {e:#}")))
     }
 }

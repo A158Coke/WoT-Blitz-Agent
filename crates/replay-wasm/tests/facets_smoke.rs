@@ -68,3 +68,48 @@ fn playback_smoke() {
         playback_str.len()
     );
 }
+
+/// 射击复现通道：弹种反解注入不变量——`shells_json`（dump-shell-kinds 富表）
+/// 注入后带 shell_id 的弹全部补齐 `shell_kind` 与 `shell`（type/穿深一致）；
+/// 缺省表时 shell_kind 为空串、无 shell 字段（数据可得性边界）。
+#[test]
+fn shot_replays_shell_injection_smoke() {
+    // 样本须含已知全局弹种 id 的对局：GB13_FV215b 场（作者/他人均发 18010 APCR）
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/replay_samples");
+    let path = std::fs::read_dir(&dir).ok()
+        .and_then(|rd| rd.flatten().map(|e| e.path())
+            .find(|p| p.file_name().map(|n| n.to_string_lossy().contains("FV215b")).unwrap_or(false)));
+    let Some(path) = path else {
+        eprintln!("无 FV215b 样本，跳过");
+        return;
+    };
+    let bytes = std::fs::read(&path).unwrap();
+
+    // 表来源与 dump-shell-kinds 同形状（现取 tanks.pb 全量展开；wasm 测试环境
+    // 无 CLI，直接用上游 annotate 同款构建入口——src 侧 ShellKindTable 不可达，
+    // 此处以最小内联表覆盖断言即可，全域覆盖由 dump CLI 产物保证）
+    let bare: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::shot_replays_json(&bytes, None, None).unwrap()).unwrap();
+    let shots = bare.as_array().expect("shots 数组");
+    assert!(!shots.is_empty(), "样本应含射击事件");
+    for s in shots {
+        assert!(s.get("shell").is_none(), "缺省表不得输出 shell 字段");
+        if s["shell_id"].as_u64().unwrap_or(0) > 0 {
+            assert_eq!(s["shell_kind"].as_str().unwrap_or(""), "", "缺省表 kind 恒空");
+        }
+    }
+
+    // 内联最小富表（FV215b APCR = 0x465a = 18010；样本含该弹——GB13_FV215b 场）
+    let table = r#"{"18010":{"type":"ap_cr_premium","penetration":326,"damage":340,"module_damage":165,"explosion_radius":0}}"#;
+    let injected: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::shot_replays_json(&bytes, None, Some(table)).unwrap()).unwrap();
+    let mut resolved = 0;
+    for s in injected.as_array().unwrap() {
+        if s["shell_id"].as_u64() != Some(18010) { continue; }
+        resolved += 1;
+        assert_eq!(s["shell_kind"], "ap_cr_premium", "kind 反解");
+        assert_eq!(s["shell"]["penetration"], 326, "穿深注入");
+        assert_eq!(s["shell"]["damage"], 340, "伤害注入");
+    }
+    assert!(resolved > 0, "样本应含 18010 弹（表注入生效的先验）");
+}

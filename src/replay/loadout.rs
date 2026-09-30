@@ -1,7 +1,9 @@
 //! 玩家开局配置与弹种解析（loadout）
 //!
-//! - [`ShellKindTable`]：tanks.pb 全量展开的"全局弹种 id → shell_type 原始串"映射，
-//!   为提取链的每发射击回填 `ShotReplayData.shell_kind`（作者+他人统一）。
+//! - [`ShellKindTable`]：tanks.pb 全量展开的"全局弹种 id → 弹种数据"映射
+//!   （type/穿深/伤害/模块伤害/爆炸半径），为提取链的每发射击回填
+//!   `ShotReplayData.shell_kind`（作者+他人统一），并经 `dump-shell-kinds`
+//!   导出为静态资产/WASM 注入表（客户端路径的弹种反解数据源）。
 //!   全局 id = (shells.xml 局部 id << 8) | 国家基数（nation_id×16+10，回放射击事件逆向分析 §5.1）；
 //!   tanks.pb field1 = (局部 id << 8) | (国家序×16+1)（items id 形式），取 field1>>8 得局部 id。
 //!   注意：shell_kind 存 tanks.pb 原始串（ap/ap_cr/heat/he/…含 premium 修饰）——
@@ -31,15 +33,27 @@ fn nation_base(nation: &str) -> Option<u32> {
         .map(|i| (i * 16 + 10) as u32)
 }
 
-/// 全局弹种 id → shell_type 原始串映射表（tanks.pb 全量坦克×炮塔×主炮展开；
-/// 同一全局 id 多车重复时取首个非空值——同国同局部 id 即同弹种）。
+/// 全局弹种 id → 弹种数据映射表（tanks.pb 全量坦克×炮塔×主炮展开；
+/// 同一全局 id 多车重复时取首个非空值——同国同局部 id 即同弹种，穿深/伤害为
+/// shells.xml 弹种项属性，与炮无关）。条目含 type/穿深/伤害/模块伤害/爆炸半径，
+/// 供射击复现徽标/判定直接消费（annotate 只用 type）。
 pub struct ShellKindTable {
-    by_global: HashMap<u32, String>,
+    by_global: HashMap<u32, ShellTableEntry>,
+}
+
+/// 弹种表条目（dump-shell-kinds 产物的值形状）。
+#[derive(Clone)]
+pub struct ShellTableEntry {
+    pub shell_type: String,
+    pub penetration: f64,
+    pub damage: f64,
+    pub module_damage: f64,
+    pub explosion_radius: f64,
 }
 
 impl ShellKindTable {
     pub fn from_tanks_pb() -> Self {
-        let mut by_global: HashMap<u32, String> = HashMap::new();
+        let mut by_global: HashMap<u32, ShellTableEntry> = HashMap::new();
         for tank in load_tanks().values() {
             let Some(base) = nation_base(&tank.nation) else { continue };
             for turret in &tank.turrets {
@@ -49,7 +63,13 @@ impl ShellKindTable {
                         // field1 = (局部 id << 8) | (国家序×16+1)：剥掉低字节得 shells.xml 局部 id，
                         // 再按回放基数（国家序×16+10）组全局 id 与回放 shell_id 同域
                         let gid = ((s.id >> 8) << 8) | base;
-                        by_global.entry(gid).or_insert_with(|| s.shell_type.clone());
+                        by_global.entry(gid).or_insert_with(|| ShellTableEntry {
+                            shell_type: s.shell_type.clone(),
+                            penetration: s.penetration,
+                            damage: s.damage,
+                            module_damage: s.module_damage,
+                            explosion_radius: s.explosion_radius,
+                        });
                     }
                 }
             }
@@ -61,8 +81,8 @@ impl ShellKindTable {
     pub fn annotate(&self, shots: &mut [ShotReplayData]) {
         for s in shots.iter_mut() {
             if !s.shell_kind.is_empty() || s.shell_id == 0 { continue; }
-            if let Some(t) = self.by_global.get(&s.shell_id) {
-                s.shell_kind = t.clone();
+            if let Some(e) = self.by_global.get(&s.shell_id) {
+                s.shell_kind = e.shell_type.clone();
             }
         }
     }
@@ -70,21 +90,30 @@ impl ShellKindTable {
     /// 单点查询工具（诊断/探针用；主管线走 annotate）。
     #[allow(dead_code)]
     pub fn kind_of(&self, global_id: u32) -> Option<&str> {
-        self.by_global.get(&global_id).map(String::as_str)
+        self.by_global.get(&global_id).map(|e| e.shell_type.as_str())
     }
 
-    /// 导出为 JSON 对象（{全局弹种 id: shell_type 原始串}）：静态资产面/前端
-    /// 常量表的离线生成入口（`wotb-agent dump-shell-kinds`）——浏览器侧无
-    /// tanks.pb，射击复现弹种反解消费该表（与 annotate 同源同域）。
+    /// 导出为 JSON 对象（{全局弹种 id: {type, penetration, damage, module_damage,
+    /// explosion_radius}}）：静态资产面/前端常量表与 WASM parseShotReplays 注入参数的
+    /// 离线生成入口（`wotb-agent dump-shell-kinds`）——浏览器侧无 tanks.pb，射击复现
+    /// 弹种反解（kind + 穿深/伤害）消费该表（与 annotate 同源同域）。
     pub fn to_json(&self) -> String {
-        let mut entries: Vec<(u32, &String)> = self.by_global.iter().map(|(k, v)| (*k, v)).collect();
+        let mut entries: Vec<(u32, &ShellTableEntry)> = self.by_global.iter().map(|(k, v)| (*k, v)).collect();
         entries.sort_by_key(|(k, _)| *k);
         let body: Vec<String> = entries
             .iter()
-            .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+            .map(|(k, e)| format!(
+                "\"{}\":{{\"type\":\"{}\",\"penetration\":{},\"damage\":{},\"module_damage\":{},\"explosion_radius\":{}}}",
+                k, e.shell_type, fmt_f64(e.penetration), fmt_f64(e.damage),
+                fmt_f64(e.module_damage), fmt_f64(e.explosion_radius)))
             .collect();
         format!("{{{}}}", body.join(","))
     }
+}
+
+/// f64 → 紧凑 JSON 数字（整数不带小数点，与 BlitzKit 显示口径一致）
+fn fmt_f64(v: f64) -> String {
+    if (v - v.round()).abs() < f64::EPSILON { format!("{}", v.round() as i64) } else { format!("{}", v) }
 }
 
 /// tanks.pb 局部弹种 id → 全局 id：`(局部 id << 8) | 国家基数`（nation_id×16+10）。

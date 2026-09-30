@@ -72,6 +72,19 @@ impl ShellKindTable {
     pub fn kind_of(&self, global_id: u32) -> Option<&str> {
         self.by_global.get(&global_id).map(String::as_str)
     }
+
+    /// 导出为 JSON 对象（{全局弹种 id: shell_type 原始串}）：静态资产面/前端
+    /// 常量表的离线生成入口（`wotb-agent dump-shell-kinds`）——浏览器侧无
+    /// tanks.pb，射击复现弹种反解消费该表（与 annotate 同源同域）。
+    pub fn to_json(&self) -> String {
+        let mut entries: Vec<(u32, &String)> = self.by_global.iter().map(|(k, v)| (*k, v)).collect();
+        entries.sort_by_key(|(k, _)| *k);
+        let body: Vec<String> = entries
+            .iter()
+            .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+            .collect();
+        format!("{{{}}}", body.join(","))
+    }
 }
 
 /// tanks.pb 局部弹种 id → 全局 id：`(局部 id << 8) | 国家基数`（nation_id×16+10）。

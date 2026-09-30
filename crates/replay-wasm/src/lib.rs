@@ -99,7 +99,13 @@ pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
 /// 命中判定/逐发质量标记/双方渲染锚点）。形状与上游 Web `/api/replay/shots` 的
 /// shots 数组同构，供 WotBTools 射击复现视图直接消费（three.js 渲染在消费方）。
 /// 注意：两路合并后 index 为局部值，消费方须按 time_s 全局重编号（契约 §shots）。
-pub fn shot_replays_json(bytes: &[u8]) -> anyhow::Result<String> {
+///
+/// `limits_json`：可选的俯仰锚定表（{昵称: {dep, ele, front?, back?, transition?}}，
+/// GunPitchRange serde 形状——消费方由资产面 tank/{id}.json 的 pitch_limits 换算
+/// dep=max、ele=−min）。服务端路径由 TankResolver 注入同名锚定；客户端路径
+/// 缺省为空表——空表下 prop2 frac 无法按车型极限解码，逐发俯仰降级标记会
+/// 如实透传（质量边界，非错误）。
+pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     let packets = decode_packets(&mut replay)?;
@@ -112,7 +118,10 @@ pub fn shot_replays_json(bytes: &[u8]) -> anyhow::Result<String> {
         .map(|p| p.nickname.clone())
         .unwrap_or_default();
     let author_eid = wotb_replay_core::replay::combat::resolve_author_player_eid_by_nick(&packets, &author_nick);
-    let limits = GunPitchLimits::new();
+    let limits: GunPitchLimits = match limits_json {
+        Some(s) if !s.is_empty() => serde_json::from_str(s).unwrap_or_default(),
+        _ => GunPitchLimits::new(),
+    };
 
     // 作者严格路径 + 他人宽松路径合并（与 playback::collect_all_shots 同构；
     // 严格路径失败降级宽松全路径——全场回放不应因单路径失败不可用）
@@ -146,11 +155,14 @@ mod js {
             .map_err(|e| JsValue::from_str(&format!("playback parse failed: {e:#}")))
     }
 
-    /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer))`
+    /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer), limitsJson?)`
     /// → 全员射击链 JSON 数组字符串（弹道/命中判定/质量标记/渲染锚点）。
+    /// `limitsJson` 可选：俯仰锚定表 JSON（{昵称: GunPitchRange}，消费方由资产面
+    /// tank/{id}.json 的 pitch_limits 组装 dep=max、ele=−min）——注入后 prop2 俯仰
+    /// 按车型极限解码（与服务端路径同级）；缺省空表时俯仰降级标记如实透传。
     #[wasm_bindgen(js_name = parseShotReplays)]
-    pub fn parse_shot_replays(bytes: &[u8]) -> Result<String, JsValue> {
-        super::shot_replays_json(bytes)
+    pub fn parse_shot_replays(bytes: &[u8], limits: Option<String>) -> Result<String, JsValue> {
+        super::shot_replays_json(bytes, limits.as_deref())
             .map_err(|e| JsValue::from_str(&format!("shot replay parse failed: {e:#}")))
     }
 }

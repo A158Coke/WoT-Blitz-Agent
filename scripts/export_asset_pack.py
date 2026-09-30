@@ -168,10 +168,14 @@ def main() -> None:
             b = v.get("worldBounds") or {}
             mn, mx = b.get("min"), b.get("max")
             if isinstance(mn, list) and isinstance(mx, list) and len(mn) >= 3 and len(mx) >= 3:
+                # span = 水平世界跨度 max(dx,dy)——与服务端 terrain_scale（map_assets.rs）
+                # 同式；前端 sampleHeight/rebuildGround 以它做水平米制换算。
+                # 勿写 zmax-zmin（那是垂直高度差）：错值会把地形压成 span×span 小块
+                span_h = max(float(mx[0]) - float(mn[0]), float(mx[1]) - float(mn[1]))
                 scale = {"size": 512,
                          "zmax": round(float(mx[2]), 1),
                          "zmin": round(float(mn[2]), 1),
-                         "span": round(float(mx[2]) - float(mn[2]), 1)}
+                         "span": round(span_h, 1)}
         terrain_srcs = [data / "maps" / f"{key}.heightmap.u16.bin",
                         terrain_cache / f"{key}.hm.u16.bin"]
         hit = copy_first(terrain_srcs, mdir / "terrain.u16.bin")

@@ -18,11 +18,14 @@
 结论：该字段 = **弹道末段速度方向向量**（WotbTools "PROVEN physical direction"）。旧"segmentStartPoint/弹跳点"定名废弃。
 已落地：`TerrainImpactData.segment_start` → `terminal_dir`；viewer 弹跳线改为出射方向线 + 出射偏角诊断（>2° 提示弹跳/减速）。
 
-### B2. method27 (0x1b) args[4..8) —— **WotbTools 警告部分成立** ✅已改码
+### B2. method27 (0x1b) args[4..8) —— **WotbTools 警告部分成立；掩码域 2026-09-30 重裁** ✅已改码
 
 92 包：高 16 位（byte2）非零 **40/92**（样例 `0007E22A`/`00082D0A`/`0001358A`），但低 8 位 92/92 符合国家基数格式；
-去重 full=low24=low16=**35 种**，同 low16 多 byte2 冲突 = **0**。结论：byte2 纯噪声，**`& 0xFFFF` 掩码安全**——
-不掩码时 `by_global` 弹种表对 43% 包查不中。已落地：两处采集点掩码。
+去重 full=low24=low16=**35 种**，同 low16 多 byte2 冲突 = **0**。**重裁**：byte3（bits24-31）为噪声——
+不掩码时 u32 跳出弹种表 24 位键域（43% 查不中的元凶）；但 bits16-23 承载局部 id 高位
+（IS-7 AP=0x8250a、T57=0x8532a、T110E5 0x834 实测），旧 `& 0xFFFF` 掩码把这类 id 截断成
+0x250a 必然查不中——B2 样本恰为局部 id ≤0xFF 的车，掩盖了截断。已落地：`& 0xFFFFFF` 掩码
+（`collect_terrain_impacts`）。
 
 ### B4. method35 (0x23) float1 —— **WotbTools 对，我方"倒计时"证伪**
 

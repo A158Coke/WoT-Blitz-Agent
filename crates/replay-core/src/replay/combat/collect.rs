@@ -403,8 +403,11 @@ pub(crate) fn collect_warnings32(packets: &[(u32, f32, &[u8])]) -> Vec<ArenaWarn
 
 /// Avatar method 0x1b 地形命中包（仅无坦克命中时广播）：shotId 配对，args(34) 布局见 TerrainImpactData。
 /// 全局广播含所有玩家脱靶弹（J39 实证 30 发他人命中）——作者/他人路径共用，args[4..8] 的
-/// shell_global_id 同时是弹种兜底链第三级的数据源。gid 掩码 & 0xFFFF（P1-B2 裁决：byte2 为
-/// 纯噪声，40/92 非零但与 low16 零冲突；不掩码时 by_global 弹种表查不中）。
+/// shell_global_id 同时是弹种兜底链第三级的数据源。gid 掩码 & 0xFFFFFF（P1-B2 数据重裁）：
+/// byte3（bits24-31）为噪声——不掩码时 u32 值跳出 24 位弹种表键域（43% 查不中的元凶）；
+/// 但 bits16-23 承载局部 id 高位（IS-7 AP=0x8250a、T57=0x8532a 实测），旧 & 0xFFFF 掩码
+/// 把这类 id 截断成 0x250a 必然查不中。B2 样本（35 种去重 full=low24=low16）恰为局部
+/// id ≤0xFF 的车，掩盖了截断问题。
 /// 0x1b [21..33) = 末段速度方向向量（P1-B1 裁决）。
 pub(crate) fn collect_terrain_impacts(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, (u32, TerrainImpactData)> {
     let mut terrain_impacts: HashMap<u32, (u32, TerrainImpactData)> = HashMap::new();
@@ -416,7 +419,7 @@ pub(crate) fn collect_terrain_impacts(packets: &[(u32, f32, &[u8])]) -> HashMap<
         let a = &p[12..12 + args_len];
         let f = |o: usize| f32::from_le_bytes([a[o], a[o + 1], a[o + 2], a[o + 3]]);
         terrain_impacts.entry(u32::from_le_bytes([a[0], a[1], a[2], a[3]])).or_insert((
-            u32::from_le_bytes([a[4], a[5], a[6], a[7]]) & 0xFFFF,
+            u32::from_le_bytes([a[4], a[5], a[6], a[7]]) & 0xFFFFFF,
             TerrainImpactData {
                 material: a[8],
                 impact_point: [f(9), f(13), f(17)],

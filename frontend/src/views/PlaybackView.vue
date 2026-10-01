@@ -60,10 +60,13 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
     <div id="scene" ref="sceneEl"></div>
 
     <div id="topbar" class="panel">
-      <!-- 行 1：地图名 / 时间 / 双方队伍血量（条 + 具体数值）/ 中间战果 -->
+      <!-- 行 1：地图名 / 时间 -->
       <div class="tb-row">
         <span class="map">{{ store.mapName }}</span>
         <span class="timer">{{ store.timer }}</span>
+      </div>
+      <!-- 行 2：双方队伍血量条（含具体数值）+ 中间战果 -->
+      <div class="tb-row">
         <span class="hpline">
           <span class="hpwrap">
             <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
@@ -80,7 +83,7 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           </span>
         </span>
       </div>
-      <!-- 行 2：争霸实时点数（仅该场有点数广播时出现） -->
+      <!-- 行 3：争霸实时点数（仅该场有点数广播时出现） -->
       <div v-if="store.pointsFriend != null || store.pointsEnemy != null" class="tb-row tb-points">
         <span class="plbl">点数</span>
         <b><span class="t1">{{ store.pointsFriend ?? '—' }}</span> : <span class="t2">{{ store.pointsEnemy ?? '—' }}</span></b>
@@ -251,7 +254,7 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
             text-overflow: ellipsis; white-space: nowrap; }
 .pl .hpbar { width: 52px; height: 5px; background: #222a34; border-radius: 3px; flex: none; }
 .pl .hpbar i { display: block; height: 100%; border-radius: 3px; background: var(--ally); }
-#killfeed { position: absolute; top: 104px; left: 50%; transform: translateX(-50%);
+#killfeed { position: absolute; top: 132px; left: 50%; transform: translateX(-50%);
             display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
 .kf { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
       padding: 3px 12px; font-size: 12px; animation: kfin .18s ease-out; white-space: nowrap; }

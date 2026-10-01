@@ -9,6 +9,22 @@
 // 全画质档地图/地形从此一个请求都不发（构建期无检查，npm run build 不报错）
 import { assetBase, assetUrl } from './assetBase.js'
 
+// 契约版本门禁（与 WotBTools 消费端同一契约值）：agent 前端为纯 JS 且无 TS
+// 契约模块可复用，此处为最小实现——本地/服务端两条通道都必须过闸：错版 WASM
+// 或版本不匹配的服务端产物，此前会被 JSON.parse 后直接交给渲染层（缺
+// supremacy_bases/points/aim_frames 时静默半残）。
+const PLAYBACK_CONTRACT_VERSION = 2
+function assertPlaybackContract(data) {
+  if (!data || typeof data !== 'object') {
+    throw new Error('agent playback: 解析结果不是对象')
+  }
+  if (data.version !== PLAYBACK_CONTRACT_VERSION) {
+    throw new Error(
+      `agent playback: version=${String(data.version)}，不支持的契约版本（期望 ${PLAYBACK_CONTRACT_VERSION}）`)
+  }
+  return data
+}
+
 let wasmPromise = null
 
 async function loadWasm() {
@@ -32,14 +48,15 @@ export async function loadFromServer(file) {
     body: JSON.stringify({ file }),
   })
   if (!resp.ok) throw new Error(await resp.text())
-  return resp.json()
+  // 服务端通道同样过闸：后端版本与前端契约不匹配时显式失败，不做半残渲染
+  return assertPlaybackContract(await resp.json())
 }
 
 /** 本地通道：File/Blob → 浏览器文件接口 → WASM 解析 → PlaybackData（契约 v2 时序能力，纯客户端） */
 export async function loadFromLocalFile(fileObject) {
   const mod = await loadWasm()
   const bytes = new Uint8Array(await fileObject.arrayBuffer())
-  return JSON.parse(mod.parsePlayback(bytes))
+  return assertPlaybackContract(JSON.parse(mod.parsePlayback(bytes)))
 }
 
 /**

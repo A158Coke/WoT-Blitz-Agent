@@ -31,6 +31,33 @@ pub fn read_arena_bonus_type(raw: &[u8]) -> Option<u32> {
     v.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
 }
 
+/// 从回放**原始字节**读取客户端版本串（`data.wotreplay` 头部）。
+///
+/// 布局（crate `Data::from_reader` 同源，实测 `11.20.0`）：
+/// `magic u32(0x12345678) + u64 + [len u8 + client hash] + [len u8 + version] + u8 + packets`。
+/// 只读头部前若干字节，**不解析整包**（data.wotreplay 可达数 MB，为版本解析全包不划算）。
+/// 版本门禁（语义只在 11.19/11.20 验证）依赖此字段。
+pub fn read_client_version(raw: &[u8]) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(raw)).ok()?;
+    let mut f = zip.by_name("data.wotreplay").ok()?;
+    let mut buf = [0u8; 128];
+    let n = std::io::Read::read(&mut f, &mut buf).ok()?;
+    let b = &buf[..n];
+    if b.len() < 12 || u32::from_le_bytes([b[0], b[1], b[2], b[3]]) != 0x1234_5678 {
+        return None;
+    }
+    let mut o = 12usize;                       // magic(4) + u64(8)
+    let hlen = *b.get(o)? as usize;             // 长度前缀 hash
+    o += 1 + hlen;
+    let vlen = *b.get(o)? as usize;             // 长度前缀版本串
+    o += 1;
+    let v = b.get(o..o + vlen)?;
+    let text = std::str::from_utf8(v).ok()?;
+    // 版本串应可打印；否则视为布局不符（不猜）
+    text.chars().all(|c| c.is_ascii_graphic() || c == '.' || c == '_' || c == '-')
+        .then(|| text.to_string())
+}
+
 impl<'a> ReplayParser<'a> {
     /// 构造不带解析器的解析器（坦克名无法翻译，只能显示 id）。
     pub fn new() -> Self {
@@ -50,13 +77,16 @@ impl<'a> ReplayParser<'a> {
 
         // arenaBonusType 需从容器原始字节取（见 read_arena_bonus_type），
         // 在打开 Replay（消费 reader）之前读
-        let bonus_type = std::fs::read(path).ok().and_then(|raw| read_arena_bonus_type(&raw));
+        let raw_bytes = std::fs::read(path).ok();
+        let bonus_type = raw_bytes.as_deref().and_then(read_arena_bonus_type);
+        let client_version = raw_bytes.as_deref().and_then(read_client_version);
 
         let mut replay = Replay::open(File::open(path)?)
             .with_context(|| format!("Failed to open replay: {}", path.display()))?;
         let mut summary = self.parse_replay(&mut replay, &file_name)
             .with_context(|| format!("Failed to parse replay: {}", path.display()))?;
         summary.arena_bonus_type = bonus_type;
+        summary.client_version = client_version;
         Ok(summary)
     }
 
@@ -76,6 +106,14 @@ impl<'a> ReplayParser<'a> {
         // buffer = #301 补充字段。两者共用同一次读取。
         let br_dat = replay.read_battle_results_dat().ok();
         let arena_id = br_dat.as_ref().map(|d| d.arena_unique_id.to_string());
+        // 结算根字段（finishReason / 整秒时长）与 #201 段位：同一 buffer 再走两遍，
+        // 结构小、开销可忽略
+        let root_fields = br_dat.as_ref()
+            .map(|d| crate::wargaming::battle_results_extra::parse_root_fields(&d.buffer))
+            .unwrap_or_default();
+        let ranks = br_dat.as_ref()
+            .map(|d| crate::wargaming::battle_results_extra::parse_rank_entries(&d.buffer))
+            .unwrap_or_default();
         let settlements: std::collections::HashMap<u32, crate::wargaming::battle_results_extra::PlayerSettlement> =
             br_dat.as_ref()
                 .map(|dat| crate::wargaming::battle_results_extra::parse_settlement_extras(&dat.buffer))
@@ -193,6 +231,10 @@ impl<'a> ReplayParser<'a> {
                 destruction_assistance: settlement.and_then(|s| s.destruction_assistance),
                 gun_marks: settlement.and_then(|s| s.gun_marks),
                 damage_received: settlement.and_then(|s| s.damage_received).unwrap_or(0),
+                victory_points_earned: settlement.and_then(|s| s.victory_points_earned),
+                victory_points_seized: settlement.and_then(|s| s.victory_points_seized),
+                hitpoints_left: settlement.and_then(|s| s.hitpoints_left),
+                rank: ranks.get(&info.account_id).copied(),
             });
         }
 
@@ -200,6 +242,8 @@ impl<'a> ReplayParser<'a> {
         summary.file_name = file_name.to_string();
         summary.room_type = room_type;
         summary.arena_id = arena_id;   // arena_bonus_type 由 parse_file / 宿主入口后置填充
+        summary.finish_reason = root_fields.finish_reason;
+        summary.result_duration_secs = root_fields.duration_secs;
         summary.map_id = map_id;
         summary.map_name = map_name;
         summary.battle_duration_secs = battle_duration;

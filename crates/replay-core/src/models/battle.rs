@@ -19,6 +19,18 @@ pub struct BattleSummary {
     /// {2,4} 判定依据；room_type 字符串仅为其枚举名，不替代数值）。
     #[serde(default)]
     pub arena_bonus_type: Option<u32>,
+    /// 结算根字段 finishReason（1 全歼 EXTERMINATION / 6 积分上限 WIN_POINTS_CAP；
+    /// 其余值原始透传）。缺省 None = 未取得。
+    #[serde(default)]
+    pub finish_reason: Option<u32>,
+    /// 结算层公共战斗时长（**整秒**，root f5）。与 `battle_duration_secs`（meta.json
+    /// 来源）不同源——后者不是可靠的对局时钟，此字段才是结算口径。
+    #[serde(default)]
+    pub result_duration_secs: Option<u32>,
+    /// 客户端版本串（`data.wotreplay` 头部，如 `11.20.0`）。协议语义只在 11.19/11.20
+    /// 验证，消费方据此做版本门禁。缺省 None（不猜）。
+    #[serde(default)]
+    pub client_version: Option<String>,
     pub map_id: u32,
     pub map_name: String,
     /// 战斗总时长（秒）
@@ -76,6 +88,19 @@ pub struct PlayerSummary {
     /// 承受伤害（#301 f11；缺省即 0，0 为真实数值语义）
     #[serde(default)]
     pub damage_received: u32,
+    /// 争霸/积分模式获得点数（#301 f32；非该模式为 None）
+    #[serde(default)]
+    pub victory_points_earned: Option<u32>,
+    /// 争霸/积分模式夺取点数（#301 f33；非该模式为 None）
+    #[serde(default)]
+    pub victory_points_seized: Option<u32>,
+    /// 结算剩余血量（#301 f1，**全玩家**；负值/哨兵族为终态，原样透传）
+    #[serde(default)]
+    pub hitpoints_left: Option<i32>,
+    /// 段位/状态（root #201 info f9）。**模式相关语义随版本解释**（PROVEN/PARTIAL），
+    /// 仅作展示列，不做跨模式比较。
+    #[serde(default)]
+    pub rank: Option<u32>,
     /// 格挡伤害（被敌弹挡住的部分）
     pub damage_blocked: u32,
     /// 助攻伤害（如点亮协助）
@@ -127,6 +152,9 @@ impl BattleSummary {
             room_type: "Regular".to_string(),
             arena_id: None,
             arena_bonus_type: None,
+            finish_reason: None,
+            result_duration_secs: None,
+            client_version: None,
             map_id: 0,
             map_name: String::new(),
             battle_duration_secs: 0.0,
@@ -172,6 +200,11 @@ impl PlayerSummary {
             n_penetrations_dealt: 0,
             damage_dealt: 0,
             damage_received: 0,
+            victory_points_earned: None,
+            victory_points_seized: None,
+            hitpoints_left: None,
+            rank: None,
+            
             damage_blocked: 0,
             damage_assisted_1: 0,
             damage_assisted_2: 0,

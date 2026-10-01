@@ -200,3 +200,40 @@ fn result_p0_settlement_fields_smoke() {
     eprintln!("P0 字段: arena_id={:?} bonus_type={:?} 玩家数={}",
         aid.unwrap(), r.get("arena_bonus_type"), players.len());
 }
+
+/// P1 结算字段：finish_reason / result_duration_secs / client_version（结算级）
+/// 与 victory_points_earned/seized / hitpoints_left / rank（玩家级）。
+#[test]
+fn result_p1_settlement_fields_smoke() {
+    let Some(path) = largest_sample() else {
+        eprintln!("无回放样本，跳过");
+        return;
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    let r: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).unwrap()).unwrap();
+
+    // 结算级
+    let fr = r.get("finish_reason").and_then(|v| v.as_u64());
+    assert!(fr.is_some(), "finish_reason 应存在（root f4）");
+    let dur = r.get("result_duration_secs").and_then(|v| v.as_u64());
+    assert!(dur.is_some(), "result_duration_secs 应存在（root f5）");
+    assert!((1..=3600).contains(&dur.unwrap()), "结算时长为整秒且应在合理区间（got {dur:?}）");
+    let cv = r.get("client_version").and_then(|v| v.as_str());
+    assert!(cv.is_some(), "client_version 应存在（data.wotreplay 头）");
+    assert!(cv.unwrap().chars().next().unwrap().is_ascii_digit(), "版本串应形如 11.20.0（got {cv:?}）");
+
+    // 玩家级：hitpoints_left 全玩家在册（f1）
+    let players = r["players"].as_array().unwrap();
+    for p in players {
+        assert!(p.get("hitpoints_left").is_some(), "玩家缺 hitpoints_left（应全玩家输出）");
+        // victory_points / rank 允许缺失（非相关模式/版本），但键必须存在（Option 序列化为 null）
+        assert!(p.get("victory_points_earned").is_some());
+        assert!(p.get("rank").is_some());
+    }
+    let vp = players.iter().filter(|p| p["victory_points_earned"].is_u64()).count();
+    let rk = players.iter().filter(|p| p["rank"].is_u64()).count();
+    eprintln!("P1: finish_reason={fr:?} duration={dur:?}s client_version={cv:?} \
+               玩家={} 有点数者={vp} 有段位者={rk}",
+        players.len());
+}

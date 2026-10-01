@@ -24,6 +24,10 @@ pub struct PlayerSettlement {
     pub tank_id: u32,
     /// #301 f11 承受伤害（WotbTools PROVEN：缺省即为 0，为真实数值语义 → 输出端按 0）
     pub damage_received: Option<u32>,
+    /// #301 f32 争霸/积分模式获得点数（WotbTools PROVEN，270/616）
+    pub victory_points_earned: Option<u32>,
+    /// #301 f33 争霸/积分模式夺取点数（WotbTools PROVEN，178/616）
+    pub victory_points_seized: Option<u32>,
     /// 终局剩余血量；负值=哨兵族（-2 自动击毁、-3 未闭合禁猜），正=幸存余血
     pub hitpoints_left: Option<i32>,
     /// 死亡原因：-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境（4 未观测禁猜）
@@ -74,6 +78,8 @@ fn parse_player_entry(b: &[u8]) -> Option<PlayerSettlement> {
                 101 => s.account_id = v as u32,
                 103 => s.tank_id = v as u32,
                 11 => s.damage_received = Some(v as u32),
+                32 => s.victory_points_earned = Some(v as u32),
+                33 => s.victory_points_seized = Some(v as u32),
                 105 => s.death_reason = Some(v32),
                 119 => s.destruction_assistance = Some(v as u32),
                 120 => s.gun_marks = Some(v as u32),
@@ -84,6 +90,99 @@ fn parse_player_entry(b: &[u8]) -> Option<PlayerSettlement> {
         }
     }
     Some(s)
+}
+
+/// 结算根字段（`BattleResultsDat.buffer` 顶层）：finishReason + 结算时长。
+///
+/// WotBTools PROVEN（docs/research/replay/battle-results.md）：
+/// - root **f4** = finishReason（1 EXTERMINATION 全歼 / 6 WIN_POINTS_CAP 积分上限；
+///   语料仅见 1/6，其他值按原始透传）；
+/// - root **f5** = 结算层公共战斗时长（**整秒**）；与 meta.json#battleDuration 不同源，
+///   后者不是可靠的对局时钟。
+///
+/// 缺省一律 None（unknown ≠ 0）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SettlementRootFields {
+    pub finish_reason: Option<u32>,
+    pub duration_secs: Option<u32>,
+}
+
+pub fn parse_root_fields(proto: &[u8]) -> SettlementRootFields {
+    let mut out = SettlementRootFields::default();
+    let mut o = 0usize;
+    while o < proto.len() {
+        let Some(key) = pb_varint(proto, &mut o) else { break };
+        let (field, wt) = (key >> 3, key & 7);
+        if wt == 0 {
+            let Some(v) = pb_varint(proto, &mut o) else { break };
+            match field {
+                4 => out.finish_reason = Some(v as u32),
+                5 => out.duration_secs = Some(v as u32),
+                _ => {}
+            }
+        } else if !skip_field(proto, &mut o, wt) {
+            break;
+        }
+    }
+    out
+}
+
+/// 段位/状态（root **#201** 名册）：`#201 = { account_id@1, info@2 }`，`info` **f9** =
+/// participant rank/status（WotBTools PROVEN，704/704）。返回 account_id → rank。
+///
+/// 注意：语料证明该 rank 的**模式相关语义随版本解释**（PROVEN/PARTIAL），故消费方
+/// 应仅作展示列，不做跨模式比较。
+pub fn parse_rank_entries(proto: &[u8]) -> std::collections::HashMap<u32, u32> {
+    use std::collections::HashMap;
+    let mut out: HashMap<u32, u32> = HashMap::new();
+    let mut o = 0usize;
+    while o < proto.len() {
+        let Some(key) = pb_varint(proto, &mut o) else { break };
+        let (field, wt) = (key >> 3, key & 7);
+        if field == 201 && wt == 2 {
+            let Some(len) = pb_varint(proto, &mut o) else { break };
+            let end = o + len as usize;
+            if end > proto.len() { break }
+            let entry = &proto[o..end];
+            let mut io = 0usize;
+            let mut account_id: Option<u32> = None;
+            let mut rank: Option<u32> = None;
+            while io < entry.len() {
+                let Some(ikey) = pb_varint(entry, &mut io) else { break };
+                let (ifield, iwt) = (ikey >> 3, ikey & 7);
+                if ifield == 1 && iwt == 0 {
+                    let Some(v) = pb_varint(entry, &mut io) else { break };
+                    account_id = Some(v as u32);
+                } else if ifield == 2 && iwt == 2 {
+                    let Some(ilen) = pb_varint(entry, &mut io) else { break };
+                    let iend = io + ilen as usize;
+                    if iend > entry.len() { break }
+                    // info 内取 f9 = rank
+                    let mut jo = io;
+                    while jo < iend {
+                        let Some(jkey) = pb_varint(entry, &mut jo) else { break };
+                        let (jfield, jwt) = (jkey >> 3, jkey & 7);
+                        if jwt == 0 {
+                            let Some(v) = pb_varint(entry, &mut jo) else { break };
+                            if jfield == 9 { rank = Some(v as u32); }
+                        } else if !skip_field(entry, &mut jo, jwt) {
+                            break;
+                        }
+                    }
+                    io = iend;
+                } else if !skip_field(entry, &mut io, iwt) {
+                    break;
+                }
+            }
+            if let (Some(a), Some(r)) = (account_id, rank) {
+                out.insert(a, r);
+            }
+            o = end;
+        } else if !skip_field(proto, &mut o, wt) {
+            break;
+        }
+    }
+    out
 }
 
 /// 解析结算 protobuf 根消息（`BattleResultsDat.buffer`）：提取全部 #301 战斗者条目。

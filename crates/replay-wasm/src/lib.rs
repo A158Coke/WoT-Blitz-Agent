@@ -65,10 +65,12 @@ pub fn result_json(bytes: &[u8]) -> anyhow::Result<String> {
     // arenaBonusType 来自容器 meta.json 原始内容（crate 的 Meta 未暴露该字段），
     // 需在打开 Replay（消费 reader）之前从字节读
     let arena_bonus_type = wotb_replay_core::replay::parser::read_arena_bonus_type(bytes);
+    let client_version = wotb_replay_core::replay::parser::read_client_version(bytes);
 
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let mut summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     summary.arena_bonus_type = arena_bonus_type;
+    summary.client_version = client_version;
     Ok(serde_json::to_string(&summary)?)
 }
 

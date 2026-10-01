@@ -143,6 +143,25 @@ NMaterial 材质树贴图），LOD/可见性/开关态语义镜像 DAVA `RenderO
 地表着色逐分支复刻客户端 `Landscape/tilemask-fp.sl`（GLOBAL_TINT / SEPARATE_LM /
 SCALED_TILES / HEIGHT_BLEND）。
 
+坦克模型（`model.glb` / `collision.glb`）目前仍以 **BlitzKit 缓存**
+`data/cache/models/` 为运行期来源；仓库另备一条**本机客户端自产**的并行管线，
+产物写到 `data/cache/local_models/`（不替换数据源，两者可逐辆对照）：
+
+```bash
+python tools/export_tank_glb.py --all                 # 全量 735 辆 → data/cache/local_models/<id>/
+python tools/export_tank_glb.py --tank 9489 --tank 7169
+python tools/export_tank_glb.py --all --texture-mode none   # 只比几何（最快）
+python tools/compare_tank_glb.py --all --audit        # 逐字节数值等价回归
+python tools/compare_tank_glb.py --tank 9489 --render # 并排渲染三联图（可直接看图判"效果"）
+```
+
+对照结论（2026-10-01 实测，735 辆全量）：`collision.glb` **735/735**、`model.glb`
+**733/735** 与 BlitzKit 产物逐字节等价（含节点顺序与 POSITION/NORMAL/TEXCOORD_0/1/2/索引
+原始字节）；并排渲染逐辆轮廓 IoU ≈ 1.000。贴图**槽位集合与 BlitzKit 完全对齐**
+（731/735 图片数相同、无一辆缺槽位；baseColor 逐像素 89.8% 一致；alphaMode 一致 99.1%）。
+`normal` / `metallicRoughness` 两槽按 PBR 语义另行装配，与 BlitzKit 的指派不同属**有意为之**
+——其指派本身不成立，详见 [docs/local-model-export.md](docs/local-model-export.md)。
+
 #### 地图资产清单（`data/cache/maps/<space>.*`，运行时缓存）
 
 | 文件 | 说明 |
@@ -375,6 +394,9 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 | `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
 | `docs/` | 项目文档：[索引](docs/index.md)、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
+| `tools/export_tank_glb.py` | 坦克 GLB 的**本机客户端**自产管线（并行于 BlitzKit 缓存，见上） |
+| `tools/compare_tank_glb.py` | 两来源坦克模型的对照器：数值等价回归 + 并排渲染差异图 |
+| `tools/export_tank_icons.py` | 坦克封面图的**本机客户端**自产管线（`Gfx/UI/BigTankIcons`，剥 DVPL 得裸 webp）→ `data/cache/local_tank_icons/` |
 | `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
 | `data/cache/` | 运行时缓存（gitignore）：`models/` 坦克 GLB、`maps/` 地图资产、`tank_images/` 封面、`terrain/` 地形高度场、`screenshots/` 截图 |
 | `data/replay_samples/` | 示例回放（仓库内置 3 个） |

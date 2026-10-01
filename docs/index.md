@@ -29,6 +29,13 @@
 | [docs/feasibility-pb-local-extraction.md](feasibility-pb-local-extraction.md) | `tanks.pb`/`models.pb` 可替代；735/735 覆盖、零实质分歧；唯一缺口 `tank_id`（有两条替代路径） | ⬜ 待决策（约 3–5 人日） |
 | [docs/feasibility-glb-local-export.md](feasibility-glb-local-export.md) | 客户端自行导出 `model.glb`/`collision.glb`：全量 735 辆验收——collision **735/735 完全等价**、model **700/735 等价**（余 35 辆已归为 4 类规则缺口）；贴图槽位已完整逆向，**待决策验收口径** | ⬜ 待决策（约 4–7 人日） |
 
+## 实现记录（已落地）
+
+| 文档 | 状态 |
+|---|---|
+| [docs/decoupling-status.md](decoupling-status.md) | **解耦进度总览与剩余清单**（2026-10-02）：换源本体未动（运行期 0 引用、33 处消费点、资产面仍是 BlitzKit）；已落地 GLB 与封面两条自产管线；含待决策口径（数据模型塌缩 / 25 辆无显示名 / `is_collector` 快照 / `hull_traverse`）与"不再算待办"的 BlitzKit 侧差异 |
+| [docs/local-model-export.md](local-model-export.md) | ✅ 已实施（2026-10-01）：报告 B 的几何替代做成 `tools/export_tank_glb.py`，验收口径从"按可达节点求和"收紧到**逐字节 + 节点顺序**——`collision.glb` **735/735**、`model.glb` **733/735** 等价（余 2 辆为 BlitzKit 侧行为，见该文 §5）；贴图槽位与 BlitzKit 完全对齐（731/735 图片数相同、无缺槽位）。**不替换运行期数据源**（产物落 `data/cache/local_models/`） |
+
 ## 逆向分析报告（历史定稿，部分单点结论已被后续修正）
 
 这三篇是逆向过程的阶段性完整报告，反汇编/协议事实仍然有效；

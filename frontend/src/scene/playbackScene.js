@@ -1502,6 +1502,137 @@ export function initPlayback(container, store) {
   const TRAJ_RADIUS = 0.11;
   const TRACER_RADIUS = 0.22;
   let trajLines = [];
+
+  // ---------- 战斗反馈 transient（语义与 WotBTools 2D 对齐）----------
+  // 关键语义：**壁钟（真实 ms）寿命**，而非回放时钟——任意倍速下可读时长相近
+  // （2D battlePlayback.js 同款常量与注释）。因用壁钟，暂停时 transient 自然走完，
+  // 无需特殊处理；seek 则清空并重置事件游标（不补播历史动画）。
+  const FLOAT_DMG_MS = 1000;   // 伤害飘字
+  const BURST_MS = 700;        // 击毁爆散
+  let floatDmgs = [];          // { sp, tex, born, baseY, group }
+  let burstFx = [];            // { g, born, rings }
+  let dmgEvents = [];          // { t, eid, hpLoss }（回放时钟，升序）
+  let burstEvents = [];        // { t, eid }（回放时钟，升序）
+  let dmgPtr = 0, burstPtr = 0;
+
+  // 事件源：伤害 = 血量链相邻下降幅值（幅值即丢失血量；无逐段伤害归属时仍可判
+  // "谁掉了多少"）；击毁 = kills（死亡终态 × 击杀播报归属增强）。
+  function buildTransientSources() {
+    dmgEvents = [];
+    for (const v of DATA.vehicles || []) {
+      const hp = v.hp || [];
+      for (let i = 1; i < hp.length; i++) {
+        const loss = hp[i - 1][1] - hp[i][1];
+        if (loss > 0) dmgEvents.push({ t: hp[i][0], eid: v.eid, hpLoss: loss });
+      }
+    }
+    dmgEvents.sort((a, b) => a.t - b.t);
+    burstEvents = (DATA.kills || []).map((k) => ({ t: k.t, eid: k.victim_eid }))
+      .sort((a, b) => a.t - b.t);
+    dmgPtr = 0; burstPtr = 0;
+  }
+
+  function vehicleByEid(eid) { return V.find((x) => x.def.eid === eid); }
+
+  // 伤害飘字：受击车上方浮出 "-<lost>"，上浮 + 淡出（1s）
+  function spawnFloatDmg(eid, hpLoss) {
+    const v = vehicleByEid(eid);
+    if (!v || !v.group.visible) return;
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
+    const c = cv.getContext('2d');
+    c.font = 'bold 68px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.lineWidth = 8; c.strokeStyle = 'rgba(0,0,0,.78)';
+    const text = '-' + hpLoss;
+    c.strokeText(text, 128, 64);
+    c.fillStyle = '#ffd166'; c.fillText(text, 128, 64);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, depthTest: false, depthWrite: false, transparent: true, opacity: 1,
+    }));
+    sp.renderOrder = 1001;
+    sp.scale.set(4, 2, 1);
+    sp.position.copy(v.group.position); sp.position.y += 3.2;
+    scene.add(sp);
+    floatDmgs.push({ sp, tex, born: performance.now(), baseY: sp.position.y, group: v.group });
+  }
+
+  // 击毁爆散：双层扩散环 + 中心球，700ms 内扩张并淡出
+  function spawnBurst(eid) {
+    const v = vehicleByEid(eid);
+    if (!v || !v.group.visible) return;
+    const g = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffa53a, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const rings = [];
+    for (const r0 of [0.8, 1.6]) {
+      const mesh = new THREE.Mesh(new THREE.RingGeometry(r0, r0 + 0.45, 28), mat.clone());
+      mesh.rotation.x = -Math.PI / 2;
+      g.add(mesh); rings.push(mesh);
+    }
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 10), mat.clone());
+    g.add(ball);
+    g.position.copy(v.group.position);
+    scene.add(g);
+    burstFx.push({ g, born: performance.now(), rings, ball });
+  }
+
+  function updateTransients() {
+    const now = performance.now();
+    for (let i = floatDmgs.length - 1; i >= 0; i--) {
+      const f = floatDmgs[i];
+      const k = (now - f.born) / FLOAT_DMG_MS;
+      if (k >= 1) {
+        scene.remove(f.sp); f.sp.material.dispose(); f.tex.dispose(); f.sp.material.map = null;
+        floatDmgs.splice(i, 1);
+        continue;
+      }
+      // 跟随车辆水平漂移 + 上浮 + 线性淡出
+      f.sp.position.x = f.group.position.x;
+      f.sp.position.z = f.group.position.z;
+      f.sp.position.y = f.baseY + k * 4.5;
+      f.sp.material.opacity = 1 - k;
+    }
+    for (let i = burstFx.length - 1; i >= 0; i--) {
+      const b = burstFx[i];
+      const k = (now - b.born) / BURST_MS;
+      if (k >= 1) {
+        scene.remove(b.g);
+        for (const rr of b.rings) { rr.geometry.dispose(); rr.material.dispose(); }
+        b.ball.geometry.dispose(); b.ball.material.dispose();
+        burstFx.splice(i, 1);
+        continue;
+      }
+      for (let j = 0; j < b.rings.length; j++) {
+        b.rings[j].scale.setScalar(1 + k * (2.2 + j * 1.6));
+        b.rings[j].material.opacity = 0.85 * (1 - k);
+      }
+      b.ball.scale.setScalar(1 + k * 1.5);
+      b.ball.material.opacity = 0.7 * (1 - k);
+    }
+  }
+
+  function clearTransients() {
+    for (const f of floatDmgs) {
+      scene.remove(f.sp); f.sp.material.dispose(); f.tex.dispose();
+    }
+    floatDmgs.length = 0;
+    for (const b of burstFx) {
+      scene.remove(b.g);
+      for (const rr of b.rings) { rr.geometry.dispose(); rr.material.dispose(); }
+      b.ball.geometry.dispose(); b.ball.material.dispose();
+    }
+    burstFx.length = 0;
+    dmgPtr = 0; burstPtr = 0;   // 游标重置：seek 后不补播历史动画
+  }
+
+  // 调试钩子（?debug）：transient 触发计数与在飞数量
+  if (DEBUG) window.__transients = () => ({
+    dmgTotal: dmgEvents.length, dmgPtr,
+    burstTotal: burstEvents.length, burstPtr,
+    floatAlive: floatDmgs.length, burstAlive: burstFx.length,
+  });
   function spawnShot(s) {
     const from = new THREE.Vector3(-s.from[0], s.from[1], s.from[2]);
     const to = new THREE.Vector3(-s.to[0], s.to[1], s.to[2]);
@@ -1788,6 +1919,7 @@ export function initPlayback(container, store) {
     clampCameraTarget();
     controls.update();
     updateSupremacyBases();
+    updateTransients();
     updateLabels();
     renderer.render(scene, camera);
     // 标签覆盖画布：同一相机，标签恒在主场景之上
@@ -1800,6 +1932,14 @@ export function initPlayback(container, store) {
     while (shotPtr < shots.length && shots[shotPtr].t_fire <= T) { spawnShot(shots[shotPtr]); shotPtr++; }
     updateTracers();
     advanceKills();
+    // 战斗反馈触发（游标单调前进；seek 时由 clearTransients 重置，不补播）
+    while (dmgPtr < dmgEvents.length && dmgEvents[dmgPtr].t <= T) {
+      const e = dmgEvents[dmgPtr++];
+      spawnFloatDmg(e.eid, e.hpLoss);
+    }
+    while (burstPtr < burstEvents.length && burstEvents[burstPtr].t <= T) {
+      spawnBurst(burstEvents[burstPtr++].eid);
+    }
     for (const v of V) applyPose(v);
     updateRoster(); updateScore();
     // HUD → store
@@ -1908,6 +2048,7 @@ export function initPlayback(container, store) {
 
   // 动态层（弹道/弹着点/轨迹线）清除：与 seekTo 共用一条 dispose 路径
   function clearEffects() {
+    clearTransients();   // 战斗反馈（飘字/爆散）：seek 后不补播
     for (const tr of tracers) {
       scene.remove(tr.mesh);
       tr.mesh.geometry.dispose(); tr.mesh.material.dispose();
@@ -2010,6 +2151,7 @@ export function initPlayback(container, store) {
     loadMapImage().catch(e => console.warn('地图资产加载失败（回退网格）:', e));
     buildVehicles();
     buildRoster();
+    buildTransientSources();   // 战斗反馈事件源（伤害/击毁）
     if (DEBUG) window.__pbData = DATA;   // 调试钩子：检查 contract v2 字段到达情况
     buildSupremacyBases();
     T = DATA.meta.t_start;

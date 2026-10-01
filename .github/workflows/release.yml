@@ -84,5 +84,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            wotb-agent-*-win64.zip
             wotb-replay-wasm-*.zip

@@ -90,6 +90,22 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
         </div>
       </div>
     </div>
+    <!-- 未知阵营（team=0，联表失败/观察者）：中性 fail-visible，不并入任何一队 -->
+    <div v-if="store.roster.unknown.length" id="team-unknown" class="team panel unknown">
+      <h3>未识别阵营</h3>
+      <div class="roster">
+        <div
+          v-for="p in store.roster.unknown" :key="p.eid"
+          class="pl" :class="{ dead: p.dead, followed: p.followed }"
+          @click="scene.setFollow(p.eid)"
+        >
+          <span class="dot" :style="{ background: p.dot }"></span>
+          <span class="nick">{{ p.nick }}</span>
+          <span class="tank">{{ p.tank }}</span>
+          <span class="hpbar"><i :style="{ width: p.frac + '%' }"></i></span>
+        </div>
+      </div>
+    </div>
 
     <div id="killfeed">
       <div v-for="kf in store.killfeed" :key="kf.id" class="kf">
@@ -177,6 +193,9 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 .team { top: 60px; width: 240px; padding: 6px; max-height: calc(100% - 190px); overflow-y: auto; }
 #team1 { left: 10px; }
 #team2 { right: 10px; }
+/* 未知阵营中性组：居中挂靠顶部下方，灰调 fail-visible */
+#team-unknown { left: 50%; transform: translateX(-50%); width: 220px; }
+#team-unknown h3 { color: #9aa5b1; }
 .team h3 { font-size: 12px; color: var(--dim); margin: 2px 4px 6px; font-weight: 500; }
 .pl { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
 .pl:hover { background: rgba(255, 255, 255, .06); }

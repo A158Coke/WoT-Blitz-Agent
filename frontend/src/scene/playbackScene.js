@@ -565,27 +565,38 @@ export function initPlayback(container, store) {
           () => (isCard ? makeBillboardMaterial(m) : (() => {
           // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
           // 无场景光照——用不受光材质（染色值经 baseColorFactor→color 传入）
+          // 客户端 SpeedTree = AlphaTest+AlphaBlend 双通道。但导出材质多为
+          // 【不透明度=1 的伪透明】（transparent 却 opacity 1）：这类走混合通道会进
+          // 透明渲染队列，大量重叠植被面按深度排序不稳定 → 成片闪烁。按不透明度分流：
+          //   不透明度≈1 → 不透明管线 + 裁切（排序无关，消除闪烁且更快）
+          //   真透明      → 混合 + 不写深度（减少互遮挡）
+          const opaqueEnough = (m.opacity ?? 1) >= 0.99;
           if ((m.name || '').startsWith('ST|')) {
             const bm = new THREE.MeshBasicMaterial({
               map: m.map || null,
               color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
-              transparent: true,          // 客户端 SpeedTree = AlphaTest+AlphaBlend
-              opacity: m.opacity ?? 1,    // 双通道；此处混合渲染软边缘
+              transparent: !opaqueEnough,
+              opacity: m.opacity ?? 1,
               side: THREE.DoubleSide,
-              depthWrite: true,
+              depthWrite: opaqueEnough ? true : false,
             });
-            bm.alphaTest = 0.05;          // 仅剔近全透明像素
+            bm.alphaTest = opaqueEnough ? 0.33 : 0.05;   // 不透明：按 MASK 量级裁切
             bm.toneMapped = false;
             return bm;
           }
+          // 伪透明（BLEND 但不透明度≈1）一律转不透明 + 裁切，消除透明排序闪烁；
+          // 真透明保持混合但不写深度（避免互遮挡抖动）
+          const pseudoOpaque = !!m.transparent && (m.opacity ?? 1) >= 0.99;
           const nm = new THREE.MeshLambertMaterial({
             map: m.map || null,
             color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
-            transparent: !!m.transparent,
+            transparent: !!m.transparent && !pseudoOpaque,
             opacity: m.opacity ?? 1,
             side: THREE.DoubleSide,
           });
           if (m.alphaMode === 'MASK') nm.alphaTest = m.alphaCutoff || 0.33;
+          if (pseudoOpaque) nm.alphaTest = 0.33;
+          if (nm.transparent) nm.depthWrite = false;
           nm.flatShading = true;
           return nm;
         })()));
@@ -626,6 +637,10 @@ export function initPlayback(container, store) {
               if (!mm || !mm.transparent) continue;
               if (mm.depthWrite === true) mm.depthWrite = false;
               mm.side = THREE.FrontSide;
+              // 与地形/自身共面时的 z-fighting 防护（透明面不写深度仍会因共面而闪）
+              mm.polygonOffset = true;
+              mm.polygonOffsetFactor = -1;
+              mm.polygonOffsetUnits = -1;
               mm.needsUpdate = true;
             }
             o.renderOrder = -1;   // 水面先于其余半透明层绘制
@@ -685,6 +700,27 @@ export function initPlayback(container, store) {
                        longEdgePct: +(100 * over / Math.max(1, count)).toFixed(1) });
           });
           return out.slice(0, 10);
+        };
+        if (DEBUG) window.__transparentMeshes = () => {
+          // 列出全部透明网格（闪烁排查）：名 / opacity / depthWrite / side / 材质名
+          const out = [];
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh || !o.material) return;
+            const ms = Array.isArray(o.material) ? o.material : [o.material];
+            for (const m of ms) {
+              if (!m || !m.transparent) continue;
+              const g = o.geometry;
+              const idx = g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0);
+              out.push({
+                mesh: (o.name || '').slice(0, 34),
+                mat: (m.name || '').slice(0, 22),
+                opacity: m.opacity, depthWrite: m.depthWrite, depthTest: m.depthTest,
+                side: m.side, tris: Math.round(idx / 3),
+                waterRe: /water|sea|lake|river|fountain/i.test(o.name || ''),
+              });
+            }
+          });
+          return { count: out.length, big: out.filter(x => x.tris > 200).slice(0, 25) };
         };
         if (DEBUG) window.__sceneryDetail = () => {
           const groups = new Map(); const all = [];

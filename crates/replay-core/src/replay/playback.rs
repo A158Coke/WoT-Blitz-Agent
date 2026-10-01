@@ -47,6 +47,9 @@ pub struct PlaybackPlayer {
 }
 
 /// 构建输入：packets + 战绩联表 + 俯仰极限锚定表 + 地图元信息
+/// （`players`/`author_account_id` 仅由 [`build_playback_data`] 用于
+/// [`crate::replay::model::ReplayModel::scan`] 联表；投影层身份一律取模型，
+/// 见 [`PlaybackRenderInput`]）。
 pub struct PlaybackInput<'a> {
     pub packets: &'a [(u32, f32, &'a [u8])],
     pub players: Vec<PlaybackPlayer>,
@@ -58,6 +61,20 @@ pub struct PlaybackInput<'a> {
     pub pitch_limits: &'a GunPitchLimits,
     /// tank_id → 坦克名（调用方由 TankResolver 预解析；缺失可传空表）
     pub tank_names: HashMap<u32, String>,
+}
+
+/// 投影（渲染）入参：identity 一律来自 [`crate::replay::model::ReplayModel`] 实体并表
+/// （eid → 昵称/account_id/team/tank_id/is_author），本结构**不含花名册**——投影层从
+/// 类型上不可能重新 JOIN。此前 `from_model` 拿 `timeline.entity_names` + 花名册重联表，
+/// 与模型构成双事实源（昵称规则改动会出现"切面修好、投影又坏"的漂移）。
+pub struct PlaybackRenderInput<'a> {
+    /// 胜方队伍（1/2，0 = 平局/未知）
+    pub winner_team: u8,
+    pub map_id: u32,
+    pub map_name: String,
+    pub pitch_limits: &'a GunPitchLimits,
+    /// tank_id → 坦克名（调用方由 TankResolver 预解析；缺失可传空表）
+    pub tank_names: &'a HashMap<u32, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -363,21 +380,30 @@ pub fn build_playback_data(input: &PlaybackInput) -> anyhow::Result<PlaybackData
         author_account_id: input.author_account_id,
         pitch_limits: input.pitch_limits,
     })?;
-    from_model(&model, input)
+    let render = PlaybackRenderInput {
+        winner_team: input.winner_team,
+        map_id: input.map_id,
+        map_name: input.map_name.clone(),
+        pitch_limits: input.pitch_limits,
+        tank_names: &input.tank_names,
+    };
+    from_model(&model, &render)
 }
 
 /// 从内部模型投影回放切面：位姿滤波/0.1s 网格/角度解卷绕/击杀归属增强都在本层完成，
-/// 模型只提供原始采样与事件。
+/// 模型只提供原始采样与事件；身份（昵称/账号/队伍/tank_id/作者标记）一律读模型实体并表。
 pub fn from_model(
     model: &crate::replay::model::ReplayModel,
-    input: &PlaybackInput,
+    render: &PlaybackRenderInput,
 ) -> anyhow::Result<PlaybackData> {
-    // 作者昵称 = battle_results 联表内作者账号的昵称（回放自身数据，不依赖文件名）
-    let author_nickname = input.players.iter()
-        .find(|p| p.account_id == input.author_account_id)
-        .map(|p| p.nickname.clone())
-        .unwrap_or_default();
+    // 作者档案 = 模型实体并表产物（identity 唯一事实源，本函数不再触碰花名册）
+    let author_rec = model.entities.iter().find(|e| e.is_author);
+    let author_nickname = author_rec.and_then(|e| e.nickname.clone()).unwrap_or_default();
     let author_player_eid = model.timeline.author_eid;
+
+    // 实体档案索引：eid → 模型并表记录（昵称/账号/队伍/tank_id 全部取此）
+    let ent_by_eid: HashMap<u32, &crate::replay::model::EntityRecord> = model.entities.iter()
+        .map(|e| (e.eid, e)).collect();
 
     // 实体索引：模型原始流（type=10 + prop2，车辆筛选 = 双流交集）
     let st10 = &model.timeline.poses;
@@ -430,13 +456,10 @@ pub fn from_model(
     }
     let samples_n = ((t_end - t_start) / GRID_DT).ceil() as usize + 1;
     let meta = PlaybackMeta {
-        map_id: input.map_id,
-        map_name: input.map_name.clone(),
-        winner_team: input.winner_team,
-        friendly_team: input.players.iter()
-            .find(|p| p.account_id == input.author_account_id)
-            .map(|p| p.team)
-            .unwrap_or(0),
+        map_id: render.map_id,
+        map_name: render.map_name.clone(),
+        winner_team: render.winner_team,
+        friendly_team: author_rec.and_then(|e| e.team).unwrap_or(0),
         author_eid: author_player_eid,
         t_start: r2(t_start),
         samples: samples_n,
@@ -453,16 +476,12 @@ pub fn from_model(
         let clocks: Vec<f32> = st10[eid].iter().map(|s| s.clock).collect();
 
         let nickname = entity_names.get(eid).cloned().unwrap_or_default();
-        let player = input.players.iter()
-            .find(|pl| !nickname.is_empty() && pl.nickname == nickname);
-        let is_author = if author_player_eid != 0 {
-            *eid == author_player_eid
-        } else {
-            !author_nickname.is_empty() && nickname == author_nickname
-        };
+        // 身份 = 模型实体并表（scan 期一次 JOIN 的产物；此处只读取不重联）
+        let rec = ent_by_eid.get(eid).copied();
+        let is_author = rec.map(|r| r.is_author).unwrap_or(false);
         // 俯仰极限锚定：本车昵称优先；作者无锚定时沿用其表项（与作者路径 prop9 兜底同级）
-        let limits = input.pitch_limits.get(nickname.as_str())
-            .or_else(|| input.pitch_limits.get(author_nickname.as_str()).filter(|_| is_author));
+        let limits = render.pitch_limits.get(nickname.as_str())
+            .or_else(|| render.pitch_limits.get(author_nickname.as_str()).filter(|_| is_author));
 
         // prop2 流在收录条件（st10 ∧ prop2 双流交集）下必然存在——缺流即内部不变量破坏
         let Some(prop2_series) = prop2.get(eid) else {
@@ -524,11 +543,12 @@ pub fn from_model(
 
         vehicles_out.push(VehicleTrack {
             eid: *eid,
-            account_id: player.map(|p| p.account_id).unwrap_or(0),
+            account_id: rec.and_then(|r| r.account_id).unwrap_or(0),
             nickname,
-            tank_id: player.map(|p| p.tank_id).unwrap_or(0),
-            tank_name: player.and_then(|p| input.tank_names.get(&p.tank_id).cloned()).unwrap_or_default(),
-            team: player.map(|p| p.team).unwrap_or(0),
+            tank_id: rec.and_then(|r| r.tank_id).unwrap_or(0),
+            tank_name: rec.and_then(|r| r.tank_id)
+                .and_then(|tid| render.tank_names.get(&tid).cloned()).unwrap_or_default(),
+            team: rec.and_then(|r| r.team).unwrap_or(0),
             is_author,
             max_hp: initial_hp.get(eid).map(|(_, h)| *h).unwrap_or(0),
             pos,

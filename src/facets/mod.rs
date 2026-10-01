@@ -20,7 +20,7 @@ pub fn export_cli(
     tank_cache: Option<&Path>,
 ) -> Result<()> {
     use wotb_replay_core::replay::model::{ReplayModel, ScanInput};
-    use wotb_replay_core::replay::playback::{PlaybackInput, PlaybackPlayer};
+    use wotb_replay_core::replay::playback::PlaybackPlayer;
     use crate::wargaming::tank_resolver::TankResolver;
 
     let want: Vec<String> = parts.split(',')
@@ -96,17 +96,14 @@ pub fn export_cli(
                     .map(|p| (p.tank_id, p.tank_name.clone()))
                     .filter(|(_, n)| !n.is_empty())
                     .collect();
-                let input = PlaybackInput {
-                    packets: &packets,
-                    players: roster.clone(),
-                    author_account_id: summary.author_account_id,
+                let render = crate::replay::playback::PlaybackRenderInput {
                     winner_team: summary.winner_team,
                     map_id: summary.map_id,
                     map_name: map_name.clone(),
                     pitch_limits: &limits,
-                    tank_names,
+                    tank_names: &tank_names,
                 };
-                let facet = crate::replay::playback::from_model(&model, &input)?;
+                let facet = crate::replay::playback::from_model(&model, &render)?;
                 println!(
                     "  回放切面   → {}/{}.facet.playback.json（{} 车 / {} 发 / 可见窗口 {}）",
                     dir.display(), stem, facet.vehicles.len(), facet.shots.len(), facet.visibility.len()

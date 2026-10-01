@@ -27,7 +27,7 @@ use std::io::Cursor;
 use wotb_replay_core::replay::combat::GunPitchLimits;
 use wotb_replay_core::replay::model::{ReplayModel, ScanInput};
 use wotb_replay_core::replay::parser::ReplayParser;
-use wotb_replay_core::replay::playback::{PlaybackInput, PlaybackPlayer};
+use wotb_replay_core::replay::playback::{PlaybackPlayer, PlaybackRenderInput};
 
 /// 包流解码（三能力共用的类型映射步）：payload → (type, clock, raw)。
 fn decode_packets<R: std::io::Read + std::io::Seek>(
@@ -83,17 +83,16 @@ pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
         author_account_id: summary.author_account_id,
         pitch_limits: &limits,
     })?;
-    let input = PlaybackInput {
-        packets: &packets,
-        players: roster_of(&summary),
-        author_account_id: summary.author_account_id,
+    // 投影层身份一律取模型实体并表（客户端无 tank_names，前端按 tank_id 自行映射展示名）
+    let empty_tank_names: HashMap<u32, String> = HashMap::new();
+    let render = PlaybackRenderInput {
         winner_team: summary.winner_team,
         map_id: summary.map_id,
         map_name: summary.map_name.clone(),
         pitch_limits: &limits,
-        tank_names: HashMap::new(),
+        tank_names: &empty_tank_names,
     };
-    let playback = wotb_replay_core::replay::playback::from_model(&model, &input)?;
+    let playback = wotb_replay_core::replay::playback::from_model(&model, &render)?;
     Ok(serde_json::to_string(&playback)?)
 }
 

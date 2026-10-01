@@ -236,6 +236,10 @@ pub(crate) fn tank_data_value_prefixed(tank_id: u32, base_prefix: &str) -> Value
         "configs": configs.as_ref(),
         "hp": info.as_ref().and_then(|i| i.hp),
         "speed": info.as_ref().and_then(|i| i.speed_forward),
+        // 顶层显式前后极速（形状对齐 /api/tank_detail；此前只有 `speed` 数字，
+        // 消费端按 tank_detail 形状读 speed_forward/speed_reverse 会全落空）
+        "speed_forward": info.as_ref().and_then(|i| i.speed_forward),
+        "speed_reverse": info.as_ref().and_then(|i| i.speed_reverse),
         "gun_depression": info.as_ref().and_then(|i| i.gun_depression).map(|v| v as f64),
         "gun_elevation": info.as_ref().and_then(|i| i.gun_elevation).map(|v| v as f64),
         "turret_traverse_left": info.as_ref().and_then(|i| i.turret_traverse_left).map(|v| v as f64),

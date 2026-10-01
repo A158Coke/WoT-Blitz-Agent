@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use super::combat::{
     AssaultBaseStateTransition, self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
+    ConsumableTransition,
 };
 use super::filter::FilteredTimeline;
 
@@ -280,6 +281,9 @@ pub struct PlaybackData {
     /// 攻防战单基地占领进度（wrapper8/root8；非攻防战场次为空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assault_bases: Vec<AssaultBaseStateTransition>,
+    /// 消耗品生命周期事件（Type32 flag=0；非消耗品场次为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consumables: Vec<ConsumableTransition>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -620,6 +624,8 @@ pub fn from_model(
             .map(|f| AimFrame { time_sec: r2(f.time_sec), ..*f }).collect(),
         assault_bases: model.timeline.assault_bases.iter()
             .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
+        consumables: model.timeline.consumables.iter()
+            .map(|c| ConsumableTransition { clock: r2(c.clock), ..*c }).collect(),
     })
 }
 

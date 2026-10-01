@@ -367,6 +367,54 @@ pub(crate) fn collect_direct_hits8(packets: &[(u32, f32, &[u8])]) -> Vec<DirectH
 
 /// type=32 警告/命中通知收集（作者/他人路径共用）。不排序：作者路径取窗口内最早一条（取后自排），
 /// 他人路径按 hash6 令牌精确配对与顺序无关——各自保持原语义。
+/// Type32 mobile `flag=0` 长体的**消耗品生命周期**事件（WotbTools PROVEN 移植）。
+///
+/// 数据链（docs/research/replay/consumable-lifecycle.md，Blitz 11.19 国服 34 场）：
+/// Type32 `entityTypeId=2` / `flag=0` / 16 字节体（body 自 p[9] 起）：
+/// `wireCode = body[2]`、`state = body[3]`、`bodyClock = f64 LE body[4..12)`、
+/// `param = f32 LE body[12..16)`。
+///
+/// state 语义（该族已闭合）：1 注册/可用、2 激活（param = 有效持续时长，瞬发为 0）、
+/// 3 持续结束/冷却转换（param = 有效冷却配置）、255 实体/控制拆除。
+///
+/// 语义红线：**wireCode 未闭合者原样保留、不猜产品身份**（文档明确；已知
+/// 0x08 自动灭火器、0xBD 次级强化引擎仅在消费方映射表中使用）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ConsumableTransition {
+    /// 包时钟（回放时钟，秒；时间轴以此为准）
+    pub clock: f32,
+    pub eid: u32,
+    /// body[2] 原始线码（未闭合值不赋身份）
+    pub wire_code: u8,
+    /// body[3] 状态（1/2/3/255；其他值原样透传）
+    pub state: u8,
+    /// body[4..12) 内嵌时钟（f64 → f32 秒；与包时钟同源，保留以便交叉校验）
+    pub body_clock: f64,
+    /// body[12..16)：state=2 为有效持续时长、state=3 为有效冷却（其余无定义）
+    pub param: f32,
+}
+
+pub fn collect_consumable_transitions(packets: &[(u32, f32, &[u8])]) -> Vec<ConsumableTransition> {
+    let mut out = Vec::new();
+    for (t, clock, p) in packets {
+        if *t != 32 || p.len() < 25 { continue; }
+        if p[4] != 0x00 { continue; }                       // flag=0 族（flag=1 为炮弹警告，另一解析器）
+        let body_len = u32::from_le_bytes([p[5], p[6], p[7], p[8]]) as usize;
+        if body_len != 16 || 9 + body_len != p.len() { continue; }   // 该族恒 16B 体
+        let body = &p[9..];
+        out.push(ConsumableTransition {
+            clock: *clock,
+            eid: u32::from_le_bytes([p[0], p[1], p[2], p[3]]),
+            wire_code: body[2],
+            state: body[3],
+            body_clock: f64::from_le_bytes(body[4..12].try_into().unwrap()),
+            param: f32::from_le_bytes(body[12..16].try_into().unwrap()),
+        });
+    }
+    out.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
 pub(crate) fn collect_warnings32(packets: &[(u32, f32, &[u8])]) -> Vec<ArenaWarning32> {
     let mut warnings32: Vec<ArenaWarning32> = Vec::new();
     for (t, clock, p) in packets {
@@ -557,4 +605,49 @@ pub(crate) fn tick_at(tick_timeline: &[(f32, u8)], t: f32) -> f32 {
     let dt = t1 - t0;
     if dt <= 0.0 { return v0 as f32; }
     v0 as f32 + dv * (t - t0) / dt
+}
+
+#[cfg(test)]
+mod consumable_tests {
+    use super::*;
+
+    /// 合成 Type32 flag=0 帧：[eid u32][flag=0][bodyLen u32=16][body 16B]
+    fn mk32(eid: u32, wire: u8, state: u8, body_clock: f64, param: f32) -> Vec<u8> {
+        let mut body = vec![0u8; 16];
+        body[2] = wire;
+        body[3] = state;
+        body[4..12].copy_from_slice(&body_clock.to_le_bytes());
+        body[12..16].copy_from_slice(&param.to_le_bytes());
+        let mut p = vec![0u8; 9];
+        p[0..4].copy_from_slice(&eid.to_le_bytes());
+        p[4] = 0x00;                                  // flag=0（消耗品族）
+        p[5..9].copy_from_slice(&16u32.to_le_bytes());
+        p.extend_from_slice(&body);
+        p
+    }
+
+    #[test]
+    fn parses_flag0_consumable_family() {
+        let f1 = mk32(0x21, 0x08, 2, 42.5, 6.0);   // 激活（持续 6s）
+        let f2 = mk32(0x21, 0x08, 3, 48.5, 90.0);  // 冷却
+        let packets: Vec<(u32, f32, &[u8])> = vec![(32, 48.5, &f2), (32, 42.5, &f1)];
+        let t = collect_consumable_transitions(&packets);
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[0].clock, t[0].eid, t[0].wire_code, t[0].state), (42.5, 0x21, 0x08, 2));
+        assert!((t[0].body_clock - 42.5).abs() < 1e-9);
+        assert!((t[0].param - 6.0).abs() < 1e-6);
+        assert_eq!((t[1].clock, t[1].state), (48.5, 3), "按包时钟升序");
+    }
+
+    #[test]
+    fn ignores_flag1_warning_family_and_bad_shapes() {
+        // flag=1（炮弹警告族，26B）不得进消耗品集合；bodyLen 非 16 亦拒
+        let mut warn = vec![0u8; 26];
+        warn[4] = 0x01;
+        warn[5..9].copy_from_slice(&17u32.to_le_bytes());   // 26-9=17 ≠ 16
+        let mut wrong_len = mk32(0x22, 0x08, 2, 1.0, 1.0);
+        wrong_len[5..9].copy_from_slice(&15u32.to_le_bytes());  // 声明 15 与实际 16 不符
+        let packets: Vec<(u32, f32, &[u8])> = vec![(32, 1.0, &warn), (32, 2.0, &wrong_len)];
+        assert!(collect_consumable_transitions(&packets).is_empty());
+    }
 }

@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::combat::{
     self, AimFrame, ArenaPeriod, AoiPresence, AssaultBaseStateTransition, CombatEventType,
-    CombatTimeline, FeedbackCounterEvent, GunPitchLimits, HpEvent, KillFeedEvent,
-    ShotReplayData, St10Sample, SupremacyBaseStateTransition, SupremacyPointsSample,
+    CombatTimeline, ConsumableTransition, FeedbackCounterEvent, GunPitchLimits, HpEvent,
+    KillFeedEvent, ShotReplayData, St10Sample, SupremacyBaseStateTransition,
+    SupremacyPointsSample,
 };
 use super::playback::{self, KillEvent, PlaybackPlayer};
 
@@ -90,6 +91,8 @@ pub struct Timeline {
     pub aim_frames: Vec<AimFrame>,
     /// 攻防战单基地占领进度时间线（wrapper8/root8；非攻防战场次为空）
     pub assault_bases: Vec<AssaultBaseStateTransition>,
+    /// 消耗品生命周期事件（Type32 flag=0；含 wireCode/state/param 原样）
+    pub consumables: Vec<ConsumableTransition>,
 }
 
 /// 内部回放模型：包流单次扫描产物 + 结算花名册并表
@@ -155,6 +158,8 @@ impl ReplayModel {
         // 攻防战单基地（wrapper8/root8；与争霸 wrapper12 天然互斥——实测两者不共存）
         let assault_bases = combat::reconstruct_assault_base_states(
             combat::collect_assault_base_updates(packets));
+        // 消耗品生命周期（Type32 flag=0；与 flag=1 炮弹警告同包不同族）
+        let consumables = combat::collect_consumable_transitions(packets);
         let hp_events = &shared.hp_events;
         let initial_hp = &shared.initial_hp;
         let equipment = &shared.vehicle_equipment;
@@ -258,6 +263,7 @@ impl ReplayModel {
                 supremacy_points,
                 aim_frames: shared.type39_frames.iter().map(combat::AimFrame::from).collect(),
                 assault_bases,
+                consumables,
             },
             packet_histogram,
         })

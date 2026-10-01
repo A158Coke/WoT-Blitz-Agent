@@ -86,19 +86,18 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           </span>
         </span>
       </div>
-      <!-- 行 3：争霸实时点数（进度条，上限 1000；两侧对称居中） -->
+      <!-- 行 3：争霸实时点数（上限 1000）。数值在外侧、两条紧贴中线——
+           两条均自中线向外增长，左右完全对称；整行 flex 居中，宽度变化不漂移。 -->
       <div v-if="store.pointsFriend != null || store.pointsEnemy != null" class="tb-row tb-points">
-        <span class="pointsbar pb-f" :title="'己方点数 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">
+        <b class="pdv pdv-f" :title="'己方点数 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">{{ store.pointsFriend ?? '—' }}</b>
+        <span class="pointsbar pb-f" :title="'己方 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">
           <i :style="{ width: pointsPct(store.pointsFriend) + '%' }"></i>
         </span>
-        <b class="pointsval">
-          <span class="t1">{{ store.pointsFriend ?? '—' }}</span>
-          <span class="psep">:</span>
-          <span class="t2">{{ store.pointsEnemy ?? '—' }}</span>
-        </b>
-        <span class="pointsbar pb-e" :title="'敌方点数 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">
+        <span class="pdiv"></span>
+        <span class="pointsbar pb-e" :title="'敌方 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">
           <i :style="{ width: pointsPct(store.pointsEnemy) + '%' }"></i>
         </span>
+        <b class="pdv pdv-e" :title="'敌方点数 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">{{ store.pointsEnemy ?? '—' }}</b>
       </div>
     </div>
 
@@ -228,18 +227,21 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar { top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 18px;
           display: flex; flex-direction: column; gap: 4px; align-items: center; white-space: nowrap; }
 #topbar .tb-row { display: flex; gap: 14px; align-items: center; justify-content: center; }
-#topbar .tb-points { font-size: 13px; color: var(--dim); }
+#topbar .tb-points { font-size: 13px; color: var(--dim); gap: 4px; }   /* 收紧：两条贴近中线 */
 /* 点数条：左条己方（自右向左填充）、右条敌方；中间数值固定列宽使整行居中 */
-#topbar .pointsbar { display: inline-block; width: 92px; height: 7px; border-radius: 4px;
+#topbar .pointsbar { display: inline-block; width: 92px; height: 7px;
                     background: rgba(255,255,255,.13); overflow: hidden; }
+/* 两条紧贴中线：左条圆角在左端、右条在右端，中线处相接 */
+#topbar .pb-f { border-radius: 4px 0 0 4px; }
+#topbar .pb-e { border-radius: 0 4px 4px 0; }
 #topbar .pointsbar > i { display: block; height: 100%; transition: width .18s linear; }
+/* 自中线向外增长：左条填充贴右端（靠中线），右条填充贴左端（靠中线） */
 #topbar .pb-f > i { background: var(--ally); float: right; }
-#topbar .pb-e > i { background: var(--enemy); }
-#topbar .pointsval { display: inline-block; min-width: 74px; text-align: center;
-                     font-variant-numeric: tabular-nums; }
-#topbar .pointsval .t1 { color: var(--ally); }
-#topbar .pointsval .t2 { color: var(--enemy); }
-#topbar .pointsval .psep { color: var(--dim); margin: 0 3px; }
+#topbar .pb-e > i { background: var(--enemy); float: left; }
+#topbar .pdiv { width: 1px; height: 13px; background: var(--line); }
+#topbar .pdv { min-width: 44px; font-variant-numeric: tabular-nums; font-size: 13px; }
+#topbar .pdv-f { color: var(--ally); text-align: right; }
+#topbar .pdv-e { color: var(--enemy); text-align: left; }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #topbar .score { font-size: 16px; font-weight: 600; }
 #topbar .score .t1 { color: var(--ally); }

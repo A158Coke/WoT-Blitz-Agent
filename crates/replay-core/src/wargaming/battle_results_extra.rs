@@ -12,7 +12,9 @@
 //   24=存活寿命整秒                                        25=击杀者 ID
 //   105=死亡原因 i32（-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境）
 //   119=毁灭协助次数（≥25% 伤害后盟友击毁）                120=炮印 0..3
+//   23=经验  106=银币（WotbTools PROVEN 616/616；crate 的 base_xp/credits_earned 在 11.19 语料中为 0）
 //   101=账号 ID（键）  103=车辆 comp descriptor（键）
+//   #301 外层 f1 = result/entity ID（f25 击杀者 ID 即此命名空间）
 //
 // 交叉验证（WotbTools）：`initialActualHp = max(hitpoints_left, 0) + damage_received(11)`
 // 可与 type=5 开局血量互验（暂未消费，留待 P3 settlement 层）。
@@ -22,6 +24,12 @@
 pub struct PlayerSettlement {
     pub account_id: u32,
     pub tank_id: u32,
+    /// #301 外层 f1：本战斗者的 result/entity ID（f25 `killer_id` 引用的就是它）
+    pub result_id: Option<u32>,
+    /// #301 f23 经验（WotbTools PROVEN 616/616；crate `base_xp` 在 11.19 语料中为 0）
+    pub xp: Option<u32>,
+    /// #301 f106 银币（WotbTools PROVEN 616/616；crate `credits_earned` 在 11.19 语料中为 0）
+    pub credits: Option<u32>,
     /// #301 f11 承受伤害（WotbTools PROVEN：缺省即为 0，为真实数值语义 → 输出端按 0）
     pub damage_received: Option<u32>,
     /// #301 f32 争霸/积分模式获得点数（WotbTools PROVEN，270/616）
@@ -78,6 +86,8 @@ fn parse_player_entry(b: &[u8]) -> Option<PlayerSettlement> {
                 101 => s.account_id = v as u32,
                 103 => s.tank_id = v as u32,
                 11 => s.damage_received = Some(v as u32),
+                23 => s.xp = Some(v as u32),
+                106 => s.credits = Some(v as u32),
                 32 => s.victory_points_earned = Some(v as u32),
                 33 => s.victory_points_seized = Some(v as u32),
                 105 => s.death_reason = Some(v32),
@@ -199,23 +209,30 @@ pub fn parse_settlement_extras(proto: &[u8]) -> Vec<PlayerSettlement> {
             let Some(len) = pb_varint(proto, &mut o) else { break };
             let end = o + len as usize;
             if end > proto.len() { break }
-            // 进两层：#301 → tag1 result_id（跳过）/ tag2 = PlayerResultsInfo
+            // 进两层：#301 → tag1 result_id / tag2 = PlayerResultsInfo（两者顺序不假设）
             let entry = &proto[o..end];
             let mut io = 0usize;
+            let mut result_id: Option<u32> = None;
+            let mut parsed: Option<PlayerSettlement> = None;
             while io < entry.len() {
                 let Some(ikey) = pb_varint(entry, &mut io) else { break };
                 let (ifield, iwt) = (ikey >> 3, ikey & 7);
-                if ifield == 2 && iwt == 2 {
+                if ifield == 1 && iwt == 0 {
+                    let Some(v) = pb_varint(entry, &mut io) else { break };
+                    result_id = Some(v as u32);
+                } else if ifield == 2 && iwt == 2 {
                     let Some(ilen) = pb_varint(entry, &mut io) else { break };
                     let iend = io + ilen as usize;
                     if iend > entry.len() { break }
-                    if let Some(s) = parse_player_entry(&entry[io..iend]) {
-                        out.push(s);
-                    }
+                    parsed = parse_player_entry(&entry[io..iend]);
                     io = iend;
                 } else if !skip_field(entry, &mut io, iwt) {
                     break;
                 }
+            }
+            if let Some(mut s) = parsed {
+                s.result_id = result_id;
+                out.push(s);
             }
             o = end;
         } else if !skip_field(proto, &mut o, wt) {
@@ -223,4 +240,67 @@ pub fn parse_settlement_extras(proto: &[u8]) -> Vec<PlayerSettlement> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn varint(mut v: u64, out: &mut Vec<u8>) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+    }
+    fn uint_field(field: u64, v: u64, out: &mut Vec<u8>) {
+        varint(field << 3, out);
+        varint(v, out);
+    }
+    fn bytes_field(field: u64, body: &[u8], out: &mut Vec<u8>) {
+        varint((field << 3) | 2, out);
+        varint(body.len() as u64, out);
+        out.extend_from_slice(body);
+    }
+
+    #[test]
+    fn settlement_entry_carries_result_id_xp_and_credits() {
+        let mut info = Vec::new();
+        uint_field(101, 3_109_395_921, &mut info);
+        uint_field(23, 1134, &mut info);
+        uint_field(106, 161_784, &mut info);
+        uint_field(25, 11_172_396, &mut info);
+        // result_id 放在 info 之后：外层字段顺序不得被假设
+        let mut entry = Vec::new();
+        bytes_field(2, &info, &mut entry);
+        uint_field(1, 11_172_391, &mut entry);
+        let mut root = Vec::new();
+        bytes_field(301, &entry, &mut root);
+
+        let out = parse_settlement_extras(&root);
+        assert_eq!(out.len(), 1);
+        let s = &out[0];
+        assert_eq!(s.account_id, 3_109_395_921);
+        assert_eq!(s.result_id, Some(11_172_391));
+        assert_eq!(s.xp, Some(1134));
+        assert_eq!(s.credits, Some(161_784));
+        assert_eq!(s.killer_id, Some(11_172_396));
+    }
+
+    #[test]
+    fn missing_xp_credits_and_result_id_stay_unknown() {
+        let mut info = Vec::new();
+        uint_field(101, 42, &mut info);
+        let mut entry = Vec::new();
+        bytes_field(2, &info, &mut entry);
+        let mut root = Vec::new();
+        bytes_field(301, &entry, &mut root);
+
+        let s = &parse_settlement_extras(&root)[0];
+        assert_eq!((s.result_id, s.xp, s.credits), (None, None, None));
+    }
 }

@@ -151,13 +151,19 @@ impl VehicleEquipment {
 /// 扫描契约（Java VehicleBattleLoadout 同款）：offset 可变，搜 `0A 06` + 6×14B 描述符 +
 /// `0B 09` + 9B；字节全部落在已知配件 ID 域 100..=123 才采纳（framing 误配不猜名）。
 pub fn collect_vehicle_equipment(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, [u8; 9]> {
-    let mut out: HashMap<u32, [u8; 9]> = HashMap::new();
+    collect_vehicle_loadout(packets).into_iter().map(|(k, v)| (k, v.equipment)).collect()
+}
+
+/// 采集每实体的完整开局 loadout（Type5 3+3+9；含 6 条 raw item 描述符）。
+/// 同一实体取首条成功解析者（与 equipment 采集同语义）。
+pub fn collect_vehicle_loadout(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, VehicleLoadout> {
+    let mut out: HashMap<u32, VehicleLoadout> = HashMap::new();
     for (ptype, _, p) in packets {
         if *ptype != 5 { continue; }
         let eid = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
         if out.contains_key(&eid) { continue; }
-        if let Some(eq) = scan_loadout_equipment(p) {
-            out.insert(eid, eq);
+        if let Some(l) = scan_loadout(p) {
+            out.insert(eid, l);
         }
     }
     out
@@ -167,7 +173,19 @@ pub fn collect_vehicle_equipment(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, 
 /// 再回找计数标记 `0A KK`——要求 `0A KK` + KK×14B 描述符 + `0B 09` 严丝合缝且 KK≥6
 /// （6 条=标准 3 消耗品+3 给养；7 条=受控场变体，XM551 场作者实体实测多 1 条 14B 描述符、
 /// 配件串本身完好；4 条=观察者族，WotbTools 警告勿当战斗者搭载，拒收）。
-fn scan_loadout_equipment(p: &[u8]) -> Option<[u8; 9]> {
+/// 车辆开局 loadout（Type5 3+3+9 结构；WotbTools PROVEN 位置闭合）。
+///
+/// - `equipment`：9 字节装备选择串——**每字节即装备数值 ID 本身（ASCII 码点）**；
+/// - `items`：k 条 14 字节 item 描述符，位置闭合为 `item[0..2] = 3 消耗品`、
+///   `item[3..5] = 3 给养`。**内部字段（计时器/动态状态）尚未完全解码 → 原样保留
+///   raw，不赋内部语义**（WotbTools 明确裁决：retain raw until fully decoded）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VehicleLoadout {
+    pub equipment: [u8; 9],
+    pub items: Vec<[u8; 14]>,
+}
+
+fn scan_loadout(p: &[u8]) -> Option<VehicleLoadout> {
     let n = p.len();
     let mut pos = 0usize;
     while pos + 11 <= n {
@@ -178,9 +196,17 @@ fn scan_loadout_equipment(p: &[u8]) -> Option<[u8; 9]> {
                     if pos >= 2 + k * 14 {
                         let start = pos - 2 - k * 14;
                         if p[start] == 0x0A && p[start + 1] as usize == k {
-                            let mut arr = [0u8; 9];
-                            arr.copy_from_slice(eq);
-                            return Some(arr);
+                            let mut equipment = [0u8; 9];
+                            equipment.copy_from_slice(eq);
+                            let items = (0..k)
+                                .map(|i| {
+                                    let s = start + 2 + i * 14;
+                                    let mut it = [0u8; 14];
+                                    it.copy_from_slice(&p[s..s + 14]);
+                                    it
+                                })
+                                .collect();
+                            return Some(VehicleLoadout { equipment, items });
                         }
                     }
                 }
@@ -388,7 +414,8 @@ pub struct ConsumableTransition {
     pub wire_code: u8,
     /// body[3] 状态（1/2/3/255；其他值原样透传）
     pub state: u8,
-    /// body[4..12) 内嵌时钟（f64 → f32 秒；与包时钟同源，保留以便交叉校验）
+    /// body[4..12) 原始 f64（文档标注为内嵌 clock；实测与包时钟**不同源**——注册态恒 0、
+    /// 有事件时可达 10s 偏差，其精确语义未闭合 → 原样保留、不作时间轴依据，时间轴一律用 `clock`）
     pub body_clock: f64,
     /// body[12..16)：state=2 为有效持续时长、state=3 为有效冷却（其余无定义）
     pub param: f32,
@@ -649,5 +676,40 @@ mod consumable_tests {
         wrong_len[5..9].copy_from_slice(&15u32.to_le_bytes());  // 声明 15 与实际 16 不符
         let packets: Vec<(u32, f32, &[u8])> = vec![(32, 1.0, &warn), (32, 2.0, &wrong_len)];
         assert!(collect_consumable_transitions(&packets).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod loadout_tests {
+    use super::*;
+
+    /// 合成 Type5 loadout 块：`0A 06` + 6×14B 描述符 + `0B 09` + 9B 装备串
+    fn mk_type5_loadout() -> Vec<u8> {
+        let mut p = vec![0u8; 60];
+        p[0..4].copy_from_slice(&0x31u32.to_le_bytes());
+        p[51..53].copy_from_slice(&1000u16.to_le_bytes());
+        p.extend_from_slice(&[0x0A, 0x06]);
+        for i in 0..6u8 {
+            let mut it = [0u8; 14];
+            it[0] = 0x80 + i;          // 可辨识的每槽字节
+            p.extend_from_slice(&it);
+        }
+        p.extend_from_slice(&[0x0B, 0x09]);
+        p.extend_from_slice(&[100, 101, 102, 103, 104, 105, 106, 107, 108]);  // 装备串（ASCII 数值 ID 域）
+        p
+    }
+
+    #[test]
+    fn collects_equipment_and_six_raw_descriptors() {
+        let payload = mk_type5_loadout();
+        let packets: Vec<(u32, f32, &[u8])> = vec![(5, 1.0, &payload)];
+        let l = collect_vehicle_loadout(&packets);
+        let v = l.get(&0x31).expect("实体 loadout 应被采集");
+        assert_eq!(v.items.len(), 6, "标准 3 消耗品 + 3 给养 = 6 条描述符");
+        assert_eq!(v.equipment, [100, 101, 102, 103, 104, 105, 106, 107, 108]);
+        assert_eq!(v.items[0][0], 0x80, "描述符原样保留（不解析内部）");
+        assert_eq!(v.items[5][0], 0x85);
+        // 兼容入口取同一 9B 串
+        assert_eq!(collect_vehicle_equipment(&packets).get(&0x31).copied().unwrap(), v.equipment);
     }
 }

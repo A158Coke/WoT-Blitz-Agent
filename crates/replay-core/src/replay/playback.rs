@@ -128,6 +128,13 @@ pub struct VehicleTrack {
     /// 该车发射过的弹种全局 id（去重，最多 16 个）——实际搭载配置推断证据
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shell_ids: Vec<u32>,
+    /// 开局 loadout raw item 描述符（6×14B；item[0..2]=3 消耗品、item[3..5]=3 给养，
+    /// 内部字段未解码故原样透传）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadout_items: Vec<[u8; 14]>,
+    /// 9 字节装备选择串（每字节 = 装备数值 ID 的 ASCII 码点；缺省不输出）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equipment: Option<[u8; 9]>,
     /// 实际搭载的炮塔配置（build_configs dense 索引；None = 证据不足，前端用顶级配置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turret_index: Option<u32>,
@@ -576,6 +583,8 @@ pub fn from_model(
             death_t: death.map(|d| r2(d.t)),
             killer_eid,
             shell_ids,
+            loadout_items: rec.map(|r| r.loadout_items.clone()).unwrap_or_default(),
+            equipment: rec.and_then(|r| r.equipment),
             turret_index: None,
             gun_index: None,
             coverage: build_coverage(&clocks),

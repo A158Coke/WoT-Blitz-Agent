@@ -32,6 +32,9 @@ pub struct EntityRecord {
     pub max_hp: Option<u16>,
     /// 9 字节配件选择串（type=5 尾部 loadout 块，字节域 100..=123 校验通过）
     pub equipment: Option<[u8; 9]>,
+    /// 开局 loadout 的 raw item 描述符（6×14B：item[0..2]=3 消耗品、item[3..5]=3 给养；
+    /// 内部字段未解码 → 原样保留，不赋语义）
+    pub loadout_items: Vec<[u8; 14]>,
     /// ARENA_INFO 15B 组成 blob：实际搭载炮塔局部 id（按昵称联表，缺失 = None）
     pub turret_local: Option<u16>,
     /// 组成 blob 主炮局部 id（语义同上）
@@ -163,6 +166,7 @@ impl ReplayModel {
         let hp_events = &shared.hp_events;
         let initial_hp = &shared.initial_hp;
         let equipment = &shared.vehicle_equipment;
+        let loadouts = combat::collect_vehicle_loadout(packets);
 
         // —— 血量链去重序列 + 死亡终态（一次遍历，语义与原逐车组装逐位一致） ——
         let mut hp_series: BTreeMap<u32, Vec<(f32, u16)>> = BTreeMap::new();
@@ -236,6 +240,7 @@ impl ReplayModel {
                 tank_id: joined.map(|p| p.tank_id),
                 max_hp: initial_hp.get(&eid).map(|(_, h)| *h),
                 equipment: equipment.get(&eid).copied(),
+                loadout_items: loadouts.get(&eid).map(|l| l.items.clone()).unwrap_or_default(),
                 turret_local: comp.map(|c| c.turret_local),
                 gun_local: comp.map(|c| c.gun_local),
                 is_author,

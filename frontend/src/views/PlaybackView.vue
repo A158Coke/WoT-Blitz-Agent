@@ -14,6 +14,11 @@ const seekEl = ref(null)
 let scene = null
 
 const SPEEDS = [0.5, 1, 2, 4, 8, 16]
+// 紧凑血量数值（万位以上折算 k，避免顶栏被长数字撑开）
+function fmtHp(n) {
+  const v = Math.max(0, Math.round(n || 0))
+  return v >= 10000 ? (v / 1000).toFixed(1) + 'k' : String(v)
+}
 const CAMS = [ { k: 'free', label: '自由' }, { k: 'top', label: '俯视' }, { k: 'follow', label: '跟随' } ]
 const QUALITY_ORDER = Object.keys(QUALITY_PRESETS)
 
@@ -55,23 +60,31 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
     <div id="scene" ref="sceneEl"></div>
 
     <div id="topbar" class="panel">
-      <span class="map">{{ store.mapName }}</span>
-      <span class="timer">{{ store.timer }}</span>
-      <!-- 双方队伍血量条（按全队 max_hp 汇总）+ 中间战果比分（对齐 WotBTools HUD） -->
-      <span class="hpline">
-        <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
-          <i :style="{ width: store.hpFriendPct + '%' }"></i>
+      <!-- 行 1：地图名 / 时间 / 双方队伍血量（条 + 具体数值）/ 中间战果 -->
+      <div class="tb-row">
+        <span class="map">{{ store.mapName }}</span>
+        <span class="timer">{{ store.timer }}</span>
+        <span class="hpline">
+          <span class="hpwrap">
+            <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
+              <i :style="{ width: store.hpFriendPct + '%' }"></i>
+            </span>
+            <em class="hpnum hpnum-f">{{ fmtHp(store.hpFriend) }} / {{ fmtHp(store.hpFriendMax) }}</em>
+          </span>
+          <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
+          <span class="hpwrap">
+            <em class="hpnum hpnum-e">{{ fmtHp(store.hpEnemy) }} / {{ fmtHp(store.hpEnemyMax) }}</em>
+            <span class="hpbar hp-e" :title="'敌方 ' + store.hpEnemyPct.toFixed(0) + '%'">
+              <i :style="{ width: store.hpEnemyPct + '%' }"></i>
+            </span>
+          </span>
         </span>
-        <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
-        <span class="hpbar hp-e" :title="'敌方 ' + store.hpEnemyPct.toFixed(0) + '%'">
-          <i :style="{ width: store.hpEnemyPct + '%' }"></i>
-        </span>
-      </span>
-      <!-- 争霸实时点数（仅该场有点数广播时出现） -->
-      <span v-if="store.pointsFriend != null || store.pointsEnemy != null" class="points">
+      </div>
+      <!-- 行 2：争霸实时点数（仅该场有点数广播时出现） -->
+      <div v-if="store.pointsFriend != null || store.pointsEnemy != null" class="tb-row tb-points">
         <span class="plbl">点数</span>
         <b><span class="t1">{{ store.pointsFriend ?? '—' }}</span> : <span class="t2">{{ store.pointsEnemy ?? '—' }}</span></b>
-      </span>
+      </div>
     </div>
 
     <div id="team1" class="team panel">
@@ -198,7 +211,9 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 .panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
          border-radius: 8px; backdrop-filter: blur(4px); }
 #topbar { top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 18px;
-          display: flex; gap: 16px; align-items: center; white-space: nowrap; }
+          display: flex; flex-direction: column; gap: 4px; align-items: center; white-space: nowrap; }
+#topbar .tb-row { display: flex; gap: 14px; align-items: center; justify-content: center; }
+#topbar .tb-points { font-size: 13px; color: var(--dim); }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #topbar .score { font-size: 16px; font-weight: 600; }
 #topbar .score .t1 { color: var(--ally); }
@@ -206,6 +221,10 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar .map { color: var(--dim); }
 /* 双方血量条 + 比分（WotBTools HUD 同构：左己方 / 右敌方 / 中间战果） */
 #topbar .hpline { display: inline-flex; align-items: center; gap: 8px; }
+#topbar .hpwrap { display: inline-flex; align-items: center; gap: 7px; }
+#topbar .hpnum { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim); }
+#topbar .hpnum-f { color: var(--ally); }
+#topbar .hpnum-e { color: var(--enemy); }
 #topbar .hpbar { display: inline-block; width: 92px; height: 9px; border-radius: 5px;
                  background: rgba(255,255,255,.13); overflow: hidden; }
 #topbar .hpbar > i { display: block; height: 100%; transition: width .18s linear; }
@@ -232,7 +251,7 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
             text-overflow: ellipsis; white-space: nowrap; }
 .pl .hpbar { width: 52px; height: 5px; background: #222a34; border-radius: 3px; flex: none; }
 .pl .hpbar i { display: block; height: 100%; border-radius: 3px; background: var(--ally); }
-#killfeed { position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+#killfeed { position: absolute; top: 104px; left: 50%; transform: translateX(-50%);
             display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
 .kf { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
       padding: 3px 12px; font-size: 12px; animation: kfin .18s ease-out; white-space: nowrap; }

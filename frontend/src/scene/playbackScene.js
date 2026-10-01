@@ -1745,6 +1745,8 @@ export function initPlayback(container, store) {
       }
       store.hpFriendPct = mf > 0 ? 100 * hf / mf : 0;
       store.hpEnemyPct = me > 0 ? 100 * he / me : 0;
+      store.hpFriend = hf; store.hpFriendMax = mf;
+      store.hpEnemy = he; store.hpEnemyMax = me;
     }
     // 顶栏：争霸实时点数（取 ≤T 的最后采样；无广播的场次保持 null → UI 不显示）
     if (DATA.supremacy_points && DATA.supremacy_points.length) {

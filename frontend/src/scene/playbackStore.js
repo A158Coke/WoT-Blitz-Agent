@@ -26,8 +26,9 @@ export function createPlaybackStore() {
     glbOn: false,
     glbAllowed: true,
     labelsOn: true,
-    // 顶栏：双方队伍血量百分比（按全队 max_hp 汇总）与争霸实时点数
+    // 顶栏：双方队伍血量（百分比 + 绝对值，按全队 max_hp 汇总）与争霸实时点数
     hpFriendPct: 100, hpEnemyPct: 100,
+    hpFriend: 0, hpFriendMax: 0, hpEnemy: 0, hpEnemyMax: 0,
     pointsFriend: null, pointsEnemy: null,   // null = 该场无点数广播（非争霸）
     // 覆盖层
     banner: null, // { text, color }

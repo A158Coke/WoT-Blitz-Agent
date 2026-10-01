@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, HashMap};
 use super::combat::{
     self, AimFrame, ArenaPeriod, AoiPresence, AssaultBaseStateTransition, CombatEventType,
     CombatTimeline, ConsumableTransition, FeedbackCounterEvent, GunPitchLimits, HpEvent,
-    KillFeedEvent, ShotReplayData, St10Sample, SupremacyBaseStateTransition,
-    SupremacyPointsSample,
+    KillFeedEvent, ModuleCrewStateEvent, ShotReplayData, St10Sample,
+    SupremacyBaseStateTransition, SupremacyPointsSample,
 };
 use super::playback::{self, KillEvent, PlaybackPlayer};
 
@@ -96,6 +96,8 @@ pub struct Timeline {
     pub assault_bases: Vec<AssaultBaseStateTransition>,
     /// 消耗品生命周期事件（Type32 flag=0；含 wireCode/state/param 原样）
     pub consumables: Vec<ConsumableTransition>,
+    /// 车辆模块/乘员状态事件（Avatar method16）
+    pub module_crew_states: Vec<ModuleCrewStateEvent>,
 }
 
 /// 内部回放模型：包流单次扫描产物 + 结算花名册并表
@@ -163,6 +165,7 @@ impl ReplayModel {
             combat::collect_assault_base_updates(packets));
         // 消耗品生命周期（Type32 flag=0；与 flag=1 炮弹警告同包不同族）
         let consumables = combat::collect_consumable_transitions(packets);
+        let module_crew_states = combat::collect_module_crew_states(packets);
         let hp_events = &shared.hp_events;
         let initial_hp = &shared.initial_hp;
         let equipment = &shared.vehicle_equipment;
@@ -269,6 +272,7 @@ impl ReplayModel {
                 aim_frames: shared.type39_frames.iter().map(combat::AimFrame::from).collect(),
                 assault_bases,
                 consumables,
+                module_crew_states,
             },
             packet_histogram,
         })

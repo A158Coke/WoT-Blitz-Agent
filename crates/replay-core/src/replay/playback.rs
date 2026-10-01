@@ -29,6 +29,7 @@ use serde::Serialize;
 use super::combat::{
     AssaultBaseStateTransition, self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
     ConsumableTransition,
+    ModuleCrewStateEvent,
 };
 use super::filter::FilteredTimeline;
 
@@ -291,6 +292,9 @@ pub struct PlaybackData {
     /// 消耗品生命周期事件（Type32 flag=0；非消耗品场次为空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consumables: Vec<ConsumableTransition>,
+    /// 车辆模块/乘员状态事件（Avatar method16；无事件场次为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_crew_states: Vec<ModuleCrewStateEvent>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -635,6 +639,8 @@ pub fn from_model(
             .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
         consumables: model.timeline.consumables.iter()
             .map(|c| ConsumableTransition { clock: r2(c.clock), ..*c }).collect(),
+        module_crew_states: model.timeline.module_crew_states.iter()
+            .map(|m| ModuleCrewStateEvent { clock: r2(m.clock), ..*m }).collect(),
     })
 }
 

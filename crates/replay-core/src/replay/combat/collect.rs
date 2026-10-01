@@ -173,6 +173,100 @@ pub fn collect_vehicle_loadout(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, Ve
 /// 再回找计数标记 `0A KK`——要求 `0A KK` + KK×14B 描述符 + `0B 09` 严丝合缝且 KK≥6
 /// （6 条=标准 3 消耗品+3 给养；7 条=受控场变体，XM551 场作者实体实测多 1 条 14B 描述符、
 /// 配件串本身完好；4 条=观察者族，WotbTools 警告勿当战斗者搭载，拒收）。
+/// Avatar method16：车辆模块/乘员状态事件（WotbTools PROVEN 移植）。
+///
+/// 线格式（`VehicleModuleCrewStateDecoder`，恒定 22B）：
+/// `[0..4) avatarEid | [4..8) method=16 | [8..12) argLen=10 | [12..16) vehicleId |
+///  [16] stateCode(codeA) | [17] componentCode(codeB) | [18..22) relatedEntityId`。
+///
+/// codeB → 组件（PROVEN）：31 引擎 / 32 弹药架 / 33 油箱 / 34 右履带 / 35 左履带 /
+/// 36 主炮 / 37 炮塔座圈 / 38 观察装置 / 39 车长 / 40 驾驶员 / 41 炮手 / 43 装填手；
+/// 其余（含缺失的 42）原样保留为 UNKNOWN，不猜。
+/// codeA → 状态：**乘员**（39/40/41/43）：10 震伤 / 22 治愈；**模块**：4 受损降效 /
+/// 5 致命失效 / 18 自动修复至受损 / 19 完全修复；其余 UNKNOWN。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleComponent {
+    Engine, AmmoRack, FuelTank, RightTrack, LeftTrack, Gun, TurretRotator,
+    ObservationDevice, Commander, Driver, Gunner, Loader, Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleState {
+    DamagedDegraded, CriticalDisabled, AutoRepairedToDamaged, FullRepairedClear,
+    CrewShellShocked, CrewHealed, Unknown,
+}
+
+impl ModuleComponent {
+    fn from_code(code: u8) -> Self {
+        match code {
+            31 => Self::Engine, 32 => Self::AmmoRack, 33 => Self::FuelTank,
+            34 => Self::RightTrack, 35 => Self::LeftTrack, 36 => Self::Gun,
+            37 => Self::TurretRotator, 38 => Self::ObservationDevice,
+            39 => Self::Commander, 40 => Self::Driver, 41 => Self::Gunner,
+            43 => Self::Loader, _ => Self::Unknown,
+        }
+    }
+    fn is_crew(self) -> bool {
+        matches!(self, Self::Commander | Self::Driver | Self::Gunner | Self::Loader)
+    }
+}
+
+/// 模块/乘员状态事件：raw 码与映射并存（raw 保留以便未来语义扩充时不失真）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModuleCrewStateEvent {
+    pub clock: f32,
+    /// 受损车辆实体
+    pub vehicle_eid: u32,
+    /// codeA（raw）
+    pub state_code: u8,
+    /// codeB（raw）
+    pub component_code: u8,
+    pub component: ModuleComponent,
+    pub state: ModuleState,
+    pub related_eid: u32,
+}
+
+pub fn collect_module_crew_states(packets: &[(u32, f32, &[u8])]) -> Vec<ModuleCrewStateEvent> {
+    let mut out = Vec::new();
+    for (t, clock, p) in packets {
+        if *t != 8 || p.len() != 22 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != 16 { continue; }
+        if u32::from_le_bytes([p[8], p[9], p[10], p[11]]) != 10 { continue; }
+        let vehicle_eid = u32::from_le_bytes([p[12], p[13], p[14], p[15]]);
+        let state_code = p[16];
+        let component_code = p[17];
+        let component = ModuleComponent::from_code(component_code);
+        let state = if component.is_crew() {
+            match state_code {
+                10 => ModuleState::CrewShellShocked,
+                22 => ModuleState::CrewHealed,
+                _ => ModuleState::Unknown,
+            }
+        } else {
+            match state_code {
+                4 => ModuleState::DamagedDegraded,
+                5 => ModuleState::CriticalDisabled,
+                18 => ModuleState::AutoRepairedToDamaged,
+                19 => ModuleState::FullRepairedClear,
+                _ => ModuleState::Unknown,
+            }
+        };
+        out.push(ModuleCrewStateEvent {
+            clock: *clock,
+            vehicle_eid,
+            state_code,
+            component_code,
+            component,
+            state,
+            related_eid: u32::from_le_bytes([p[18], p[19], p[20], p[21]]),
+        });
+    }
+    out.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
 /// 车辆开局 loadout（Type5 3+3+9 结构；WotbTools PROVEN 位置闭合）。
 ///
 /// - `equipment`：9 字节装备选择串——**每字节即装备数值 ID 本身（ASCII 码点）**；
@@ -711,5 +805,65 @@ mod loadout_tests {
         assert_eq!(v.items[5][0], 0x85);
         // 兼容入口取同一 9B 串
         assert_eq!(collect_vehicle_equipment(&packets).get(&0x31).copied().unwrap(), v.equipment);
+    }
+}
+
+#[cfg(test)]
+mod module_crew_tests {
+    use super::*;
+
+    /// 合成 Avatar method16 包（恒定 22B）：[avatarEid][method=16][argLen=10][vehicleId][codeA][codeB][relatedEid]
+    fn mk16(avatar: u32, vehicle: u32, code_a: u8, code_b: u8, related: u32) -> Vec<u8> {
+        let mut p = vec![0u8; 22];
+        p[0..4].copy_from_slice(&avatar.to_le_bytes());
+        p[4..8].copy_from_slice(&16u32.to_le_bytes());
+        p[8..12].copy_from_slice(&10u32.to_le_bytes());
+        p[12..16].copy_from_slice(&vehicle.to_le_bytes());
+        p[16] = code_a;
+        p[17] = code_b;
+        p[18..22].copy_from_slice(&related.to_le_bytes());
+        p
+    }
+
+    #[test]
+    fn maps_module_and_crew_state_families() {
+        let engine_dmg = mk16(0xAA, 0x21, 4, 31, 0);       // 模块：引擎受损
+        let gun_clear = mk16(0xAA, 0x21, 19, 36, 0);       // 模块：主炮完全修复
+        let crew_shock = mk16(0xAA, 0x22, 10, 41, 0x21);   // 乘员：炮手震伤（related=攻击者）
+        let crew_heal = mk16(0xAA, 0x22, 22, 43, 0);       // 乘员：装填手治愈
+        let unknown_mod = mk16(0xAA, 0x23, 4, 42, 0);      // 42 未定义 → UNKNOWN 组件
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 20.0, &gun_clear), (8, 10.0, &engine_dmg),
+            (8, 30.0, &crew_shock), (8, 40.0, &crew_heal), (8, 50.0, &unknown_mod),
+        ];
+        let ev = collect_module_crew_states(&packets);
+        assert_eq!(ev.len(), 5);
+        assert_eq!((ev[0].clock, ev[0].vehicle_eid), (10.0, 0x21), "按 clock 升序");
+        assert_eq!(ev[0].component, ModuleComponent::Engine);
+        assert_eq!(ev[0].state, ModuleState::DamagedDegraded);
+        assert_eq!(ev[1].component, ModuleComponent::Gun);
+        assert_eq!(ev[1].state, ModuleState::FullRepairedClear);
+        // 乘员族：同一 codeA 在乘员下解读为震伤/治愈（与模块族不同）
+        assert_eq!(ev[2].component, ModuleComponent::Gunner);
+        assert_eq!(ev[2].state, ModuleState::CrewShellShocked);
+        assert_eq!(ev[2].related_eid, 0x21);
+        assert_eq!(ev[3].component, ModuleComponent::Loader);
+        assert_eq!(ev[3].state, ModuleState::CrewHealed);
+        // 未定义码保持 UNKNOWN，且 raw 码保留
+        assert_eq!(ev[4].component, ModuleComponent::Unknown);
+        assert_eq!(ev[4].component_code, 42);
+    }
+
+    #[test]
+    fn rejects_non_method16_and_wrong_shape() {
+        let mut other = mk16(0xAA, 0x21, 4, 31, 0);
+        other[4..8].copy_from_slice(&35u32.to_le_bytes());          // method=35 → 非 method16
+        let mut bad_len = mk16(0xAA, 0x21, 4, 31, 0);
+        bad_len[8..12].copy_from_slice(&9u32.to_le_bytes());         // argLen != 10
+        let short = vec![0u8; 21];                                   // 非 22B
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 1.0, &other), (8, 2.0, &bad_len), (8, 3.0, &short), (7, 4.0, &short),
+        ];
+        assert!(collect_module_crew_states(&packets).is_empty());
     }
 }

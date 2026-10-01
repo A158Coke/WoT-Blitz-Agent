@@ -14,6 +14,7 @@ import * as THREE from 'three'
 import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './replaySource.js'
 import { poseFromYPR } from './glbRig.js'
 import mapBasesData from './mapBases.json'
+import { firstIndexAfter } from './seekPointer.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -236,9 +237,9 @@ export function initPlayback(container, store) {
     const grid = new THREE.GridHelper(ext * 2 + 100, Math.floor((ext * 2 + 100) / 50), 0x3a4a5e, 0x273140);
     grid.position.set(cx, 0.02, cz); scene.add(grid);
     gridHelper = grid;
-    // 地图边界先用 world bounds 兜底（地图资产随后加载，rebuildGround 会用真实
-    // 地图尺寸覆盖重建）
-    buildBoundary({ cx, cz, hx: ext, hz: ext }, BOUNDARY_THICK);   // 兜底，地图就绪后重建
+    // 边界只按权威可玩范围画（见 buildBoundary 的 fail-closed 说明）：
+    // 此处地图资产尚未加载，命中打包表则先画，否则不画，rebuildGround 再按 terrain meta 重建
+    buildBoundary(playableBoundsFor(DATA.meta.map_id), BOUNDARY_THICK);
     WORLD_CENTER = { cx, cz, ext };
     camera.position.set(cx, ext * 1.1, cz + ext * 1.2);
     controls.target.set(cx, 0, cz);
@@ -274,14 +275,21 @@ export function initPlayback(container, store) {
   // 生成单一 BufferGeometry（1 draw call，无分段接缝）。可粗、直角、随地形起伏。
   const BOUNDARY_STEP = 2.0;       // 采样步长（米）：越小越贴合地形
   const BOUNDARY_THICK = 1.8;
+  function clearBoundary() {
+    if (!boundaryGroup) return;
+    const old = boundaryGroup.userData.sharedMaterial;
+    if (old) old.dispose();
+    scene.remove(boundaryGroup);
+    disposeObject3D(boundaryGroup);
+    boundaryGroup = null;
+  }
+
+  // 边界只认权威可玩范围（playableBounds）：**fail-closed**——拿不到就不画。
+  // 车辆范围 / 地形 span / worldBounds 都不是「游戏内红色战场边界」的证据，
+  // 不得作为兜底（历史实现曾用 ext 兜底，会凭空画出一条与玩法不符的边界）。
   function buildBoundary(bounds, thick) {
-    if (boundaryGroup) {
-      const old = boundaryGroup.userData.sharedMaterial;
-      if (old) old.dispose();
-      scene.remove(boundaryGroup);
-      disposeObject3D(boundaryGroup);
-      boundaryGroup = null;
-    }
+    clearBoundary();
+    if (!bounds) return;
     const { cx, cz, hx, hz } = bounds;
     const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
     // 闭合路径（顺时针四条边，角点精确落在 (±hx, ±hz)）
@@ -1014,9 +1022,9 @@ export function initPlayback(container, store) {
       mapPlane.position.set(meta.x || 0, 0.04, meta.z || 0);
       scene.add(mapPlane);
     }
-    // 边界随地图真实范围重建（size×size，中心 meta.x/z）——覆盖 buildWorld 的 ext 兜底
-    buildBoundary(playableBoundsFor(DATA.meta.map_id)
-      || { cx: meta.x || 0, cz: meta.z || 0, hx: size / 2, hz: size / 2 }, BOUNDARY_THICK);
+    // 边界按权威可玩范围重建（terrain meta 的 playableBounds 优先，否则打包表）；
+    // 两者皆缺则不画（fail-closed，绝不用 terrain span 冒充战场边界）
+    buildBoundary(playableBoundsFor(DATA.meta.map_id), BOUNDARY_THICK);
     regroundSupremacyBases();   // 地形就绪后把基地圆环/HUD 重新贴回地表
   }
 
@@ -1896,8 +1904,10 @@ export function initPlayback(container, store) {
       for (const sgn of [1, -1]) {
         const sp = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 2.2),
           new THREE.MeshBasicMaterial({ color: IMPACT_WHITE, transparent: true }));
-        sp.position.copy(tr.to.clone().add(side.clone().multiplyScalar(sgn * 1.1)));
-        sp.lookAt(tr.to.clone().add(side.clone().multiplyScalar(sgn * 3.3)));
+        // 局部偏移：群组已置于 tr.to，子物体不得再叠加一次世界坐标（否则成 2*tr.to + offset）
+        sp.position.set(side.x * sgn * 1.1, 0, side.z * sgn * 1.1);
+        // 盒体沿 +Z、朝水平 ±side：直接给 yaw，不依赖 lookAt 对父子变换的处理
+        sp.rotation.y = Math.atan2(side.x * sgn, side.z * sgn);
         g.add(sp); sparks.push(sp);
       }
     }
@@ -2185,8 +2195,11 @@ export function initPlayback(container, store) {
   function seekTo(t) {
     T = Math.max(DATA.meta.t_start, Math.min(DATA.meta.duration, t));
     clearEffects();   // 动态层 dispose（与 teardown 同一路径，防 seek 循环累积显存）
-    shotPtr = 0;
-    while (shotPtr < DATA.shots.length && DATA.shots[shotPtr].t_fire <= T) shotPtr++;
+    // 游标一律重定到「T 之后第一条」：clearEffects 已把 transient 游标归零，
+    // 若不重定，紧随的 tick() 会把 t<=T 的历史飘字/爆散一次性补播（与 2D seek 语义不符）
+    shotPtr = firstIndexAfter(DATA.shots, T, (x) => x.t_fire);
+    dmgPtr = firstIndexAfter(dmgEvents, T);
+    burstPtr = firstIndexAfter(burstEvents, T);
     rebuildFeed();
     winnerShown = false; store.banner = null;
     tick();

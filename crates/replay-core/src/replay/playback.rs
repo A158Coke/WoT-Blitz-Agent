@@ -13,8 +13,8 @@
 //! - 血量 = type=5 满血锚点 + method1 事件链；死亡 = type=7 sub=1（击杀者取 hp==0 事件 source）。
 //!
 //! 车辆筛选 = **st10 ∧ prop2 双流**（KineticObject/DetachedTurret 也有 type=10 移动流但无
-//! 炮塔角广播）；昵称匹配失败的车辆（type=5 昵称为 ascii_graphic 过滤的非 ascii 昵称）
-//! 保留为 team=0/tank_id=0 的"未知"车，不丢战局画面。
+//! 炮塔角广播）；花名册联表失败的车辆（昵称不在 battle_results 花名册，如观察者）
+//! 保留为 team=0/tank_id=0 的"未知"车，不丢战局画面（昵称域为 UTF-8 全域，见 combat::nickname）。
 //!
 //! 序列化约定：位姿为列式 flat 数组（`pos` = [x,y,z]×N，其余各 N 项），时刻 `t_i = t_start + i*0.1`；
 //! 前端线性插值即可（滤波器输出本身平滑；hull_yaw/turret_yaw 为解卷绕连续域，见上）。
@@ -82,7 +82,7 @@ pub struct PlaybackMeta {
 pub struct VehicleTrack {
     pub eid: u32,
     pub account_id: u32,
-    /// type=5 昵称（非 ascii 或缺失为空串 → 前端显示 Unknown）
+    /// type=5 昵称（UTF-8 全域；缺失为空串 → 前端显示 Unknown）
     pub nickname: String,
     pub tank_id: u32,
     pub tank_name: String,

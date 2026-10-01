@@ -1245,22 +1245,17 @@ pub fn author_nick_from_battle_results(
 
 /// 从 type=5 实体创建包按昵称精确匹配作者玩家实体 eid。
 /// 作者昵称来自回放自身：meta.player_name / battle_results author→花名册（2026-09-25 起
-/// 替代文件名包含匹配——文件名不属于回放数据，改名即失效）。昵称按原始 UTF-8 精确比较
-///（有 battle_results 昵称作锚，无垃圾误配风险，不再限制 ascii_graphic——顺带修复
-/// 非 ASCII 昵称作者无法解析的问题）。无匹配返回 0。
+/// 替代文件名包含匹配——文件名不属于回放数据，改名即失效）。昵称解码走
+/// [`decode_type5_nickname`] SSOT（原始 UTF-8 全域，含非 ASCII），与作者昵称精确比较
+///（有 battle_results 昵称作锚，无垃圾误配风险）。无匹配返回 0。
 pub fn resolve_author_player_eid_by_nick(packets: &[(u32, f32, &[u8])], author_nick: &str) -> u32 {
     if author_nick.is_empty() { return 0; }
     packets.iter()
         .filter_map(|(t, _, p)| {
-            if *t != 5 || p.len() < 60 { return None; }
-            let eid = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
-            let off = 57usize;
-            if off >= p.len() { return None; }
-            let l = p[off] as usize;
-            if !(1..=30).contains(&l) || off + 1 + l > p.len() { return None; }
-            std::str::from_utf8(&p[off + 1..off + 1 + l]).ok()
-                .filter(|s| *s == author_nick)
-                .map(|_| eid)
+            if *t != 5 { return None; }
+            decode_type5_nickname(p)
+                .filter(|(_, s)| *s == author_nick)
+                .map(|(eid, _)| eid)
         })
         .next()
         .unwrap_or(0)

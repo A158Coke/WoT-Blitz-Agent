@@ -20,7 +20,7 @@ use super::playback::{self, KillEvent, PlaybackPlayer};
 #[derive(Debug, Clone, Default)]
 pub struct EntityRecord {
     pub eid: u32,
-    /// type=5 昵称（ascii 图形字符过滤后缺失 → None）
+    /// type=5 昵称（SSOT UTF-8 解码；非法/缺失 → None）
     pub nickname: Option<String>,
     /// 结算花名册联表（按昵称；匿名/联表失败 = None，不编码 0）
     pub account_id: Option<u32>,

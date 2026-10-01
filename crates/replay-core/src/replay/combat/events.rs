@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::decode_type5_nickname;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatEvent {
     pub timestamp: f32,
@@ -54,26 +56,16 @@ pub struct CombatTimeline {
     pub entity_names: HashMap<u32, String>,
 }
 
-/// 从 type=5 数据包提取"实体 ID → 昵称"映射；昵称是载荷偏移 57 处的长度前缀 ASCII 串（1B 长度 + 字符串）。
+/// 从 type=5 数据包提取"实体 ID → 昵称"映射；解码语义见 [`decode_type5_nickname`]
+/// （原始 UTF-8 全域，长度前缀串 @57——SSOT，勿在此处内联解析）。
 pub(crate) fn extract_entity_names(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, String> {
     let mut names = HashMap::new();
     for (pkt_type, _, payload) in packets {
-        if *pkt_type != 5 || payload.len() < 60 {
+        if *pkt_type != 5 {
             continue;
         }
-        let eid = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-        let offset = 57;
-        if offset >= payload.len() {
-            continue;
-        }
-        let str_len = payload[offset] as usize;
-        if !(3..=30).contains(&str_len) || offset + 1 + str_len > payload.len() {
-            continue;
-        }
-        if let Ok(s) = std::str::from_utf8(&payload[offset + 1..offset + 1 + str_len]) {
-            if s.chars().all(|c| c.is_ascii_graphic()) {
-                names.entry(eid).or_insert_with(|| s.to_string());
-            }
+        if let Some((eid, s)) = decode_type5_nickname(payload) {
+            names.entry(eid).or_insert_with(|| s.to_string());
         }
     }
     names

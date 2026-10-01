@@ -154,7 +154,7 @@ pub struct PlayerLoadout {
 /// 联表 battle_results（昵称→队伍/tank_id）与 tanks.pb（基准 HP/弹种表）。
 /// 未联上花名册的实体（观察者等）跳过；花名册玩家缺 type=5 时按缺数据输出。
 pub fn collect_player_loadouts(packets: &[(u32, f32, &[u8])], br: &BattleResults) -> Vec<PlayerLoadout> {
-    // type=5 开局实体：eid → (昵称, 初始 HP)
+    // type=5 开局实体：eid → (昵称, 初始 HP)；昵称解码走 replay-core SSOT（UTF-8 全域）
     let mut entities: HashMap<u32, (String, u32)> = HashMap::new();
     for (pkt_type, _, p) in packets {
         if *pkt_type != 5 || p.len() < 60 { continue; }
@@ -163,13 +163,8 @@ pub fn collect_player_loadouts(packets: &[(u32, f32, &[u8])], br: &BattleResults
         let entry = entities.entry(eid).or_insert((String::new(), hp));
         if entry.1 == 0 { entry.1 = hp; }
         if entry.0.is_empty() {
-            let str_len = p[57] as usize;
-            if (3..=30).contains(&str_len) && 58 + str_len <= p.len() {
-                if let Ok(s) = std::str::from_utf8(&p[58..58 + str_len]) {
-                    if s.chars().all(|c| c.is_ascii_graphic()) {
-                        entry.0 = s.to_string();
-                    }
-                }
+            if let Some((_, s)) = wotb_replay_core::replay::combat::decode_type5_nickname(p) {
+                entry.0 = s.to_string();
             }
         }
     }

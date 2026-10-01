@@ -10,5 +10,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
-# 回放容器为 ZIP：读 meta.json 原始内容取 arenaBonusType（crate 的 Meta 未含该字段）
-zip = "0.6"
+# 回放容器为 ZIP（条目为 deflate）：读 meta.json / data.wotreplay 头部取
+# arenaBonusType 与 client_version（crate 的 Meta/Data 未含前者，后者需解析整包）。
+# **必须关掉默认特性**：默认会拉入 bzip2-sys/zstd（C 依赖），契约第 6 节要求
+# 本 crate 可编 wasm32——只保留纯 Rust 的 deflate 后端。
+zip = { version = "0.6", default-features = false, features = ["deflate"] }

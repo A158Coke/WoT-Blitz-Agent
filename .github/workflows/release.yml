@@ -72,14 +72,6 @@ jobs:
           Compress-Archive -Path release/wasm/* `
             -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
 
-
-      - name: 打包
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path release | Out-Null
-          Compress-Archive -Path release/wasm/* `
-            -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
-
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:

@@ -3163,12 +3163,18 @@ export function initTankViewer() {
                 if (yl) {
                     if (yl.max - yl.min < 360) {
                         yawDeg = norm180(Math.max(-yl.max, Math.min(-yl.min, yawDeg)));
+                    } else {
+                        // 全向炮塔（射界 360°）：不限位，但必须回绕——否则连续拖拽
+                        // 会让角度无限累加（720°/1080°…），HUD 显示超出 360°
+                        yawDeg = norm180(yawDeg);
                     }
                 } else {
                     const tLeft = tankData.turret_traverse_left ?? 180;
                     const tRight = tankData.turret_traverse_right ?? 180;
                     if (!(tLeft >= 180 && tRight >= 180)) {
-                        yawDeg = Math.max(-tLeft, Math.min(tRight, yawDeg));
+                        yawDeg = norm180(Math.max(-tLeft, Math.min(tRight, yawDeg)));
+                    } else {
+                        yawDeg = norm180(yawDeg);   // 同上：无限位炮塔回绕
                     }
                 }
                 let pitchDeg = rmbStartGun - dy * 0.5;

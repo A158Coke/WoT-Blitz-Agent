@@ -1214,8 +1214,8 @@ export function initPlayback(container, store) {
   // 变化检测必须在清空画布之前——先 clear 再早退会得到永久空白标签。
   function drawLabel(v) {
     const hp = hpAt(v, T), dead = deathAt(v, T);
-    if (hp === v.labelHp && dead === v.labelDead) return;
-    v.labelHp = hp; v.labelDead = dead;
+    if (hp === v.labelHp && dead === v.labelDead && !v.labelDirty) return;
+    v.labelHp = hp; v.labelDead = dead; v.labelDirty = false;
     const cv = v.labelCanvas, ctx = cv.getContext('2d');
     ctx.clearRect(0, 0, 512, 128);
     const team = '#' + new THREE.Color(teamColor(v)).getHexString();
@@ -1232,8 +1232,13 @@ export function initPlayback(container, store) {
     rrPath(ctx, 26, 6, 460, 116, 18);
     ctx.fillStyle = bg; ctx.fill();
     ctx.lineWidth = 3;
-    ctx.strokeStyle = dead ? 'rgba(122,130,140,.42)' : team + '99';
+    // 受击闪（FLASH_MS）：描边瞬亮，弱化而非隐藏
+    const flashing = (flashByEid.get(v.def.eid) || 0) > performance.now();
+    ctx.strokeStyle = dead ? 'rgba(122,130,140,.42)'
+      : flashing ? 'rgba(255,255,255,.92)' : team + '99';
+    if (flashing) ctx.lineWidth = 5;
     ctx.stroke();
+    ctx.lineWidth = 3;
     ctx.save();
     rrPath(ctx, 26, 6, 460, 116, 18); ctx.clip();
     ctx.globalAlpha = dead ? .45 : .92; ctx.fillStyle = base;
@@ -1291,6 +1296,16 @@ export function initPlayback(container, store) {
       fg.addColorStop(1, shadeCss(base, .68));
       rrPath(ctx, bx + 3, by + 3, Math.max(16, (bw - 6) * frac), bh - 6, 8);
       ctx.fillStyle = fg; ctx.fill();
+    }
+    // lost-HP 幽灵段（GHOST_MS）：当前血量右侧显示刚失去的一段（2D ghost 同语义）
+    const ghost = ghostByEid.get(v.def.eid);
+    if (ghost && !dead && ghost.toFrac > ghost.fromFrac) {
+      const gw = (bw - 6) * (ghost.toFrac - ghost.fromFrac);
+      if (gw > 1) {
+        rrPath(ctx, bx + 3 + (bw - 6) * ghost.fromFrac, by + 3, gw, bh - 6, 8);
+        ctx.fillStyle = 'rgba(255,255,255,.45)';
+        ctx.fill();
+      }
     }
     // 血量数字（条上居中，描边保证低血量时可读；恒定屏幕占比下优先保证可读性）
     const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
@@ -1508,7 +1523,11 @@ export function initPlayback(container, store) {
   // （2D battlePlayback.js 同款常量与注释）。因用壁钟，暂停时 transient 自然走完，
   // 无需特殊处理；seek 则清空并重置事件游标（不补播历史动画）。
   const FLOAT_DMG_MS = 1000;   // 伤害飘字
+  const GHOST_MS = 600;        // HP 条 lost-HP 幽灵段（2D 同值）
+  const FLASH_MS = 280;        // HP 条受击闪（2D 同值）
   const BURST_MS = 700;        // 击毁爆散
+  const ghostByEid = new Map();  // eid -> { fromFrac, toFrac, untilMs }
+  const flashByEid = new Map();  // eid -> untilMs
   let floatDmgs = [];          // { sp, tex, born, baseY, group }
   let burstFx = [];            // { g, born, rings }
   let dmgEvents = [];          // { t, eid, hpLoss }（回放时钟，升序）
@@ -1540,11 +1559,15 @@ export function initPlayback(container, store) {
     if (!v || !v.group.visible) return;
     const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
     const c = cv.getContext('2d');
-    c.font = 'bold 68px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.lineWidth = 8; c.strokeStyle = 'rgba(0,0,0,.78)';
+    // 可读性优先：加粗黑描边 + 外阴影 + 深橙填充（原先浅黄在黑描边偏薄时，
+    // 落在亮色地形/白车上对比不足）
+    c.font = 'bold 76px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.lineWidth = 12; c.strokeStyle = 'rgba(0,0,0,.95)'; c.lineJoin = 'round';
+    c.shadowColor = 'rgba(0,0,0,.85)'; c.shadowBlur = 14;
     const text = '-' + hpLoss;
     c.strokeText(text, 128, 64);
-    c.fillStyle = '#ffd166'; c.fillText(text, 128, 64);
+    c.shadowBlur = 0;                      // 填充不再叠阴影，保持笔画锐利
+    c.fillStyle = '#ff9f1a'; c.fillText(text, 128, 64);
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -1555,7 +1578,21 @@ export function initPlayback(container, store) {
     sp.position.copy(v.group.position); sp.position.y += 3.2;
     scene.add(sp);
     floatDmgs.push({ sp, tex, born: performance.now(), baseY: sp.position.y, group: v.group });
+    // 同源触发 HP 条反馈（2D 三件套：飘字 + 幽灵 + 闪，同一 loss 事件驱动）
+    const nowMs = performance.now();
+    const maxHp = v.def.max_hp > 0 ? v.def.max_hp : 0;
+    if (maxHp > 0) {
+      const curHp = Math.max(0, hpAtRaw(v));
+      const fromFrac = Math.max(0, Math.min(1, curHp / maxHp));
+      const toFrac = Math.max(0, fromFrac + hpLoss / maxHp);   // 损失前比例（幽灵显示刚丢的量）
+      ghostByEid.set(eid, { fromFrac, toFrac, untilMs: nowMs + GHOST_MS });
+    }
+    flashByEid.set(eid, nowMs + FLASH_MS);
+    v.labelDirty = true;   // 标签重绘由反馈触发（否则只在 HP 整数变化时重绘）
   }
+
+  // 供反馈使用的原始 HP（不依赖标签缓存）
+  function hpAtRaw(v) { return hpAt(v, T); }
 
   // 击毁爆散：双层扩散环 + 中心球，700ms 内扩张并淡出
   function spawnBurst(eid) {
@@ -1580,6 +1617,19 @@ export function initPlayback(container, store) {
 
   function updateTransients() {
     const now = performance.now();
+    // HP 条反馈过期清理（过期后再刷一次标签以擦除残影/闪光）
+    for (const [eid, g] of ghostByEid) {
+      if (now >= g.untilMs) {
+        ghostByEid.delete(eid);
+        const v = vehicleByEid(eid); if (v) v.labelDirty = true;
+      }
+    }
+    for (const [eid, until] of flashByEid) {
+      if (now >= until) {
+        flashByEid.delete(eid);
+        const v = vehicleByEid(eid); if (v) v.labelDirty = true;
+      }
+    }
     for (let i = floatDmgs.length - 1; i >= 0; i--) {
       const f = floatDmgs[i];
       const k = (now - f.born) / FLOAT_DMG_MS;
@@ -1624,6 +1674,7 @@ export function initPlayback(container, store) {
       b.ball.geometry.dispose(); b.ball.material.dispose();
     }
     burstFx.length = 0;
+    ghostByEid.clear(); flashByEid.clear();   // 2D seek 同语义：清空且不补播
     dmgPtr = 0; burstPtr = 0;   // 游标重置：seek 后不补播历史动画
   }
 
@@ -1632,6 +1683,7 @@ export function initPlayback(container, store) {
     dmgTotal: dmgEvents.length, dmgPtr,
     burstTotal: burstEvents.length, burstPtr,
     floatAlive: floatDmgs.length, burstAlive: burstFx.length,
+    ghostAlive: ghostByEid.size, flashAlive: flashByEid.size,
   });
   function spawnShot(s) {
     const from = new THREE.Vector3(-s.from[0], s.from[1], s.from[2]);

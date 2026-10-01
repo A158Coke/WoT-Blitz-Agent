@@ -69,6 +69,50 @@ fn playback_smoke() {
     );
 }
 
+/// 跨 facet 身份不变量：Playback 中每个有昵称的 observed vehicle 必须能在
+/// Result 花名册找到同名玩家，且 account_id/team/tank_id 完全一致（Result 为
+/// oracle——昵称联表 SSOT 在模型 scan 一次完成；ASCII 过滤时代中文昵称车辆
+/// team=0 且无身份，本测试即回归锚）。不做全局车辆数断言：single-POV/AoI 下
+/// 整场未观察到的敌人合法缺席。
+#[test]
+fn playback_result_identity_invariant() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/replay_samples");
+    let Some(rd) = std::fs::read_dir(&dir).ok() else { return };
+    let mut checked = 0;
+    for path in rd.flatten().map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "wotbreplay").unwrap_or(false))
+    {
+        let bytes = std::fs::read(&path).unwrap();
+        let Ok(result_str) = wotb_replay_wasm::result_json(&bytes) else { continue };
+        let Ok(playback_str) = wotb_replay_wasm::playback_json(&bytes) else {
+            eprintln!("跳过（非整场/片段）: {}", path.display());
+            continue;
+        };
+        let result: serde_json::Value = serde_json::from_str(&result_str).unwrap();
+        let pb: serde_json::Value = serde_json::from_str(&playback_str).unwrap();
+
+        let roster: std::collections::HashMap<&str, &serde_json::Value> = result["players"]
+            .as_array().unwrap().iter()
+            .map(|p| (p["nickname"].as_str().unwrap_or(""), p))
+            .collect();
+        let mut named = 0;
+        for v in pb["vehicles"].as_array().unwrap() {
+            let Some(nick) = v["nickname"].as_str().filter(|s| !s.is_empty()) else { continue };
+            let player = roster.get(nick)
+                .unwrap_or_else(|| panic!("{}: observed 昵称 {nick:?} 不在 Result 花名册", path.display()));
+            assert_eq!(v["account_id"], player["account_id"], "{nick} account_id 联表一致");
+            assert_eq!(v["team"], player["team"], "{nick} team 联表一致");
+            assert_eq!(v["tank_id"], player["tank_id"], "{nick} tank_id 联表一致");
+            assert!(v["team"].as_u64().unwrap() == 1 || v["team"].as_u64().unwrap() == 2,
+                "{nick} team 必须是 1/2（联表成功），不得为 0");
+            named += 1;
+        }
+        eprintln!("--- {}: {} 车全部通过（具名 {named}）", path.display(), pb["vehicles"].as_array().unwrap().len());
+        checked += 1;
+    }
+    assert!(checked > 0, "至少一个可解析样本");
+}
+
 /// 射击复现通道：弹种反解注入不变量——`shells_json`（dump-shell-kinds 富表）
 /// 注入后带 shell_id 的弹全部补齐 `shell_kind` 与 `shell`（type/穿深一致）；
 /// 缺省表时 shell_kind 为空串、无 shell 字段（数据可得性边界）。

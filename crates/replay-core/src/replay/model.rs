@@ -271,6 +271,43 @@ impl ReplayModel {
 mod tests {
     use super::*;
 
+    /// Unicode 昵称端到端 JOIN 回归（本仓库 2026-10 前 ASCII 过滤的主 bug）：
+    /// type5 中文昵称实体 × 中文昵称花名册 → account_id/team/tank_id 联上、
+    /// 作者实体可解析（strict 射击路径的前提）。
+    #[test]
+    fn unicode_nickname_joins_roster() {
+        let nick = "兰亭公子苏";
+        // 最小 type5：eid@[0..4]、满血锚点@51、昵称块@57（[len][bytes@58..]）
+        let body = nick.as_bytes();
+        let mut p = vec![0u8; 60.max(58 + body.len())];
+        p[0..4].copy_from_slice(&0x21u32.to_le_bytes());
+        p[51..53].copy_from_slice(&1000u16.to_le_bytes());
+        p[57] = body.len() as u8;
+        p[58..58 + body.len()].copy_from_slice(body);
+        let packets: Vec<(u32, f32, &[u8])> = vec![(5, 1.0, &p)];
+        let roster = vec![PlaybackPlayer {
+            account_id: 42,
+            nickname: nick.to_string(),
+            team: 2,
+            tank_id: 30085,
+        }];
+        let limits = GunPitchLimits::new();
+        let model = ReplayModel::scan(&ScanInput {
+            packets: &packets,
+            roster: &roster,
+            author_account_id: 42,
+            pitch_limits: &limits,
+        })
+        .unwrap();
+        assert_eq!(model.timeline.author_eid, 0x21, "中文昵称作者实体必须可解析");
+        let e = model.entities.iter().find(|e| e.eid == 0x21).unwrap();
+        assert_eq!(e.nickname.as_deref(), Some(nick));
+        assert_eq!(e.account_id, Some(42), "昵称联表 account_id");
+        assert_eq!(e.team, Some(2), "昵称联表 team");
+        assert_eq!(e.tank_id, Some(30085), "昵称联表 tank_id");
+        assert!(e.is_author, "作者标记");
+    }
+
     /// 合成血量链：锚点 → 掉血 → 归零（击杀者 7/cause 0）+ 同值重复事件（应去重，
     /// 不改写击杀者）→ 死亡终态与去重序列正确。
     #[test]

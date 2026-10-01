@@ -528,17 +528,22 @@ export function initPlayback(container, store) {
           nm.flatShading = true;
           return nm;
         })()));
-        // 退化几何隔离（导出端修复前的防护）：SpeedTree 树批次因顶点布局解码
-        // 错误呈现 20–29 面/顶点（正常索引网格 ≤6；建筑/道具 <2），顶点错位使
-        // 面片横跨整棵模型 → 撕裂碎片，且虚增到每棵上万面。此类批次整批移除
-        // 并释放几何（不渲染、不占 draw call、回收显存）；正常几何不受影响。
+        // 退化几何隔离（防护）：旧版导出器把树的三角列表误判为 strip 解析，
+        // 产生横跨整个模型的长条三角形（撕裂）并使面数虚高（实测 20–29 面/顶点，
+        // 修正后同批树为 7–10）。阈值 15 恰好区分：已重导出的地图保留树，
+        // 未重导出地图的撕裂批次整批移除（不渲染/不占 draw call/回收显存）。
+        // 允许 ?degrade=N 覆盖（调试用）。
         const degradedMeshes = [];
         gltf.scene.traverse((o) => {
           if (!o.isMesh) return;
           const g0 = o.geometry;
           const vc = g0.attributes.position ? g0.attributes.position.count : 0;
           const ic = g0.index ? g0.index.count : vc;
-          if (vc > 0 && (ic / 3) / vc > 8) degradedMeshes.push(o);
+          const degLimit = (() => {
+            const q = Number(new URLSearchParams(location.search).get('degrade'));
+            return Number.isFinite(q) && q > 0 ? q : 15;
+          })();
+          if (vc > 0 && (ic / 3) / vc > degLimit) degradedMeshes.push(o);
         });
         for (const o of degradedMeshes) {
           o.removeFromParent();

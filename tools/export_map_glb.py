@@ -52,6 +52,7 @@ import random
 import re
 import struct
 import sys
+import os
 import time
 
 import numpy as np
@@ -538,6 +539,13 @@ def group_triangles(group: dict, indices: list[int]) -> list[int] | None:
     if ptype in (None, 0):
         return indices
     if ptype == 1 and ic >= 3:
+        # 实测修正：DAVA 树/灌木等 group 的 rhi_primitiveType=1，但索引序列实际是
+        # 三角列表结构（每 3 个成组，如 [0,1,2, 3,4,0, 5,6,3,…]；strip 应为连续
+        # 递增 [0,1,2,3,4,…]）。误按 strip 解析会让相邻组共享边 → 产生横跨整个
+        # 模型的长条三角形（撕裂），且面数虚高（Linden 68 顶点被解析出 1756 面，
+        # 实际 656）。索引数能被 3 整除时按列表处理。
+        if ic % 3 == 0:
+            return indices
         return strip_to_triangles(indices)
     if ptype == 4 and ic >= 3:
         return fan_to_triangles(indices)

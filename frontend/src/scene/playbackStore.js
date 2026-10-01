@@ -30,6 +30,8 @@ export function createPlaybackStore() {
     hpFriendPct: 100, hpEnemyPct: 100,
     hpFriend: 0, hpFriendMax: 0, hpEnemy: 0, hpEnemyMax: 0,
     pointsFriend: null, pointsEnemy: null,   // null = 该场无点数广播（非争霸）
+    assaultObjective: false,                 // 单基地目标是否存在（独立于是否有占领进度）
+    assaultProgress: null,                   // null = 目标在但当前无占领进度广播；非单基地场次整行不显示
     // 覆盖层
     banner: null, // { text, color }
     killfeed: [], // { id, text }

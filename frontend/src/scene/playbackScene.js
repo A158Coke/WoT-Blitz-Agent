@@ -368,8 +368,8 @@ export function initPlayback(container, store) {
   // 输出 = albedo × SH(标定 1.77) × (遮挡/遮挡均值)——按均值归一化保留内暗外亮
   // 的纵深变化，又不会把整体亮度压到校准水平之下（各图贴图明暗差异大，固定
   // 系数会把暗色贴图的灌木压成黑色）。风摆为动态效果，静态导出不参与。
-  // 场景 GLB 材质实例缓存：同一（name,map,color,alphaMode,opacity,occMean）复用同一
-  // 材质对象。此前每个 mesh 各建一份（实测 2107 mesh ↔ 2107 材质）——材质/着色器
+  // 场景 GLB 材质实例缓存：同一（name,map,color,alphaTest,transparent,opacity,occMean）
+  // 复用同一材质对象。此前每个 mesh 各建一份（实测 2107 mesh ↔ 2107 材质）——材质/着色器
   // 实例与 program 切换随 mesh 数线性膨胀，是当前最大的性能开销来源。
   // 生命周期：teardown 时随 mapScenery dispose 并清空本表（勿复用已 dispose 实例）。
   const sceneryMatCache = new Map();
@@ -472,7 +472,20 @@ export function initPlayback(container, store) {
         // 静态资产面：meta 来自打包器物化的 terrain.json sidecar
         const m = await fetch(mapStaticUrl('terrain-meta'));
         if (stale()) return;
-        if (m.ok) tmeta = await m.json();
+        if (m.ok) {
+          tmeta = await m.json();
+          // span = 水平世界跨度（服务端 terrain_scale 同式 max(dx,dy)，map_assets.rs）。
+          // 打包器 v0.1.7 的 sidecar 误写垂直高度差（zmax-zmin，malinovka=60）——按
+          // sidecar 自带的 worldBounds 自愈，否则地形被压成 span×span 小块、高度采样
+          // 坍缩（地图大片露出背景色，看起来"部分贴图是黑的"）。与服务端 X-Terrain-Meta
+          // 的取值一致；WotBTools 消费端同款自愈。
+          const wb = tmeta.worldBounds;
+          if (Array.isArray(wb?.min) && Array.isArray(wb?.max)) {
+            const dx = wb.max[0] - wb.min[0];
+            const dy = wb.max[1] - wb.min[1];
+            if (dx > 0 || dy > 0) tmeta.span = Math.max(dx, dy);
+          }
+        }
         const b = await fetch(terrainBin);
         if (stale()) return;
         if (b.ok) tbuf = await b.arrayBuffer();
@@ -562,9 +575,11 @@ export function initPlayback(container, store) {
         // 建筑会渲染成近黑——统一降级为 Lambert 并保留贴图/透明/平直着色。
         // 几何含 _CORNER 属性的叶卡走 billboard 材质（见 makeBillboardMaterial）
         const convMat = (m, isCard) => cachedSceneryMat(
+          // alphaTest/transparent 必须进键：GLTFLoader 不暴露 alphaMode，同 name+map
+          // 的 MASK 与 OPAQUE 材质只靠这两项区分，漏掉会串用（先建的赢）
           [isCard ? 'C' : 'M', m.name || '', m.map ? m.map.uuid : '',
            m.color && m.color.getHexString ? m.color.getHexString() : '',
-           m.alphaMode || '', m.opacity ?? 1,
+           m.alphaMode || '', m.alphaTest ?? 0, !!m.transparent, m.opacity ?? 1,
            (m.userData && m.userData.extras && m.userData.extras.occMean) || ''].join('|'),
           () => (isCard ? makeBillboardMaterial(m) : (() => {
           // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
@@ -598,8 +613,15 @@ export function initPlayback(container, store) {
             opacity: m.opacity ?? 1,
             side: THREE.DoubleSide,
           });
-          if (m.alphaMode === 'MASK') nm.alphaTest = m.alphaCutoff || 0.33;
-          if (pseudoOpaque) nm.alphaTest = 0.33;
+          // 镂空材质必须继承 GLTFLoader 解析好的 alphaTest。GLTFLoader 不把 glTF 的
+          // alphaMode 挂到材质上——MASK 只体现为 alphaTest（alphaCutoff ?? 0.5），
+          // BLEND 只体现为 transparent。旧判据 `m.alphaMode === 'MASK'` 恒为 false
+          // （该属性不存在），重建材质又只拷了 map/color/opacity/side，于是 MASK 的
+          // 裁切被整个丢掉：铁丝网（wirebarricade）/藤蔓（ivy）/蕨/标牌这类镂空贴图
+          // 按整片方片照绘，背景没被剔除——那些贴图的背景恰是纯黑（实测 ivy 背景区
+          // 亮度 0.0），看上去就是一张实心黑片。
+          if (m.alphaTest > 0) nm.alphaTest = m.alphaTest;
+          if (pseudoOpaque) nm.alphaTest = Math.max(nm.alphaTest || 0, 0.33);
           if (nm.transparent) nm.depthWrite = false;
           nm.flatShading = true;
           return nm;
@@ -1099,6 +1121,7 @@ export function initPlayback(container, store) {
     for (const b of baseObjects) {
       if (b.reground) b.reground();   // 重建贴地环带几何 + HUD 抬高（见 buildSupremacyBases）
     }
+    if (assaultMarker && assaultMarker.reground) assaultMarker.reground();
   }
   function baseStateAt(bid, t) {
     const arr = DATA.supremacy_bases;
@@ -1147,10 +1170,119 @@ export function initPlayback(container, store) {
     }
   }
 
+  // ---------- 攻防战单基地（Assault / Encounter）----------
+  // 与争霸战同构：几何来自 mapBases.json 的 `assault`（单点，世界坐标；scene x = −游戏 x），
+  // 状态来自 DATA.assault_bases（contract v2 wrapper8/root8；单基地占领进度 0..100，
+  // 重建侧不施加单调性——回落/重置原样保留）。
+  // 语义红线（WotbTools assault-base-state.md）：Assault 的 owner/capturing 为 null，
+  // 静态 scene 的 `team` 字段语义 UNKNOWN —— 一律不据此上色/推断归属，环与 HUD 用中性色，
+  // 进度条用呈现强调色（仅表示"有占领进度"，不代表阵营）。也不由车辆距离推算半径。
+  const ASSAULT_RADIUS_FALLBACK = 20;      // 客户端 scene 常不声明 radius：20m 仅呈现兜底
+  const ASSAULT_PROGRESS_COLOR = 0xffc24b; // 呈现强调色（非阵营语义）
+  let assaultMarker = null;
+
+  function clearAssaultBase() {
+    if (!assaultMarker) return;
+    const m = assaultMarker;
+    if (m.ring) { scene.remove(m.ring); m.ring.geometry.dispose(); m.ring.material.dispose(); }
+    if (m.sprite) {
+      labelScene.remove(m.sprite);
+      if (m.sprite.material) { m.sprite.material.map?.dispose(); m.sprite.material.dispose(); }
+    }
+    assaultMarker = null;
+  }
+
+  function buildAssaultBase() {
+    clearAssaultBase();
+    // 目标存在性门：优先用契约字段 assault_objective_present（目标族发出过**裸初始化对
+    // 以外的**字段——裸初始化对是通用广播，普通对局也发，故不能只看"族出现过"：62 份
+    // 真实样本里 8 份普通对局只发这一对）。旧产物无该字段时回退"有进度广播"。
+    // 不靠静态几何或 arenaBonusType 猜模式。
+    const hasObj = DATA.assault_objective_present === true
+      || (DATA.assault_objective_present === undefined
+          && !!(DATA.assault_bases && DATA.assault_bases.length));
+    if (!hasObj) return;
+    const entry = mapBasesData[String(DATA.meta.map_id)];
+    const pts = (entry && entry.assault) || [];
+    // 多 candidate 无证据 fail-closed（与 WotBTools 2D 同式）：几何不唯一就不选目标
+    if (pts.length !== 1) return;
+    const p = pts[0];
+    const gx = -p.x, gz = p.y;               // 场景镜像系
+    const r = p.radius || ASSAULT_RADIUS_FALLBACK;
+    const ring = new THREE.Mesh(
+      makeGroundedRing(gx, gz, r),
+      new THREE.MeshBasicMaterial({ color: BASE_NEUTRAL, side: THREE.DoubleSide,
+                                    transparent: true, opacity: 0.9, depthWrite: false,
+                                    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+    scene.add(ring);
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128;
+    const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, depthTest: false, depthWrite: false, transparent: true }));
+    sprite.renderOrder = 998;
+    sprite.position.set(gx, ringMaxGroundY(gx, gz, r) + BASE_HUD_H, gz);
+    labelScene.add(sprite);
+    assaultMarker = { ring, sprite, canvas, ctx: canvas.getContext('2d'), tex, r,
+                      stateKey: undefined,
+                      reground: () => {
+                        ring.geometry.dispose();
+                        ring.geometry = makeGroundedRing(gx, gz, r);
+                        sprite.position.y = ringMaxGroundY(gx, gz, r) + BASE_HUD_H;
+                      } };
+  }
+
+  // 单基地占领进度：取 clock ≤ t 的最后一条（tracks 按 clock 升序，重建侧保证）；
+  // 无广播 → null（不合成 0）
+  function assaultProgressAt(t) {
+    const arr = DATA.assault_bases;
+    let p = null;
+    for (let i = 0; i < arr.length; i++) {
+      const tr = arr[i];
+      if (tr.clock > t) break;
+      p = tr.progress ?? null;
+    }
+    return p;
+  }
+  function drawAssaultHud(m, progress) {
+    const ctx = m.ctx;
+    ctx.clearRect(0, 0, 256, 128);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(0,0,0,.72)';
+    ctx.font = 'bold 30px sans-serif';
+    ctx.strokeText('BASE', 128, 24); ctx.fillStyle = '#f0f0f0'; ctx.fillText('BASE', 128, 24);
+    const col = '#' + ASSAULT_PROGRESS_COLOR.toString(16).padStart(6, '0');
+    if (progress == null) {
+      // 目标存在但当前无占领进度：只留文字，不画 0% 条（0 ≠ 没发生）
+      ctx.font = 'bold 34px sans-serif'; ctx.fillStyle = 'rgba(240,240,240,.55)';
+      ctx.strokeText('无占领', 128, 84); ctx.fillText('无占领', 128, 84);
+      m.tex.needsUpdate = true;
+      return;
+    }
+    const w = 176, h = 16, x = (256 - w) / 2, y = 92;
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = col;
+    ctx.fillRect(x, y, Math.max(0, Math.min(1, progress / 100)) * w, h);
+    ctx.font = 'bold 44px sans-serif';
+    ctx.strokeText(progress + '%', 128, 58); ctx.fillStyle = col; ctx.fillText(progress + '%', 128, 58);
+    m.tex.needsUpdate = true;
+  }
+  function updateAssaultBase() {
+    const m = assaultMarker;
+    if (!m) return;
+    const p = assaultProgressAt(T);
+    if (m.stateKey !== p) { m.stateKey = p; drawAssaultHud(m, p); }
+    const d = camera.position.distanceTo(m.sprite.position);
+    const s = Math.min(16, Math.max(5, d * 0.03));
+    m.sprite.scale.set(s * 2, s, 1);
+  }
+
+  // 队伍色：深绿 / 深红。原先 0x3fa66a / 0xc05046 偏亮，在明亮地表与浅色贴图上
+  // 对比不足。同源供标签卡片、花名册圆点、无 GLB 时的代理车体三处使用，保持同一调色。
   function teamColor(v) {
     const f = DATA.meta.friendly_team, t = v.def.team;
     if (t === 0 || f === 0) return 0x8a94a3;
-    return t === f ? 0x3fa66a : 0xc05046;
+    return t === f ? 0x26794a : 0x98322a;
   }
 
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
@@ -1182,7 +1314,9 @@ export function initPlayback(container, store) {
     tex.colorSpace = THREE.SRGBColorSpace;   // canvas 本身是 sRGB，颜色直出
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
       map: tex, depthTest: false, depthWrite: false,
-      transparent: true, opacity: 0.72,   // 整体半透明，弱化对场景的遮挡感
+      // 卡片本体不透明（描边/底色/文字全部 1.0 alpha，见 drawLabel）；这里保留
+      // transparent 只为圆角外的透明像素——置 false 会让圆角变成黑方块。
+      transparent: true, opacity: 1,
     }));
     sp.renderOrder = 999;   // 最后绘制：水面/半透明层不得覆盖标签；不写深度避免
                             // 透明四边形裁掉后画的相邻标签（14 车聚簇时必现）
@@ -1219,29 +1353,29 @@ export function initPlayback(container, store) {
     const cv = v.labelCanvas, ctx = cv.getContext('2d');
     ctx.clearRect(0, 0, 512, 128);
     const team = '#' + new THREE.Color(teamColor(v)).getHexString();
-    const base = dead ? '#5a636e' : team;
-    // 卡片：投影 + 纵向渐变底 + 队伍色描边 + 左侧队伍色竖条
+    // 死亡态不再靠整体降透明度表达（会重新引入半透明），改用更暗的中性色
+    const base = dead ? '#4a525c' : team;
+    // 卡片：投影 + 纵向渐变底 + 队伍色描边 + 左侧队伍色竖条（底色/描边/竖条/文字全部不透明）
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 5;
     rrPath(ctx, 26, 6, 460, 116, 18);
-    ctx.fillStyle = 'rgba(15,20,28,.85)'; ctx.fill();
+    ctx.fillStyle = '#0f141b'; ctx.fill();
     ctx.restore();
     const bg = ctx.createLinearGradient(0, 6, 0, 122);
-    bg.addColorStop(0, 'rgba(24,31,43,.88)');
-    bg.addColorStop(1, 'rgba(12,17,24,.80)');
+    bg.addColorStop(0, '#202836');
+    bg.addColorStop(1, '#0d1219');
     rrPath(ctx, 26, 6, 460, 116, 18);
     ctx.fillStyle = bg; ctx.fill();
     ctx.lineWidth = 3;
     // 受击闪（FLASH_MS）：描边瞬亮，弱化而非隐藏
     const flashing = (flashByEid.get(v.def.eid) || 0) > performance.now();
-    ctx.strokeStyle = dead ? 'rgba(122,130,140,.42)'
-      : flashing ? 'rgba(255,255,255,.92)' : team + '99';
+    ctx.strokeStyle = dead ? '#6a727c' : flashing ? '#ffffff' : team;
     if (flashing) ctx.lineWidth = 5;
     ctx.stroke();
     ctx.lineWidth = 3;
     ctx.save();
     rrPath(ctx, 26, 6, 460, 116, 18); ctx.clip();
-    ctx.globalAlpha = dead ? .45 : .92; ctx.fillStyle = base;
+    ctx.fillStyle = base;
     ctx.fillRect(26, 6, 12, 116);
     ctx.restore();
     // 车型名为主（大字亮色）+ 昵称为辅（小字置灰），并排一行水平居中；超宽自适应缩字号
@@ -1260,7 +1394,7 @@ export function initPlayback(container, store) {
       return w;
     };
     while (tfs > 28 && rowWidth() > 430) tfs -= 2;
-    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(0,0,0,.75)';
+    ctx.lineWidth = 6; ctx.strokeStyle = '#000000';   // 文字描边同样不透明
     let tx = 256 - rowWidth() / 2;
     if (starW) {
       ctx.strokeText('★', tx, 34);
@@ -1271,7 +1405,7 @@ export function initPlayback(container, store) {
     const primaryText = tank || name;
     ctx.font = tankFont(tfs);
     ctx.strokeText(primaryText, tx, 34);
-    ctx.fillStyle = dead ? 'rgba(160,168,178,.78)' : '#eef3f9';
+    ctx.fillStyle = dead ? '#a4acb6' : '#eef3f9';
     ctx.fillText(primaryText, tx, 34);
     tx += ctx.measureText(primaryText).width;
     // 辅：昵称（小字置灰；tank 缺失时已顶位，不重复绘制）
@@ -1280,15 +1414,15 @@ export function initPlayback(container, store) {
       ctx.font = nickFont;
       ctx.lineWidth = 5;
       ctx.strokeText(name, tx, 36);
-      ctx.fillStyle = dead ? 'rgba(140,148,158,.6)' : '#b9c4cf';
+      ctx.fillStyle = dead ? '#8b939d' : '#b9c4cf';
       ctx.fillText(name, tx, 36);
     }
     // 血量条：暗槽 + 队伍色纵向渐变填充
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
     const bx = 56, by = 68, bw = 400, bh = 44;
     rrPath(ctx, bx, by, bw, bh, 11);
-    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.stroke();
+    ctx.fillStyle = '#0a0e13'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#3a4450'; ctx.stroke();
     if (frac > 0 && !dead) {
       const fg = ctx.createLinearGradient(0, by + 3, 0, by + bh - 3);
       fg.addColorStop(0, shadeCss(base, 1.35));
@@ -1303,7 +1437,7 @@ export function initPlayback(container, store) {
       const gw = (bw - 6) * (ghost.toFrac - ghost.fromFrac);
       if (gw > 1) {
         rrPath(ctx, bx + 3 + (bw - 6) * ghost.fromFrac, by + 3, gw, bh - 6, 8);
-        ctx.fillStyle = 'rgba(255,255,255,.45)';
+        ctx.fillStyle = '#c8d2de';   // 不透明的"刚失去"段，与队伍色填充区分
         ctx.fill();
       }
     }
@@ -1311,7 +1445,7 @@ export function initPlayback(container, store) {
     const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
     ctx.font = '700 30px "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
-    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.85)';
+    ctx.lineWidth = 5; ctx.strokeStyle = '#000000';
     ctx.strokeText(txt, 256, by + bh / 2 + 1);
     ctx.fillStyle = '#fff'; ctx.fillText(txt, 256, by + bh / 2 + 1);
     v.label.material.map.needsUpdate = true;
@@ -1971,6 +2105,7 @@ export function initPlayback(container, store) {
     clampCameraTarget();
     controls.update();
     updateSupremacyBases();
+    updateAssaultBase();
     updateTransients();
     updateLabels();
     renderer.render(scene, camera);
@@ -2021,6 +2156,12 @@ export function initPlayback(container, store) {
       }
       store.pointsFriend = pf; store.pointsEnemy = pe;
     }
+    // 顶栏：攻防战/遭遇战单基地——目标存在性 + 占领进度（取 ≤T 的最后一条）。
+    // 无目标证据的场次保持 false/null → UI 整行不显示。判据同 buildAssaultBase。
+    store.assaultObjective = DATA.assault_objective_present === true
+      || (DATA.assault_objective_present === undefined
+          && !!(DATA.assault_bases && DATA.assault_bases.length));
+    if (store.assaultObjective) store.assaultProgress = assaultProgressAt(T);
     if (DEBUG) window.__T = T;   // 调试钩子：当前回放时钟
     store.time = T;
     store.duration = DATA.meta.duration;
@@ -2141,6 +2282,7 @@ export function initPlayback(container, store) {
       if (o) { scene.remove(o); disposeObject3D(o); }
     }
     clearSupremacyBases();   // 争霸基地（圆环 + HUD sprite）随会话释放
+    clearAssaultBase();      // 攻防战单基地（圆环 + HUD sprite）随会话释放
     sceneryMatCache.clear();   // 材质已随 mapScenery dispose，缓存须清空（勿复用）
     if (boundaryGroup) {
       const shared = boundaryGroup.userData.sharedMaterial;
@@ -2206,6 +2348,7 @@ export function initPlayback(container, store) {
     buildTransientSources();   // 战斗反馈事件源（伤害/击毁）
     if (DEBUG) window.__pbData = DATA;   // 调试钩子：检查 contract v2 字段到达情况
     buildSupremacyBases();
+    buildAssaultBase();
     T = DATA.meta.t_start;
     shotPtr = 0; killPtr = 0;
     if (DEBUG) window.__pbV = V;   // 调试钩子：控制台可查每车 GLB/位姿状态（仅 ?debug）

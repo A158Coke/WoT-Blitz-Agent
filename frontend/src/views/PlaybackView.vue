@@ -95,6 +95,18 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
         </span>
         <b class="pdv pdv-e" :title="'敌方点数 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">{{ store.pointsEnemy ?? '—' }}</b>
       </div>
+      <!-- 行 4：攻防战 / 遭遇战单基地（目标存在性独立于占领活动）。单目标无双侧之分，
+           数值在外、条居中，整行 flex 居中——与上面两行同一视觉系。 -->
+      <div v-if="store.assaultObjective" class="tb-row tb-assault">
+        <template v-if="store.assaultProgress != null">
+          <b class="objv" :title="'基地占领进度 ' + store.assaultProgress + ' / 100'">{{ store.assaultProgress }}%</b>
+          <span class="objbar" :title="'基地占领进度 ' + store.assaultProgress + ' / 100'">
+            <i :style="{ width: store.assaultProgress + '%' }"></i>
+          </span>
+        </template>
+        <em v-else class="objv objv-none" title="目标存在，但当前无占领进度广播——0 与未发生不同">无占领</em>
+        <em class="objtag">基地</em>
+      </div>
     </div>
 
     <div id="team1" class="team panel">
@@ -238,6 +250,17 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar .pdv { min-width: 44px; font-variant-numeric: tabular-nums; font-size: 13px; }
 #topbar .pdv-f { color: var(--ally); text-align: right; }
 #topbar .pdv-e { color: var(--enemy); text-align: left; }
+/* 行 4：单基地占领进度。目标无阵营归属（协议侧 owner/capturing 恒 null），故用中性强调色，
+   不借 --ally/--enemy —— 避免让呈现暗示"谁在占领"。 */
+#topbar .tb-assault { font-size: 13px; color: var(--dim); gap: 8px; }
+#topbar .objv { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 13px;
+  color: var(--accent); text-align: right; }
+#topbar .objv-none { color: var(--dim); font-style: normal; }
+#topbar .objbar { display: inline-block; width: 214px; height: 7px; border-radius: 4px;
+  background: var(--line); overflow: hidden; }
+#topbar .objbar > i { display: block; height: 100%; background: var(--accent);
+  transition: width .18s linear; }
+#topbar .objtag { font-style: normal; }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #topbar .score { font-size: 16px; font-weight: 600; }
 #topbar .score .t1 { color: var(--ally); }

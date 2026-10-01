@@ -142,10 +142,10 @@ pub struct PlayerSummary {
     /// 炮印数（0..3）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gun_marks: Option<u32>,
-    /// 经验（#301 f23；crate `base_xp` 在 11.19+ 语料恒为 0，以此为准）
+    /// 经验（#301 f23，WotbTools PROVEN；crate `base_xp` 在 11.19 语料中为 0，以此为准）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xp: Option<u32>,
-    /// 银币（#301 f106；crate `credits_earned` 在 11.19+ 语料恒为 0，以此为准）
+    /// 银币（#301 f106，WotbTools PROVEN；crate `credits_earned` 在 11.19 语料中为 0，以此为准）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<u32>,
     /// 本战斗者的结算 result/entity ID（#301 外层 f1；`killer_id` 引用此命名空间）

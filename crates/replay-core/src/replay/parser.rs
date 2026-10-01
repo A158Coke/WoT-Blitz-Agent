@@ -15,34 +15,60 @@ pub struct ReplayParser<'a> {
     tank_resolver: Option<&'a dyn TankNames>,
 }
 
-/// 从回放**原始字节**读取 meta.json 的 `arenaBonusType`（名人堂白名单 {1,7}、
-/// 联赛模式 {2,4} 的判定依据）。
+/// 从回放**原始字节**读取 meta.json 原始 JSON。
 ///
 /// 回放容器是 ZIP（`pk` 魔数），meta.json 为其中一条；上游 crate 的 `Meta` 只反序列化
-/// 部分字段（playerName/arenaUniqueId/battleDuration/tank_id/mapId），**不含
-/// arenaBonusType**，且 crate 不暴露原始条目访问——故此处自行解 ZIP 取原始 JSON。
-/// 非 ZIP/无该字段一律 None（unknown ≠ 0）。
-pub fn read_arena_bonus_type(raw: &[u8]) -> Option<u32> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(raw)).ok()?;
-    let mut f = zip.by_name("meta.json").ok()?;
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut f, &mut text).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
-}
-
-/// 从回放**原始字节**读取 meta.json 的原始 `mapName`（地图代号，如 `skit`）。
-///
-/// crate 的 `Meta` 把地图反序列化为枚举（未知地图丢失原名），底图/语义/i18n 需要原始代号。
-/// meta.json 可能含非 UTF-8 字节（见 combat::shots），故按 lossy 解码。缺省/空串一律 None。
-pub fn read_map_key(raw: &[u8]) -> Option<String> {
+/// 部分字段（playerName/arenaUniqueId/battleDuration/tank_id/mapId），且 crate 不暴露原始
+/// 条目访问——故此处自行解 ZIP。meta.json 常含非 UTF-8 字节（昵称等，见 combat::shots），
+/// 严格 UTF-8 会让整份 meta 失败，故按 lossy 解码：非法字节只影响所在字符串，不连坐其它字段。
+fn read_meta_json(raw: &[u8]) -> Option<serde_json::Value> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(raw)).ok()?;
     let mut f = zip.by_name("meta.json").ok()?;
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut f, &mut buf).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&buf)).ok()?;
-    v.get("mapName").and_then(|x| x.as_str())
+    serde_json::from_str(&String::from_utf8_lossy(&buf)).ok()
+}
+
+fn meta_arena_bonus_type(meta: &serde_json::Value) -> Option<u32> {
+    meta.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
+fn meta_map_key(meta: &serde_json::Value) -> Option<String> {
+    meta.get("mapName").and_then(|x| x.as_str())
         .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// 从回放**原始字节**读取 meta.json 的 `arenaBonusType`（名人堂白名单 {1,7}、
+/// 联赛模式 {2,4} 的判定依据；crate `Meta` 不含该字段）。非 ZIP/无该字段一律 None（unknown ≠ 0）。
+pub fn read_arena_bonus_type(raw: &[u8]) -> Option<u32> {
+    read_meta_json(raw).as_ref().and_then(meta_arena_bonus_type)
+}
+
+/// 从回放**原始字节**读取 meta.json 的原始 `mapName`（地图代号，如 `skit`）。
+/// crate 的 `Meta` 把地图反序列化为枚举（未知地图丢失原名），底图/语义/i18n 需要原始代号。
+/// 缺省/空串一律 None。
+pub fn read_map_key(raw: &[u8]) -> Option<String> {
+    read_meta_json(raw).as_ref().and_then(meta_map_key)
+}
+
+/// 把只能从容器原始字节取得的字段（arenaBonusType / 地图代号 / 客户端版本）写入汇总。
+/// meta.json 只解压一次。文件路径与内存字节（WASM）两个宿主共用，新增此类字段只改这里。
+pub fn apply_container_fields(summary: &mut BattleSummary, raw: &[u8]) {
+    let meta = read_meta_json(raw);
+    summary.arena_bonus_type = meta.as_ref().and_then(meta_arena_bonus_type);
+    summary.map_key = meta.as_ref().and_then(meta_map_key);
+    summary.client_version = read_client_version(raw);
+}
+
+/// `killer_id` 是 result/entity ID：经同场 `result_id → account_id` 联表成击杀者账号。
+/// 联不上（结算缺 result_id、击杀者非战斗者）保持 None。
+fn resolve_killer_accounts(players: &mut [PlayerSummary]) {
+    let account_by_result: std::collections::HashMap<u32, u32> = players.iter()
+        .filter_map(|p| p.result_id.map(|r| (r, p.account_id)))
+        .collect();
+    for p in players.iter_mut() {
+        p.killer_account_id = p.killer_id.and_then(|k| account_by_result.get(&k).copied());
+    }
 }
 
 /// 从回放**原始字节**读取客户端版本串（`data.wotreplay` 头部）。
@@ -89,20 +115,16 @@ impl<'a> ReplayParser<'a> {
             .unwrap_or("?")
             .to_string();
 
-        // arenaBonusType 需从容器原始字节取（见 read_arena_bonus_type），
-        // 在打开 Replay（消费 reader）之前读
+        // 容器字段需从原始字节取（见 apply_container_fields），在打开 Replay（消费 reader）之前读
         let raw_bytes = std::fs::read(path).ok();
-        let bonus_type = raw_bytes.as_deref().and_then(read_arena_bonus_type);
-        let client_version = raw_bytes.as_deref().and_then(read_client_version);
-        let map_key = raw_bytes.as_deref().and_then(read_map_key);
 
         let mut replay = Replay::open(File::open(path)?)
             .with_context(|| format!("Failed to open replay: {}", path.display()))?;
         let mut summary = self.parse_replay(&mut replay, &file_name)
             .with_context(|| format!("Failed to parse replay: {}", path.display()))?;
-        summary.arena_bonus_type = bonus_type;
-        summary.client_version = client_version;
-        summary.map_key = map_key;
+        if let Some(raw) = raw_bytes.as_deref() {
+            apply_container_fields(&mut summary, raw);
+        }
         Ok(summary)
     }
 
@@ -258,13 +280,7 @@ impl<'a> ReplayParser<'a> {
                 killer_account_id: None,
             });
         }
-        // killer_id 是 result/entity ID：经同场 result_id → account_id 联表成击杀者账号
-        let account_by_result: std::collections::HashMap<u32, u32> = players.iter()
-            .filter_map(|p| p.result_id.map(|r| (r, p.account_id)))
-            .collect();
-        for p in &mut players {
-            p.killer_account_id = p.killer_id.and_then(|k| account_by_result.get(&k).copied());
-        }
+        resolve_killer_accounts(&mut players);
 
         let mut summary = BattleSummary::from_naive(br.timestamp_secs);
         summary.file_name = file_name.to_string();
@@ -319,3 +335,43 @@ pub fn list_replays_in_dir(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn killer_account_is_joined_through_result_id() {
+        let mut victim = PlayerSummary::for_test(1, "victim");
+        victim.result_id = Some(100);
+        victim.killer_id = Some(200);
+        let mut killer = PlayerSummary::for_test(2, "killer");
+        killer.result_id = Some(200);
+        let mut unresolved = PlayerSummary::for_test(3, "unresolved");
+        unresolved.killer_id = Some(999);
+        let mut players = vec![victim, killer, unresolved];
+
+        resolve_killer_accounts(&mut players);
+
+        assert_eq!(players[0].killer_account_id, Some(2));
+        assert_eq!(players[1].killer_account_id, None);
+        assert_eq!(players[2].killer_account_id, None);
+    }
+
+    #[test]
+    fn meta_fields_survive_non_utf8_bytes() {
+        // 昵称里的非法 UTF-8 不得让 arenaBonusType / mapName 一起丢失
+        let mut json = br#"{"playerName":""#.to_vec();
+        json.extend_from_slice(&[0xff, 0xfe]);
+        json.extend_from_slice(br#"","arenaBonusType":2,"mapName":"skit"}"#);
+        let mut zip_bytes = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            w.start_file("meta.json", zip::write::FileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut w, &json).unwrap();
+            w.finish().unwrap();
+        }
+        assert_eq!(read_arena_bonus_type(&zip_bytes), Some(2));
+        assert_eq!(read_map_key(&zip_bytes).as_deref(), Some("skit"));
+    }
+}

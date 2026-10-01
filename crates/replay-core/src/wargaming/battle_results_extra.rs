@@ -12,7 +12,7 @@
 //   24=存活寿命整秒                                        25=击杀者 ID
 //   105=死亡原因 i32（-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境）
 //   119=毁灭协助次数（≥25% 伤害后盟友击毁）                120=炮印 0..3
-//   23=经验  106=银币（crate 的 base_xp/credits_earned 在 11.19+ 语料恒为 0，取原始字段）
+//   23=经验  106=银币（WotbTools PROVEN 616/616；crate 的 base_xp/credits_earned 在 11.19 语料中为 0）
 //   101=账号 ID（键）  103=车辆 comp descriptor（键）
 //   #301 外层 f1 = result/entity ID（f25 击杀者 ID 即此命名空间）
 //
@@ -26,9 +26,9 @@ pub struct PlayerSettlement {
     pub tank_id: u32,
     /// #301 外层 f1：本战斗者的 result/entity ID（f25 `killer_id` 引用的就是它）
     pub result_id: Option<u32>,
-    /// #301 f23 经验（WotbTools PROVEN；crate `base_xp` 在 11.19+ 恒为 0）
+    /// #301 f23 经验（WotbTools PROVEN 616/616；crate `base_xp` 在 11.19 语料中为 0）
     pub xp: Option<u32>,
-    /// #301 f106 银币（WotbTools PROVEN；crate `credits_earned` 在 11.19+ 恒为 0）
+    /// #301 f106 银币（WotbTools PROVEN 616/616；crate `credits_earned` 在 11.19 语料中为 0）
     pub credits: Option<u32>,
     /// #301 f11 承受伤害（WotbTools PROVEN：缺省即为 0，为真实数值语义 → 输出端按 0）
     pub damage_received: Option<u32>,

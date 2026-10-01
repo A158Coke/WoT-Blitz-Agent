@@ -13,6 +13,7 @@ import * as THREE from 'three'
 
 import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './replaySource.js'
 import { poseFromYPR } from './glbRig.js'
+import mapBasesData from './mapBases.json'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -46,6 +47,8 @@ export function initPlayback(container, store) {
   let terrainMesh = null, heightField = null, heightMeta = null;  // 3D 地形
   let mapScenery = null;                              // 静态场景 GLB（建筑等）
   let groundMesh = null, gridHelper = null;           // buildWorld 的占位地面/网格（会话拥有）
+  let boundaryGroup = null;                           // 地图边界红线（会话拥有）
+  let baseObjects = [];                               // 争霸基地 {baseId, bid, ring, sprite, canvas, ...}
   let destroyed = false;
   let kfId = 0;
   // 会话代数：loadData/teardown 各自递增，全部异步续体持旧代数即失效
@@ -228,11 +231,64 @@ export function initPlayback(container, store) {
     const grid = new THREE.GridHelper(ext * 2 + 100, Math.floor((ext * 2 + 100) / 50), 0x3a4a5e, 0x273140);
     grid.position.set(cx, 0.02, cz); scene.add(grid);
     gridHelper = grid;
+    // 地图边界先用 world bounds 兜底（地图资产随后加载，rebuildGround 会用真实
+    // 地图尺寸覆盖重建）
+    buildBoundary(cx, cz, ext, BOUNDARY_HALF_EXT);
     WORLD_CENTER = { cx, cz, ext };
     camera.position.set(cx, ext * 1.1, cz + ext * 1.2);
     controls.target.set(cx, 0, cz);
+    applyCameraClamp();   // 世界范围决定 min/max 距离（初值，实测再调）
   }
   let WORLD_CENTER = { cx: 0, cz: 0, ext: 300 };
+
+  // 地图边界：四条绝对直线发光红线正方形（常驻、不闪烁不脉冲）。几何 = 地图真实
+  // 世界范围（size×size，中心 meta.x/z；缺资产时回退 world bounds）。注意这只是
+  // **render/map bounds**，非已证明的游戏内真实战场边界；拿到精确边界只换数据源。
+  const BOUNDARY_COLOR = 0xff2f2f;
+  const BOUNDARY_THICK = 1.8;      // 世界单位半宽（比 tracer 粗，肉眼可辨）
+  const BOUNDARY_HALF_EXT = 1;     // 兜底路径：以 ext 为半宽
+  function buildBoundary(cx, cz, half, thick) {
+    if (boundaryGroup) {
+      const old = boundaryGroup.userData.sharedMaterial;
+      if (old) old.dispose();
+      scene.remove(boundaryGroup);
+      disposeObject3D(boundaryGroup);
+      boundaryGroup = null;
+    }
+    const g = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color: BOUNDARY_COLOR });  // 恒亮不受光照
+    const L = half * 2;
+    const mk = (w, d, x, z) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.1, d), mat);
+      m.position.set(x, 0.14, z);   // 略高于地面/地形，避免 z-fighting
+      g.add(m);
+    };
+    mk(L + thick, thick, cx, cz - half);   // 北
+    mk(L + thick, thick, cx, cz + half);   // 南
+    mk(thick, L + thick, cx - half, cz);   // 西
+    mk(thick, L + thick, cx + half, cz);   // 东
+    g.userData.sharedMaterial = mat;
+    boundaryGroup = g;
+    scene.add(g);
+  }
+
+  // 相机距离钳制（评审批准初值）：禁止无限 zoom-out 与把 orbit target 拖到地图外。
+  // min/max 基于 world extent；数值为 initial value，实机实测后调。
+  function applyCameraClamp() {
+    const { ext } = WORLD_CENTER;
+    controls.minDistance = Math.max(20, ext * 0.08);
+    controls.maxDistance = ext * 2.2;
+  }
+  // 每帧夹 target（用户拖拽会平移 target；超界拉回，防止相机飞到几公里外）
+  function clampCameraTarget() {
+    const { cx, cz, ext } = WORLD_CENTER;
+    const lim = ext * 1.1;
+    const t = controls.target;
+    const nx = Math.min(cx + lim, Math.max(cx - lim, t.x));
+    const nz = Math.min(cz + lim, Math.max(cz - lim, t.z));
+    if (nx !== t.x) t.x = nx;
+    if (nz !== t.z) t.z = nz;
+  }
 
   // ---------- 底图 + 3D 地形 ----------
   // 后端返回小地图贴图 + X-Map-Meta 铺设参数（size_m/x/z/rot90/flip_x）。
@@ -653,6 +709,112 @@ export function initPlayback(container, store) {
       mapPlane.position.set(meta.x || 0, 0.04, meta.z || 0);
       scene.add(mapPlane);
     }
+    // 边界随真实地图范围重建（size×size，中心 meta.x/z）——覆盖 buildWorld 的 ext 兜底
+    buildBoundary(meta.x || 0, meta.z || 0, size / 2, BOUNDARY_THICK);
+  }
+
+  // ---------- 争霸基地（Supremacy）----------
+  // 几何来自 mapBases.json（客户端 .sc2 提取，世界坐标；scene x = −游戏 x 镜像自洽）。
+  // 状态来自 DATA.supremacy_bases（contract v2 wrapper12/root11 sparse 重建）——
+  // seek 折叠：每基地取 clock≤t 的最后一条。渲染只做呈现，不推断协议。
+  const BASE_OWNER_FRIENDLY = 0x2ecc71, BASE_OWNER_ENEMY = 0xef4444, BASE_NEUTRAL = 0xf0f0f0;
+  function baseSideColor(team) {
+    const ft = DATA.meta.friendly_team;
+    if ((team !== 1 && team !== 2) || (ft !== 1 && ft !== 2)) return BASE_NEUTRAL;
+    return team === ft ? BASE_OWNER_FRIENDLY : BASE_OWNER_ENEMY;
+  }
+  function clearSupremacyBases() {
+    for (const b of baseObjects) {
+      if (b.ring) { scene.remove(b.ring); b.ring.geometry.dispose(); b.ring.material.dispose(); }
+      if (b.sprite) {
+        labelScene.remove(b.sprite);
+        if (b.sprite.material) { b.sprite.material.map?.dispose(); b.sprite.material.dispose(); }
+      }
+    }
+    baseObjects = [];
+  }
+  function buildSupremacyBases() {
+    clearSupremacyBases();
+    const tracks = DATA.supremacy_bases;
+    if (!tracks || !tracks.length) return;
+    const mid = String(DATA.meta.map_id);
+    const entry = mapBasesData[mid];
+    const pts = (entry && entry.supremacy) || [];
+    if (!pts.length) return;   // 无几何数据的地图：不猜坐标
+    for (const p of pts) {
+      const bid = { A: 0, B: 1, C: 2, D: 3 }[p.baseId];
+      if (bid == null) continue;
+      const gx = -p.x, gz = p.y;          // 场景镜像系
+      const r = p.radius || 15;
+      // 贴地圆环（基地位置锚点）
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(r * 0.9, r, 56),
+        new THREE.MeshBasicMaterial({ color: BASE_NEUTRAL, side: THREE.DoubleSide,
+                                      transparent: true, opacity: 0.9, depthWrite: false }));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(gx, 0.22, gz);
+      scene.add(ring);
+      // HUD：billboard sprite（字母 + 占领进度），屏幕尺寸 clamp
+      const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128;
+      const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: tex, depthTest: false, depthWrite: false, transparent: true }));
+      sprite.renderOrder = 998;
+      sprite.position.set(gx, BASE_HUD_H, gz);
+      labelScene.add(sprite);
+      baseObjects.push({ baseId: p.baseId, bid, ring, sprite, canvas, ctx: canvas.getContext('2d'),
+                         tex, state: null, r });
+    }
+    if (DEBUG) window.__bases = baseObjects;   // 调试钩子：?debug 可查基地对象
+  }
+  // 调试钩子（?debug）：始终指向当前 baseObjects（clearSupremacyBases 换数组后不失效）
+  if (DEBUG) Object.defineProperty(window, '__curBases', { get: () => baseObjects, configurable: true });
+  const BASE_HUD_H = 11;              // 初始世界高度（评审建议 10–12m，实测再调）
+  function baseStateAt(bid, t) {
+    const arr = DATA.supremacy_bases;
+    let st = { owner: null, capturing: null, progress: null };
+    for (let i = 0; i < arr.length; i++) {
+      const tr = arr[i];
+      if (tr.base_id !== bid) continue;
+      if (tr.clock > t) break;        // tracks 按 clock 升序（重建侧保证）
+      st = { owner: tr.owner_team ?? null, capturing: tr.capturing_team ?? null,
+             progress: tr.capture_progress ?? null };
+    }
+    return st;
+  }
+  function drawBaseHud(b) {
+    const st = b.state; const ctx = b.ctx;
+    const ownerColor = baseSideColor(st.owner);
+    const capColor = st.capturing != null ? baseSideColor(st.capturing) : null;
+    const col = (c) => '#' + c.toString(16).padStart(6, '0');
+    ctx.clearRect(0, 0, 256, 128);
+    // 字母
+    ctx.font = 'bold 64px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(0,0,0,.72)';
+    ctx.strokeText(b.baseId, 128, 42); ctx.fillStyle = col(ownerColor); ctx.fillText(b.baseId, 128, 42);
+    // 占领进度条（capturing 队伍色）
+    if (capColor != null && st.progress != null) {
+      const w = 176, h = 16, x = (256 - w) / 2, y = 92;
+      ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+      ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = col(capColor);
+      ctx.fillRect(x, y, Math.max(0, Math.min(1, st.progress / 100)) * w, h);
+    }
+    b.tex.needsUpdate = true;
+  }
+  function updateSupremacyBases() {
+    for (const b of baseObjects) {
+      const st = baseStateAt(b.bid, T);
+      const key = st.owner + '/' + st.capturing + '/' + st.progress;
+      if (b.stateKey !== key) { b.state = st; b.stateKey = key; drawBaseHud(b); }
+      // 圆环随 owner 变色
+      const oc = baseSideColor(st.owner);
+      if (b.ringColor !== oc) { b.ring.material.color.setHex(oc); b.ringColor = oc; }
+      // HUD 屏幕尺寸 clamp：按相机距离调整 sprite 世界尺寸（远不远到看不见）
+      const d = camera.position.distanceTo(b.sprite.position);
+      const s = Math.min(16, Math.max(5, d * 0.03));
+      b.sprite.scale.set(s * 2, s, 1);
+    }
   }
 
   function teamColor(v) {
@@ -1004,15 +1166,18 @@ export function initPlayback(container, store) {
 
   // ---------- 弹道 ----------
   const TRACER_LEN = 9;
-  // 全弹道轨迹线：纯色不透明（淡出阶段除外）；与弹着点特效同步（t1+2.2s 移除、最后 1.2s 淡出）
-  const TRAJ_OPACITY = 1.0;
+  // 全弹道轨迹线：细 + 半透明、正常 depth test（会被地形/建筑遮挡，不穿山）；
+  // 与弹着点特效同步（t1+2.2s 移除、最后 1.2s 淡出）
+  const TRAJ_OPACITY = 0.35;
+  const TRAJ_RADIUS = 0.11;
+  const TRACER_RADIUS = 0.22;
   let trajLines = [];
   function spawnShot(s) {
     const from = new THREE.Vector3(-s.from[0], s.from[1], s.from[2]);
     const to = new THREE.Vector3(-s.to[0], s.to[1], s.to[2]);
-    const color = s.is_kill ? 0xff3355 : s.ricochet ? 0x9aa5b1
-      : s.game_hit_result === 3 ? 0xffc94d : s.hit ? 0x6fb3ff : 0xd8dee7;
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, TRACER_LEN),
+    // 炮线唯一颜色规则 = 射手阵营（绿/红/白）；命中/跳弹/击毁不改炮线颜色
+    const color = shotTeamColor(s);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(TRACER_RADIUS, TRACER_RADIUS, TRACER_LEN),
       new THREE.MeshBasicMaterial({ color }));
     scene.add(mesh);
     // WoTB 弹速高、交战近，直飞常 <0.3s——最小显示 0.22s 保证可见性
@@ -1021,7 +1186,7 @@ export function initPlayback(container, store) {
     // 全弹道轨迹线（队伍色：友军蓝/敌军红，与飞行段的命中结果色区分）：
     // 开火即显整条弹道；消失节奏与弹着点特效同步——t1+2.2s 移除、最后 1.2s 淡出
     const traj = new THREE.Mesh(
-      new THREE.BoxGeometry(0.28, 0.28, from.distanceTo(to)),
+      new THREE.BoxGeometry(TRAJ_RADIUS, TRAJ_RADIUS, from.distanceTo(to)),
       new THREE.MeshBasicMaterial({
         color: shotTeamColor(s), transparent: true, opacity: TRAJ_OPACITY, depthWrite: false,
       }));
@@ -1030,24 +1195,68 @@ export function initPlayback(container, store) {
     scene.add(traj);
     trajLines.push({ mesh: traj, until: t1 + 1.0, fadeEnd: t1 + 2.2, base: TRAJ_OPACITY });
   }
-  // 射手阵营 → 轨迹颜色：深蓝（友）/ 深红（敌）；无法判断阵营时灰
+  // 炮线阵营色（唯一规则，评审批准）：friendly=绿 / enemy=红 / unknown=白。
+  // team 必须显式 ∈ {1,2} 才参与判定——team=0 或 friendly_team 未知一律白（绝不
+  // fallback 到任一方；与射击复现 consumer 的三态阵营模型同规则）
+  const COLOR_FRIENDLY = 0x2ecc71;
+  const COLOR_ENEMY = 0xef4444;
+  const COLOR_UNKNOWN = 0xf5f5f5;
   function shotTeamColor(s) {
     const d = DATA.vehicles.find((x) => x.eid === s.shooter_eid);
     const t = d ? d.team : 0;
-    if (!t || !DATA.meta.friendly_team) return 0x9aa5b1;
-    return t === DATA.meta.friendly_team ? 0x1e40af : 0x9b1c1c;
+    const ft = DATA.meta.friendly_team;
+    if ((t !== 1 && t !== 2) || (ft !== 1 && ft !== 2)) return COLOR_UNKNOWN;
+    return t === ft ? COLOR_FRIENDLY : COLOR_ENEMY;
+  }
+  // 命中类型 → transient impact（评审批准；全部 transient，无 decal/弹孔）：
+  //   pen（击穿）= 白色短闪 + 小环；non-pen = 明显 shock ring；ricochet = 侧向 sparks；
+  //   miss（无 target）/未知结果 = 不生成 target impact。
+  // 判定与 2D 同源语义：作者看 hit_flags 位，他人按 game_hit_result 降级
+  const IMPACT_WHITE = 0xffffff;
+  function impactKind(s) {
+    if (!impactTargetEid(s)) return null;
+    const f = s.hit_flags || 0;
+    if (s.is_author && f) {
+      if (f & 0x0008) return 'ricochet';
+      if (f & (0x0010 | 0x0040 | 0x0100 | 0x1000)) return 'pen';
+      return 'nonpen';
+    }
+    const r = s.game_hit_result;
+    if (r === 3) return 'pen';
+    if (r === 1) return 'ricochet';
+    if (r === 4) return 'nonpen';
+    if (r === 2) return 'ricochet';
+    return null; // 0/255/缺失 = 结果未知或脱靶 → 不伪造 target impact
+  }
+  function impactTargetEid(s) {
+    return s.target_eid != null ? s.target_eid : null;
   }
   function spawnImpact(tr) {
+    const kind = impactKind(tr.shot);
+    if (!kind) return; // miss / 结果未知：不生成 impact
     const g = new THREE.Group();
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 10),
-      new THREE.MeshBasicMaterial({ color: tr.color, transparent: true }));
+    const geo = new THREE.SphereGeometry(kind === 'nonpen' ? 0.42 : 0.72, 10, 10);
+    const ball = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: IMPACT_WHITE, transparent: true }));
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.8, 1.15, 20),
-      new THREE.MeshBasicMaterial({ color: tr.color, side: THREE.DoubleSide, transparent: true }));
+      new THREE.MeshBasicMaterial({ color: IMPACT_WHITE, side: THREE.DoubleSide, transparent: true }));
     ring.rotation.x = -Math.PI / 2;
     g.add(ball); g.add(ring);
+    // ricochet：侧向 sparks（两段短射线沿弹道法向散开）
+    const sparks = [];
+    if (kind === 'ricochet') {
+      const dir = tr.to.clone().sub(tr.from).normalize();
+      const side = new THREE.Vector3(dir.z, 0, -dir.x).normalize();
+      for (const sgn of [1, -1]) {
+        const sp = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 2.2),
+          new THREE.MeshBasicMaterial({ color: IMPACT_WHITE, transparent: true }));
+        sp.position.copy(tr.to.clone().add(side.clone().multiplyScalar(sgn * 1.1)));
+        sp.lookAt(tr.to.clone().add(side.clone().multiplyScalar(sgn * 3.3)));
+        g.add(sp); sparks.push(sp);
+      }
+    }
     g.position.copy(tr.to);
     scene.add(g);
-    impacts.push({ g, until: tr.t1 + 2.2, ball, ring });
+    impacts.push({ g, until: tr.t1 + (kind === 'nonpen' ? 2.6 : 1.8), ball, ring, sparks, kind });
   }
   function updateTracers() {
     for (let i = tracers.length - 1; i >= 0; i--) {
@@ -1074,12 +1283,17 @@ export function initPlayback(container, store) {
         scene.remove(im.g);
         im.ball.geometry.dispose(); im.ball.material.dispose();
         im.ring.geometry.dispose(); im.ring.material.dispose();
+        if (im.sparks) for (const sp of im.sparks) { sp.geometry.dispose(); sp.material.dispose(); }
         impacts.splice(i, 1);
         continue;
       }
       const op = Math.min(1, left / 1.2);
       im.ball.material.opacity = op; im.ring.material.opacity = op * 0.8;
-      im.ring.scale.setScalar(1 + (1 - Math.min(1, left / 2.2)) * 1.6);
+      const span = im.kind === 'nonpen' ? 2.6 : 2.2;
+      im.ring.scale.setScalar(1 + (1 - Math.min(1, left / span)) * (im.kind === 'nonpen' ? 2.2 : 1.6));
+      if (im.sparks) {
+        for (const sp of im.sparks) { sp.material.opacity = op * 0.7; }
+      }
     }
     // 全弹道轨迹线：命中后延迟停留，再线性淡出并释放
     for (let i = trajLines.length - 1; i >= 0; i--) {
@@ -1241,7 +1455,9 @@ export function initPlayback(container, store) {
         followAnchor = (followAnchor || new THREE.Vector3()).copy(tmpV);
       } else followAnchor = null;
     } else followAnchor = null;
+    clampCameraTarget();
     controls.update();
+    updateSupremacyBases();
     updateLabels();
     renderer.render(scene, camera);
     // 标签覆盖画布：同一相机，标签恒在主场景之上
@@ -1258,6 +1474,7 @@ export function initPlayback(container, store) {
     updateRoster(); updateScore();
     // HUD → store
     store.timer = gameTimerLabel(T);
+    if (DEBUG) window.__T = T;   // 调试钩子：当前回放时钟
     store.time = T;
     store.duration = DATA.meta.duration;
     const f = (T - DATA.meta.t_start) / Math.max(0.001, DATA.meta.duration - DATA.meta.t_start);
@@ -1375,7 +1592,15 @@ export function initPlayback(container, store) {
     for (const o of [mapPlane, terrainMesh, mapScenery, groundMesh, gridHelper]) {
       if (o) { scene.remove(o); disposeObject3D(o); }
     }
+    clearSupremacyBases();   // 争霸基地（圆环 + HUD sprite）随会话释放
+    if (boundaryGroup) {
+      const shared = boundaryGroup.userData.sharedMaterial;
+      if (shared) shared.dispose();   // disposeObject3D 只清各自 material，共享材质在此释放
+      scene.remove(boundaryGroup);
+      disposeObject3D(boundaryGroup);
+    }
     mapPlane = null; terrainMesh = null; mapScenery = null; groundMesh = null; gridHelper = null;
+    boundaryGroup = null;
     if (mapTexture) { mapTexture.dispose(); mapTexture = null; }
     if (groundLayers) { for (const k in groundLayers.texs) groundLayers.texs[k]?.dispose?.(); }
     groundLayers = null;
@@ -1429,6 +1654,8 @@ export function initPlayback(container, store) {
     loadMapImage().catch(e => console.warn('地图资产加载失败（回退网格）:', e));
     buildVehicles();
     buildRoster();
+    if (DEBUG) window.__pbData = DATA;   // 调试钩子：检查 contract v2 字段到达情况
+    buildSupremacyBases();
     T = DATA.meta.t_start;
     shotPtr = 0; killPtr = 0;
     if (DEBUG) window.__pbV = V;   // 调试钩子：控制台可查每车 GLB/位姿状态（仅 ?debug）

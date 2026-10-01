@@ -18,6 +18,16 @@
 | [docs/vue-migration-plan.md](vue-migration-plan.md) | ✅ 已完成（2026-09-28）：前端四页全部切流 Vue 3 SPA，嵌入 HTML 与 web/vendor 已退役 |
 | [docs/mobile_plan.md](mobile_plan.md) | ✅ 已完成（2026-09）：Android 双形态 APK 已分发；实际实现与方案的差异见文首注记 |
 
+## 可行性评估（待决策，2026-10-01）
+
+用本机客户端解包替代 BlitzKit 数据源的评估。两份报告均含逐字段/逐项验证数字与反例清单，
+并已登记**两处既有 bug**（`tanks.pb` 引擎起火率与履带阻力读错 protobuf 字段号，见报告 A §8）：
+
+| 文档 | 结论摘要 | 状态 |
+|---|---|---|
+| [docs/feasibility-pb-local-extraction.md](feasibility-pb-local-extraction.md) | `tanks.pb`/`models.pb` 可替代；735/735 覆盖、零实质分歧；唯一缺口 `tank_id`（有两条替代路径） | ⬜ 待决策（约 3–5 人日） |
+| [docs/feasibility-glb-local-export.md](feasibility-glb-local-export.md) | 客户端自行导出 `model.glb`/`collision.glb`：全量 735 辆验收——collision **735/735 完全等价**、model **700/735 等价**（余 35 辆已归为 4 类规则缺口）；贴图槽位已完整逆向，**待决策验收口径** | ⬜ 待决策（约 4–7 人日） |
+
 ## 逆向分析报告（历史定稿，部分单点结论已被后续修正）
 
 这三篇是逆向过程的阶段性完整报告，反汇编/协议事实仍然有效；

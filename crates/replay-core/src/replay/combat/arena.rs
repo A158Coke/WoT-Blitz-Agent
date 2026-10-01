@@ -665,16 +665,50 @@ pub fn collect_assault_base_updates(packets: &[(u32, f32, &[u8])]) -> Vec<RawAss
     out
 }
 
-/// 原始更新 → 占领进度时间线（Java `AssaultBaseStateReconstructor` 同式）：
-/// 只取 `field1==2 && field2==1` 族、且 field3 ∈ 0..=100 的条目，按 clock 升序。
-/// 该族不存在（非攻防战场次）返回空。
+/// 原始更新 → 占领进度时间线：取 `field2==1`、`field3` 存在且 ∈ 0..=100 的条目，
+/// 按 clock 升序（不施加单调性——回落/重置原样保留）。无该族则返回空。
+///
+/// **`field1` 不做族过滤（契约修正，2026-10-01）。** WotbTools 早期受控样本
+/// （Neptune，11.20 国服）里进度恰好全部由 `field1=2` 承载，故 `assault-base-state.md`
+/// 把 `field1==2` 当作进度族判别子。三份独立真实回放证明那是采样假象——携带
+/// `field3` 的族会在 `field1=1`/`field1=2` 之间切换：
+///
+/// | 样本 | 携带 field3 的族 | `field1==2` 门槛后果 |
+/// |---|---|---|
+/// | Yukon（重力模式） | 1 与 2 交替 | 丢 16/24（67%）事件 |
+/// | Winter Malinovka（重力模式） | 仅 2 | 无害 |
+/// | Naval Frontier（遭遇战） | **仅 1** | **丢全部 → 时间线为空** |
+///
+/// 故 `field1` 是"哪一方的进度"（owner/占领方；精确语义仍未闭合，保持 raw 不命名），
+/// 不是"是否进度族"。同一时刻恰有一族携带 `field3`、另一族携带常量 `field4=1`。
+/// 遭遇战（Encounter）与攻防战共用该载体：遭遇战无 wrapper12，进度同样走 wrapper8。
 pub fn reconstruct_assault_base_states(mut raw: Vec<RawAssaultBaseUpdate>) -> Vec<AssaultBaseStateTransition> {
-    raw.retain(|u| u.raw_field1 == Some(2) && u.raw_field2 == Some(1));
+    raw.retain(|u| matches!(u.raw_field1, Some(1) | Some(2)) && u.raw_field2 == Some(1));
     raw.retain(|u| u.raw_field3.is_some_and(|v| v <= 100));
     raw.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
     raw.into_iter()
         .map(|u| AssaultBaseStateTransition { clock: u.clock, progress: u.raw_field3.unwrap_or(0) as u8 })
         .collect()
+}
+
+/// 单基地目标存在性（与"是否已有占领进度"无关）：目标族（`field2==1`）发出过
+/// **除裸初始化对 `{field1,field2}` 之外的任何字段**（即出现 `field3` 或 `field4`）。
+///
+/// **为什么不能只看"目标族出现过"**：裸初始化对 `1=1,2=1` + `1=2,2=1` 是**通用广播**，
+/// 普通对局同样会发。62 份真实样本实测：Regular 的 Canal、TrainingRoom 的
+/// Copperfield/Himmelsdorf、Any 的 Mayan Ruins 等 8 份**只**发这一对（各 2 个 subtype8
+/// 包、无任何其它字段），而真实单基地场次发 182 个包（116 次 `4=1` 标志流 + `3=N` 进度）。
+/// 若按"族出现过"判存在，这 8 份（含 Regular 随机战）会被误判成有目标。
+///
+/// 与 WotbTools Java `hasObjective` 的差异即在此：Java 版只查 `field1==2 && field2==1`，
+/// 属上述过判——同步时须改用本判据。用途：让"攻防战/遭遇战但全程无人占领"的场次
+/// 仍能画出目标圈，而不是只能等第一条进度广播。与争霸互斥由调用侧保证。
+pub fn has_assault_objective(raw: &[RawAssaultBaseUpdate]) -> bool {
+    raw.iter().any(|u| {
+        matches!(u.raw_field1, Some(1) | Some(2))
+            && u.raw_field2 == Some(1)
+            && (u.raw_field3.is_some() || u.raw_field4.is_some())
+    })
 }
 
 /// 实时点数采样（wrapper13/root12 块：field1=team(1/2)、field2=points）。门禁与 Java
@@ -924,22 +958,77 @@ mod assault_tests {
 
     #[test]
     fn assault_progress_family_filtered_and_ordered() {
-        // field1=2 / field2=1 族（PROVEN）：progress 递增
+        // field1=2 族（PROVEN）：progress 递增
         let k1 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 5)])]));
         let k2 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 42)])]));
-        // 另一族（field1=1 / field4）：保留 raw 但不进时间线
-        let other = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (4, 7)])]));
+        // field1=1 族**携带 field3**：也是进度（三份真实回放证明载体在两族间切换）——
+        // 只有裸 field4 的兄弟族才是"非进度"
+        let f1 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1), (3, 9)])]));
+        let other = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1), (4, 7)])]));
         // 越界进度（101）：剔除
         let bad = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 101)])]));
         let packets: Vec<(u32, f32, &[u8])> = vec![
-            (8, 20.0, &k2), (8, 10.0, &k1), (8, 15.0, &other), (8, 30.0, &bad),
+            (8, 20.0, &k2), (8, 10.0, &k1), (8, 12.0, &f1), (8, 15.0, &other), (8, 30.0, &bad),
         ];
         let raw = collect_assault_base_updates(&packets);
-        assert_eq!(raw.len(), 4, "四块全部收集（含未判定族）");
+        assert_eq!(raw.len(), 5, "五块全部收集（含非判定族）");
         let tl = reconstruct_assault_base_states(raw);
-        assert_eq!(tl.len(), 2, "只保留 field1=2/field2=1 族且进度合法者");
+        assert_eq!(tl.len(), 3, "两族带 field3 者 + 越界剔除 + 裸 field4 族不计");
         assert_eq!((tl[0].clock, tl[0].progress), (10.0, 5), "按 clock 升序");
-        assert_eq!((tl[1].clock, tl[1].progress), (20.0, 42));
+        assert_eq!((tl[1].clock, tl[1].progress), (12.0, 9), "field1=1 携带的进度同样入选");
+        assert_eq!((tl[2].clock, tl[2].progress), (20.0, 42));
+    }
+
+    #[test]
+    fn assault_progress_under_field1_one_only() {
+        // 遭遇战回归（Naval Frontier 真实样本）：进度**只**由 field1=1 族承载，
+        // field1=2 族只有常量 field4=1。旧判据 field1==2 会得到空时间线 → 前端无环可画。
+        let init_a = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1)])]));
+        let init_b = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1)])]));
+        let flag = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (4, 1)])]));
+        let p1 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1), (3, 1)])]));
+        let p2 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1), (3, 19)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 1.0, &init_a), (8, 1.0, &init_b), (8, 2.0, &flag),
+            (8, 3.0, &p1), (8, 4.0, &p2), (8, 5.0, &flag),
+        ];
+        let tl = reconstruct_assault_base_states(collect_assault_base_updates(&packets));
+        assert_eq!(tl.len(), 2, "只由 field1=1 承载时仍须产出进度");
+        assert_eq!((tl[0].clock, tl[0].progress), (3.0, 1));
+        assert_eq!((tl[1].clock, tl[1].progress), (4.0, 19));
+    }
+
+    #[test]
+    fn assault_objective_present_only_beyond_bare_init() {
+        // 裸初始化对（普通对局也发）→ **不**算目标存在
+        let init_a = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1)])]));
+        let init_b = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1)])]));
+        let p0: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &init_a), (8, 2.0, &init_b)];
+        let raw0 = collect_assault_base_updates(&p0);
+        assert!(!has_assault_objective(&raw0), "只有裸初始化对：普通对局同样如此，不得判为目标");
+        assert!(reconstruct_assault_base_states(raw0).is_empty(), "也不得合成 0 进度事件");
+
+        // 出现 field4 标志流（目标系统活跃）但尚无进度 → 目标存在、时间线仍空
+        let flag = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (4, 1)])]));
+        let p1: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &init_a), (8, 2.0, &flag)];
+        let raw1 = collect_assault_base_updates(&p1);
+        assert!(has_assault_objective(&raw1), "有 field4 标志流即目标存在");
+        assert!(reconstruct_assault_base_states(raw1).is_empty(), "但仍无进度事件");
+
+        // 有进度 → 目标存在
+        let prog = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (2, 1), (3, 7)])]));
+        let p2: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &prog)];
+        assert!(has_assault_objective(&collect_assault_base_updates(&p2)));
+
+        // 无 wrapper8（争霸场）：
+        let sup = mk48a(12, &root_blocks(11, &[varint_block(&[(1, 0), (2, 1)])]));
+        let p3: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &sup)];
+        assert!(!has_assault_objective(&collect_assault_base_updates(&p3)));
+
+        // field2 不是 1 的族：不认
+        let other = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 9), (4, 1)])]));
+        let p4: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &other)];
+        assert!(!has_assault_objective(&collect_assault_base_updates(&p4)));
     }
 
     #[test]

@@ -22,6 +22,9 @@
 //! AoI 空洞——滤波器在无输入期会原地站住，前端按此隐藏车辆避免"幽灵车停在过期位置"）。
 
 use std::collections::{BTreeMap, HashMap};
+/// serde skip_serializing_if 助手：`false` 按缺省处理（= 无已证实目标）
+fn is_false(b: &bool) -> bool { !*b }
+
 
 use anyhow::bail;
 use serde::Serialize;
@@ -286,6 +289,10 @@ pub struct PlaybackData {
     /// 作者瞄准帧（recorder-only；缺帧不外推）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aim_frames: Vec<AimFrame>,
+    /// 攻防战/遭遇战单基地目标存在性（wrapper8/root8 目标族出现即真，**不要求有进度**）。
+    /// 缺省/ false = 无已证实的单基地目标（与 WotbTools `assaultObjectivePresent` 同义）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub assault_objective_present: bool,
     /// 攻防战单基地占领进度（wrapper8/root8；非攻防战场次为空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assault_bases: Vec<AssaultBaseStateTransition>,
@@ -635,6 +642,7 @@ pub fn from_model(
             .map(|p| SupremacyPointsSample { clock: r2(p.clock), ..p.clone() }).collect(),
         aim_frames: model.timeline.aim_frames.iter()
             .map(|f| AimFrame { time_sec: r2(f.time_sec), ..*f }).collect(),
+            assault_objective_present: model.timeline.assault_objective_present,
         assault_bases: model.timeline.assault_bases.iter()
             .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
         consumables: model.timeline.consumables.iter()

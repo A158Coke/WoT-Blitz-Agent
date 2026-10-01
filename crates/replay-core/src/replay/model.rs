@@ -92,6 +92,9 @@ pub struct Timeline {
     pub supremacy_points: Vec<SupremacyPointsSample>,
     /// 作者瞄准帧（Type39 投影，recorder-only；缺帧不外推，存活期由 deaths 门控）
     pub aim_frames: Vec<AimFrame>,
+    /// 攻防战/遭遇战单基地目标存在性（wrapper8/root8 目标族出现即真；与是否有
+    /// 占领进度无关）——供前端在"全程无人占领"时仍能画出目标圈
+    pub assault_objective_present: bool,
     /// 攻防战单基地占领进度时间线（wrapper8/root8；非攻防战场次为空）
     pub assault_bases: Vec<AssaultBaseStateTransition>,
     /// 消耗品生命周期事件（Type32 flag=0；含 wireCode/state/param 原样）
@@ -161,8 +164,10 @@ impl ReplayModel {
             combat::collect_supremacy_base_updates(packets));
         let supremacy_points = combat::collect_supremacy_points(packets);
         // 攻防战单基地（wrapper8/root8；与争霸 wrapper12 天然互斥——实测两者不共存）
-        let assault_bases = combat::reconstruct_assault_base_states(
-            combat::collect_assault_base_updates(packets));
+        let assault_updates = combat::collect_assault_base_updates(packets);
+        // 目标存在性与进度分开：无占领活动的攻防/遭遇战场次 progress 为空但目标已在
+        let assault_objective_present = combat::has_assault_objective(&assault_updates);
+        let assault_bases = combat::reconstruct_assault_base_states(assault_updates);
         // 消耗品生命周期（Type32 flag=0；与 flag=1 炮弹警告同包不同族）
         let consumables = combat::collect_consumable_transitions(packets);
         let module_crew_states = combat::collect_module_crew_states(packets);
@@ -270,6 +275,7 @@ impl ReplayModel {
                 supremacy_bases,
                 supremacy_points,
                 aim_frames: shared.type39_frames.iter().map(combat::AimFrame::from).collect(),
+                assault_objective_present,
                 assault_bases,
                 consumables,
                 module_crew_states,

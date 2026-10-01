@@ -921,6 +921,39 @@ export function initPlayback(container, store) {
     if ((team !== 1 && team !== 2) || (ft !== 1 && ft !== 2)) return BASE_NEUTRAL;
     return team === ft ? BASE_OWNER_FRIENDLY : BASE_OWNER_ENEMY;
   }
+  // 逐顶点贴地的圆环（内/外两圈按地形高度采样；闭合成环带）
+  function makeGroundedRing(gx, gz, radius, seg = 72) {
+    const pos = new Float32Array((seg + 1) * 2 * 3);
+    const idx = [];
+    for (let i = 0; i <= seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const xo = gx + ca * radius, zo = gz + sa * radius;
+      const xi = gx + ca * radius * 0.9, zi = gz + sa * radius * 0.9;
+      pos[i * 6] = xo; pos[i * 6 + 1] = groundY(xo, zo) + 0.08; pos[i * 6 + 2] = zo;
+      pos[i * 6 + 3] = xi; pos[i * 6 + 4] = groundY(xi, zi) + 0.08; pos[i * 6 + 5] = zi;
+    }
+    for (let i = 0; i < seg; i++) {
+      idx.push(i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 1, i * 2 + 3, i * 2 + 2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    return geo;
+  }
+  // 圆环范围内地形最高点：HUD 需高于它才不被坡地遮挡
+  function ringMaxGroundY(gx, gz, radius, seg = 24) {
+    let mx = groundY(gx, gz);
+    for (let i = 0; i < seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      for (const rr of [radius * 0.5, radius, radius * 1.5]) {
+        mx = Math.max(mx, groundY(gx + Math.cos(a) * rr, gz + Math.sin(a) * rr));
+      }
+    }
+    return mx;
+  }
+
   function clearSupremacyBases() {
     for (const b of baseObjects) {
       if (b.ring) { scene.remove(b.ring); b.ring.geometry.dispose(); b.ring.material.dispose(); }
@@ -944,13 +977,13 @@ export function initPlayback(container, store) {
       if (bid == null) continue;
       const gx = -p.x, gz = p.y;          // 场景镜像系
       const r = p.radius || 15;
-      // 贴地圆环（基地位置锚点）
+      // 贴地圆环（基地位置锚点）：不用平面 RingGeometry——平面在起伏地形上会被坡地
+      // 埋掉大半。改为逐顶点采样地形高度的环带（与边界带同构，随地形起伏）。
       const ring = new THREE.Mesh(
-        new THREE.RingGeometry(r * 0.9, r, 56),
+        makeGroundedRing(gx, gz, r),
         new THREE.MeshBasicMaterial({ color: BASE_NEUTRAL, side: THREE.DoubleSide,
-                                      transparent: true, opacity: 0.9, depthWrite: false }));
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.set(gx, groundY(gx, gz) + 0.06, gz);   // 贴地表（随地形起伏）
+                                      transparent: true, opacity: 0.9, depthWrite: false,
+                                      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
       scene.add(ring);
       // HUD：billboard sprite（字母 + 占领进度），屏幕尺寸 clamp
       const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128;
@@ -958,10 +991,16 @@ export function initPlayback(container, store) {
       const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
         map: tex, depthTest: false, depthWrite: false, transparent: true }));
       sprite.renderOrder = 998;
-      sprite.position.set(gx, groundY(gx, gz) + BASE_HUD_H, gz);   // 地表之上，不被遮挡
+      sprite.position.set(gx, ringMaxGroundY(gx, gz, r) + BASE_HUD_H, gz);   // 高于环内最高地形
       labelScene.add(sprite);
       baseObjects.push({ baseId: p.baseId, bid, ring, sprite, canvas, ctx: canvas.getContext('2d'),
-                         tex, state: null, r });
+                         tex, state: null, r,
+                         // 地形异步就绪后：重建贴地环带 + HUD 抬到环内最高地形之上
+                         reground: () => {
+                           ring.geometry.dispose();
+                           ring.geometry = makeGroundedRing(gx, gz, r);
+                           sprite.position.y = ringMaxGroundY(gx, gz, r) + BASE_HUD_H;
+                         } });
     }
     if (DEBUG) window.__bases = baseObjects;   // 调试钩子：?debug 可查基地对象
   }
@@ -971,9 +1010,7 @@ export function initPlayback(container, store) {
   // 地形异步加载完成后调用：基地圆环/HUD 按真实地形高度重新贴地
   function regroundSupremacyBases() {
     for (const b of baseObjects) {
-      const gy = groundY(b.ring.position.x, b.ring.position.z);
-      b.ring.position.y = gy + 0.06;
-      b.sprite.position.y = gy + BASE_HUD_H;
+      if (b.reground) b.reground();   // 重建贴地环带几何 + HUD 抬高（见 buildSupremacyBases）
     }
   }
   function baseStateAt(bid, t) {

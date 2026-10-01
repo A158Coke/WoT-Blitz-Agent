@@ -303,6 +303,19 @@ export function initPlayback(container, store) {
   // 输出 = albedo × SH(标定 1.77) × (遮挡/遮挡均值)——按均值归一化保留内暗外亮
   // 的纵深变化，又不会把整体亮度压到校准水平之下（各图贴图明暗差异大，固定
   // 系数会把暗色贴图的灌木压成黑色）。风摆为动态效果，静态导出不参与。
+  // 场景 GLB 材质实例缓存：同一（name,map,color,alphaMode,opacity,occMean）复用同一
+  // 材质对象。此前每个 mesh 各建一份（实测 2107 mesh ↔ 2107 材质）——材质/着色器
+  // 实例与 program 切换随 mesh 数线性膨胀，是当前最大的性能开销来源。
+  // 生命周期：teardown 时随 mapScenery dispose 并清空本表（勿复用已 dispose 实例）。
+  const sceneryMatCache = new Map();
+  function cachedSceneryMat(key, factory) {
+    let m = sceneryMatCache.get(key);
+    if (!m) { m = factory(); sceneryMatCache.set(key, m); }
+    return m;
+  }
+  // 水体判定（GLB mesh/材质名启发式：seaplane/water/fountain/lake/river）
+  const isWaterName = (n) => /water|sea|lake|river|fountain/i.test(n || '');
+
   function makeBillboardMaterial(m) {
     const occMean = (m.userData && m.userData.extras && m.userData.extras.occMean) || 0.8;
     // 客户端着色器为伽马空间直采直写：关闭 sRGB 纹理解码（自定义着色器无输出
@@ -313,6 +326,9 @@ export function initPlayback(container, store) {
         map: { value: m.map || null },
         uSH: { value: 1.77 },
         uOccMean: { value: occMean },
+        // 叶卡裁切阈值：客户端 AlphaBlend 软边缘 + 0.05 低阈值会让近透明像素仍写
+        // 深度（叶片互相遮挡 → 破洞/闪烁）；提到 MASK 量级消除，并保留软边缘
+        uAlphaCut: { value: 0.33 },
       },
       vertexShader: `
         attribute vec4 _corner;
@@ -328,8 +344,11 @@ export function initPlayback(container, store) {
           vUv = uv;
           vOcc = color.r;
         }`,
-      transparent: true,           // 客户端 SpeedTree 为 AlphaBlend 通道：
-      depthWrite: true,            // 软边缘半透明混合，近全透明才裁剪
+      // 用 discard 裁切走不透明管线（transparent=false）：叶卡之间排序无关，
+      // 消除互遮挡闪烁（此前 transparent=true + depthWrite=true 二者冲突），
+      // 同时省掉透明通道的排序开销
+      transparent: false,
+      depthWrite: true,
       fragmentShader: `
         uniform sampler2D map;
         uniform float uSH;
@@ -338,7 +357,7 @@ export function initPlayback(container, store) {
         varying float vOcc;
         void main() {
           vec4 c = texture2D(map, vUv);
-          if (c.a < 0.05) discard;
+          if (c.a < uAlphaCut) discard;
           float occ = min(vOcc / max(uOccMean, 0.001), 1.25);
           gl_FragColor = vec4(c.rgb * min(occ * uSH, 1.35), c.a);
         }`,
@@ -477,7 +496,12 @@ export function initPlayback(container, store) {
         // GLTFLoader 默认 MeshStandardMaterial（PBR）比场景 Lambert 光照吃光得多，
         // 建筑会渲染成近黑——统一降级为 Lambert 并保留贴图/透明/平直着色。
         // 几何含 _CORNER 属性的叶卡走 billboard 材质（见 makeBillboardMaterial）
-        const convMat = (m, isCard) => (isCard ? makeBillboardMaterial(m) : (() => {
+        const convMat = (m, isCard) => cachedSceneryMat(
+          [isCard ? 'C' : 'M', m.name || '', m.map ? m.map.uuid : '',
+           m.color && m.color.getHexString ? m.color.getHexString() : '',
+           m.alphaMode || '', m.opacity ?? 1,
+           (m.userData && m.userData.extras && m.userData.extras.occMean) || ''].join('|'),
+          () => (isCard ? makeBillboardMaterial(m) : (() => {
           // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
           // 无场景光照——用不受光材质（染色值经 baseColorFactor→color 传入）
           if ((m.name || '').startsWith('ST|')) {
@@ -503,13 +527,26 @@ export function initPlayback(container, store) {
           if (m.alphaMode === 'MASK') nm.alphaTest = m.alphaCutoff || 0.33;
           nm.flatShading = true;
           return nm;
-        })());
+        })()));
         gltf.scene.traverse((o) => {
           if (!o.isMesh || !o.material) return;
           // GLTFLoader 会把自定义属性名转小写：GLB 里的 _CORNER → geometry._corner
           const isCard = !!o.geometry.attributes._corner;
           o.material = Array.isArray(o.material) ? o.material.map((m) => convMat(m, isCard))
                                                  : convMat(o.material, isCard);
+          // 水体（海平面等半透明大面）：透明 + depthWrite=true + DoubleSide 会与
+          // 地形/自身共面产生 z-fighting 与透明互遮挡闪烁。改单面渲染 + 不写深度
+          // （透明面靠排序绘制），并置后渲染顺序。
+          if (isWaterName(o.name)) {
+            const ms = Array.isArray(o.material) ? o.material : [o.material];
+            for (const mm of ms) {
+              if (!mm || !mm.transparent) continue;
+              if (mm.depthWrite === true) mm.depthWrite = false;
+              mm.side = THREE.FrontSide;
+              mm.needsUpdate = true;
+            }
+            o.renderOrder = -1;   // 水面先于其余半透明层绘制
+          }
           if (isCard) {
             // 包围球按锚点计算，角点向外超出——扩 2m 防视锥剔除边缘闪没
             if (o.geometry.boundingSphere) o.geometry.boundingSphere.radius += 2;
@@ -526,6 +563,33 @@ export function initPlayback(container, store) {
           if (!o.isMesh) return;
           if (/sky/i.test(o.name || '')) o.visible = false;
         });
+        if (DEBUG) window.__sceneryStats = () => {
+          let meshes = 0, tris = 0, transparent = 0;
+          const mats = new Set(); const names = new Map(); const waterish = [];
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh) return;
+            meshes++;
+            const ms = Array.isArray(o.material) ? o.material : [o.material];
+            for (const m of ms) {
+              if (!m) continue;
+              mats.add(m.uuid);
+              if (m.transparent) transparent++;
+              const key = (m.name || o.name || '(unnamed)');
+              names.set(key, (names.get(key) || 0) + 1);
+              if (/water|sea|lake|river/i.test((m.name || '') + ' ' + (o.name || ''))) {
+                waterish.push({ mesh: o.name, mat: m.name, type: m.type,
+                  transparent: m.transparent, depthWrite: m.depthWrite,
+                  opacity: m.opacity, side: m.side, alphaTest: m.alphaTest ?? null });
+              }
+            }
+            const g = o.geometry;
+            const cnt = g.index ? g.index.count : (g.attributes.position?.count || 0);
+            tris += cnt / 3;
+          });
+          const top = [...names.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+          return { meshes, uniqueMaterials: mats.size, transparentMeshes: transparent,
+                   triangles: Math.round(tris), topMaterialNames: top, waterish };
+        };
       }
     } catch (e) { console.warn('场景模型加载失败（忽略）:', e); }
   }
@@ -1593,6 +1657,7 @@ export function initPlayback(container, store) {
       if (o) { scene.remove(o); disposeObject3D(o); }
     }
     clearSupremacyBases();   // 争霸基地（圆环 + HUD sprite）随会话释放
+    sceneryMatCache.clear();   // 材质已随 mapScenery dispose，缓存须清空（勿复用）
     if (boundaryGroup) {
       const shared = boundaryGroup.userData.sharedMaterial;
       if (shared) shared.dispose();   // disposeObject3D 只清各自 material，共享材质在此释放

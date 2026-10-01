@@ -635,15 +635,20 @@ export function initPlayback(container, store) {
             const ms = Array.isArray(o.material) ? o.material : [o.material];
             for (const mm of ms) {
               if (!mm || !mm.transparent) continue;
-              if (mm.depthWrite === true) mm.depthWrite = false;
-              mm.side = THREE.FrontSide;
-              // 与地形/自身共面时的 z-fighting 防护（透明面不写深度仍会因共面而闪）
+              // 大面积水平面 + 相机贴近时是掠射角：单面剔除会因法线朝向判断不稳定而
+              // 时隐时现（闪烁）。改回双面——因 depthWrite=false，双面不会自我
+              // z-fighting，只是掠射时略深（可接受，远优于闪）。
+              mm.depthWrite = false;
+              mm.side = THREE.DoubleSide;
+              mm.depthTest = true;
+              // 水面几何精度高于 512² 地形高度场，局部会与地形交叠 → 深度偏移缓解
               mm.polygonOffset = true;
               mm.polygonOffsetFactor = -1;
-              mm.polygonOffsetUnits = -1;
+              mm.polygonOffsetUnits = -2;
               mm.needsUpdate = true;
             }
-            o.renderOrder = -1;   // 水面先于其余半透明层绘制
+            // 不设 renderOrder：交给 THREE 在透明队列内按摄像机距离排序
+            //（此前设 -1 让水面最先绘制，与其余半透明层遮挡关系错乱，接近时抖）
           }
           if (isCard) {
             // 包围球按锚点计算，角点向外超出——扩 2m 防视锥剔除边缘闪没

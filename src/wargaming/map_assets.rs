@@ -229,11 +229,28 @@ pub struct MapMeta {
     /// 高度场 zMax 覆盖（米）；缺省用 sidecar（data/cache/maps/<space>.json）
     #[serde(default)]
     pub zmax_m: Option<f32>,
+    /// 游戏内实际战场边界（米，回放坐标系；export_map_glb 从场景
+    /// MapBorderComponent.mbc.rect 提取）。None = 该图未导出/无组件，消费端回退 worldBounds。
+    #[serde(default, rename = "playableBounds")]
+    pub playable_bounds: Option<PlayableBounds>,
+}
+
+/// 游戏内实际战场边界（回放坐标 x/z 系，米）：比真实地图 worldBounds(±300) 小。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PlayableBounds {
+    #[serde(rename = "xMin")]
+    pub x_min: f32,
+    #[serde(rename = "yMin")]
+    pub y_min: f32,
+    #[serde(rename = "xMax")]
+    pub x_max: f32,
+    #[serde(rename = "yMax")]
+    pub y_max: f32,
 }
 
 impl Default for MapMeta {
     fn default() -> Self {
-        Self { size_m: DEFAULT_SIZE_M, x: 0.0, z: 0.0, rot90: 0, flip_x: false, zmax_m: None }
+        Self { size_m: DEFAULT_SIZE_M, x: 0.0, z: 0.0, rot90: 0, flip_x: false, zmax_m: None, playable_bounds: None }
     }
 }
 
@@ -423,6 +440,7 @@ struct TerrainScale {
     zmax: f32,
     zmin: f32,
     span: f32,
+    playable: Option<PlayableBounds>,
 }
 
 /// 读 sidecar：worldBounds.min/max → span/zmin/zmax（导出器按客户端 Landscape bbox 写出）。
@@ -444,7 +462,13 @@ fn terrain_scale(entry: &MapEntry) -> Option<TerrainScale> {
     if zmax <= zmin || span <= 0.0 {
         return None;
     }
-    Some(TerrainScale { zmax, zmin, span })
+    // 游戏内实际战场边界（同一 sidecar；export_map_glb 从场景 MapBorderComponent 提取）
+    let playable = v.get("playableBounds").and_then(|pb| {
+        let g = |k: &str| pb.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+        Some(PlayableBounds { x_min: g("xMin")?, y_min: g("yMin")?,
+                              x_max: g("xMax")?, y_max: g("yMax")? })
+    });
+    Some(TerrainScale { zmax, zmin, span, playable })
 }
 
 /// 解析标准契约高度图，返回行 0=南、列 0=西 的 u16 网格；size/tile 非预期值（老图）一律拒绝。
@@ -584,7 +608,9 @@ pub fn terrain_response(map_param: &str) -> Response {
         return (axum::http::StatusCode::NOT_FOUND, "terrain not available").into_response();
     };
     let manual = map_meta(entry);
-    let (zmax, zmin, span) = match terrain_scale(entry) {
+    let scale = terrain_scale(entry);
+    let playable = scale.as_ref().and_then(|s| s.playable);
+    let (zmax, zmin, span) = match scale {
         Some(s) => (manual.zmax_m.unwrap_or(s.zmax), s.zmin, s.span),
         None => match manual.zmax_m {
             Some(z) => (z, 0.0, DEFAULT_SIZE_M),
@@ -597,15 +623,15 @@ pub fn terrain_response(map_param: &str) -> Response {
             }
         },
     };
-    terrain_serve(entry, zmax, zmin, span)
+    terrain_serve(entry, zmax, zmin, span, playable)
 }
 
-fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32) -> Response {
+fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32, playable: Option<PlayableBounds>) -> Response {
     // 1) 手动覆盖：data/maps/<key>.heightmap.u16.bin（512×512 LE，行 0=南）
     let override_path = data_path(&format!("maps/{}.heightmap.u16.bin", entry.key));
     if let Ok(bytes) = std::fs::read(&override_path) {
         if bytes.len() == 512 * 512 * 2 {
-            return terrain_response_bytes(bytes, zmax, zmin, span);
+            return terrain_response_bytes(bytes, zmax, zmin, span, playable);
         }
         eprintln!("[map-assets] 高度覆盖尺寸不符（应为 {} 字节）：{}", 512 * 512 * 2, override_path.display());
     }
@@ -614,7 +640,7 @@ fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32) -> Response 
     let cache = crate::data::cache_path(&format!("terrain/{}.hm.u16.bin", entry.key));
     if let Ok(bytes) = std::fs::read(&cache) {
         if bytes.len() == 512 * 512 * 2 {
-            return terrain_response_bytes(bytes, zmax, zmin, span);
+            return terrain_response_bytes(bytes, zmax, zmin, span, playable);
         }
     }
 
@@ -628,12 +654,19 @@ fn terrain_serve(entry: &MapEntry, zmax: f32, zmin: f32, span: f32) -> Response 
     }
     let _ = std::fs::write(&cache, &bytes);
     eprintln!("[map-assets] extracted heightmap {} -> {}", entry.space, cache.display());
-    terrain_response_bytes(bytes, zmax, zmin, span)
+    terrain_response_bytes(bytes, zmax, zmin, span, playable)
 }
 
 /// 响应附带 X-Terrain-Meta（高度场解释参数）。
-fn terrain_response_bytes(bytes: Vec<u8>, zmax: f32, zmin: f32, span: f32) -> Response {
-    let meta = format!(r#"{{"size":512,"zmax":{zmax:.1},"zmin":{zmin:.1},"span":{span:.1}}}"#);
+fn terrain_response_bytes(bytes: Vec<u8>, zmax: f32, zmin: f32, span: f32,
+                          playable: Option<PlayableBounds>) -> Response {
+    // playableBounds 透传（游戏内实际战场边界；缺失则不发该键，前端回退 worldBounds）
+    let pb = match playable {
+        Some(b) => format!(r#","playableBounds":{{"xMin":{:.3},"yMin":{:.3},"xMax":{:.3},"yMax":{:.3}}}"#,
+                           b.x_min, b.y_min, b.x_max, b.y_max),
+        None => String::new(),
+    };
+    let meta = format!(r#"{{"size":512,"zmax":{zmax:.1},"zmin":{zmin:.1},"span":{span:.1}{pb}}}"#);
     (
         [
             (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string()),

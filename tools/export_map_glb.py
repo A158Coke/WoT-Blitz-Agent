@@ -220,6 +220,25 @@ def component_by_type(entity: dict, type_name: str) -> dict | None:
     return next((c for c in components_of(entity) if c.get("comp.typename") == type_name), None)
 
 
+def map_border_bounds(scene: dict) -> tuple[float, float, float, float] | None:
+    """游戏内实际战场边界：场景实体的 MapBorderComponent → mbc.rect（16B = 4×f32：
+    xMin, yMin, xMax, yMax，米；与回放坐标同系）。
+
+    来源同 WotBTools map-semanticizer 的 map_border()（common/map-semantics/*.semantic.json
+    的 playableBoundsMeters 即此值）——比真实地图 worldBounds(±300) 小，是战场可玩区。
+    缺组件/长度异常时返回 None，调用方回退 worldBounds。
+    """
+    for _path, entity in iter_entities_recursive(scene):
+        comp = component_by_type(entity, "MapBorderComponent")
+        if comp is None:
+            continue
+        rect = decode_bytes(comp.get("mbc.rect"))
+        if rect is not None and len(rect) == 16:
+            x_min, y_min, x_max, y_max = struct.unpack("<4f", rect)
+            return (x_min, y_min, x_max, y_max)
+    return None
+
+
 def world_transform(entity: dict) -> dict:
     """TransformComponent 里客户端已烘焙的世界变换（与父链累乘等价）。"""
     t = component_by_type(entity, "TransformComponent") or {}
@@ -928,6 +947,14 @@ def load_payload(path: pathlib.Path) -> bytes:
     return decode_dvpl(raw) if path.name.lower().endswith(".dvpl") else raw
 
 
+def _border_doc(border: tuple[float, float, float, float] | None) -> dict | None:
+    if border is None:
+        return None
+    x_min, y_min, x_max, y_max = border
+    return {"xMin": round(x_min, 3), "yMin": round(y_min, 3),
+            "xMax": round(x_max, 3), "yMax": round(y_max, 3)}
+
+
 def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Path) -> dict:
     space = entry.space
     directory = game_data / "3d" / "Maps" / space
@@ -1176,6 +1203,8 @@ def export_map(game_data: pathlib.Path, entry: MapEntry, output_dir: pathlib.Pat
         "space": space,
         "sc2": entry.local_name,
         "worldBounds": landscape.get("worldBounds"),
+        # 游戏内实际战场边界（MapBorderComponent.mbc.rect）；缺失为 None，消费端回退 worldBounds
+        "playableBounds": _border_doc(map_border_bounds(scene)),
         "heightmap": landscape.get("heightmap"),
         "instances": len(glb.nodes),
         "meshes": len(glb.meshes),

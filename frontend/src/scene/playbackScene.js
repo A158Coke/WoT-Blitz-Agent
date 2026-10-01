@@ -256,7 +256,9 @@ export function initPlayback(container, store) {
   // 与回放同坐标系：x = 回放 x、y = 回放 z）。场景为 x 镜像系（scene x = −回放 x），
   // 故场景内 x 区间 = [−xMax, −xMin]、z 区间 = [yMin, yMax]。无语义数据时回退地图 span。
   function playableBoundsFor(mapId) {
-    const pb = playableBoundsData[String(mapId)];
+    // 优先取服务端 terrain meta（heightMeta.playableBounds，由 agent 导出器从场景
+    // MapBorderComponent.mbc.rect 实时提取——新地图导出即自带）；否则回退打包副本
+    const pb = (heightMeta && heightMeta.playableBounds) || playableBoundsData[String(mapId)];
     if (!pb) return null;
     const sxMin = -pb.xMax, sxMax = -pb.xMin;
     return { cx: (sxMin + sxMax) / 2, cz: (pb.yMin + pb.yMax) / 2,

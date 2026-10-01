@@ -57,7 +57,21 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
     <div id="topbar" class="panel">
       <span class="map">{{ store.mapName }}</span>
       <span class="timer">{{ store.timer }}</span>
-      <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
+      <!-- 双方队伍血量条（按全队 max_hp 汇总）+ 中间战果比分（对齐 WotBTools HUD） -->
+      <span class="hpline">
+        <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
+          <i :style="{ width: store.hpFriendPct + '%' }"></i>
+        </span>
+        <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
+        <span class="hpbar hp-e" :title="'敌方 ' + store.hpEnemyPct.toFixed(0) + '%'">
+          <i :style="{ width: store.hpEnemyPct + '%' }"></i>
+        </span>
+      </span>
+      <!-- 争霸实时点数（仅该场有点数广播时出现） -->
+      <span v-if="store.pointsFriend != null || store.pointsEnemy != null" class="points">
+        <span class="plbl">点数</span>
+        <b><span class="t1">{{ store.pointsFriend ?? '—' }}</span> : <span class="t2">{{ store.pointsEnemy ?? '—' }}</span></b>
+      </span>
     </div>
 
     <div id="team1" class="team panel">
@@ -190,6 +204,16 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar .score .t1 { color: var(--ally); }
 #topbar .score .t2 { color: var(--enemy); }
 #topbar .map { color: var(--dim); }
+/* 双方血量条 + 比分（WotBTools HUD 同构：左己方 / 右敌方 / 中间战果） */
+#topbar .hpline { display: inline-flex; align-items: center; gap: 8px; }
+#topbar .hpbar { display: inline-block; width: 92px; height: 9px; border-radius: 5px;
+                 background: rgba(255,255,255,.13); overflow: hidden; }
+#topbar .hpbar > i { display: block; height: 100%; transition: width .18s linear; }
+#topbar .hp-f > i { background: var(--ally); float: right; }   /* 己方自右向左消减 */
+#topbar .hp-e > i { background: var(--enemy); }
+#topbar .points { display: inline-flex; align-items: center; gap: 6px; }
+#topbar .points .plbl { color: var(--dim); font-size: 11px; }
+#topbar .points b { font-size: 15px; font-variant-numeric: tabular-nums; }
 .team { top: 60px; width: 240px; padding: 6px; max-height: calc(100% - 190px); overflow-y: auto; }
 #team1 { left: 10px; }
 #team2 { right: 10px; }

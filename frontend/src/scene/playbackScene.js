@@ -1733,6 +1733,29 @@ export function initPlayback(container, store) {
     updateRoster(); updateScore();
     // HUD → store
     store.timer = gameTimerLabel(T);
+    // 顶栏：双方队伍血量（按全队 max_hp 汇总的剩余百分比）
+    {
+      let hf = 0, mf = 0, he = 0, me = 0;
+      const ft = DATA.meta.friendly_team;
+      for (const v of V) {
+        const tm = v.def.team;
+        if (tm !== 1 && tm !== 2) continue;          // 未知阵营不计入任一方
+        const hp = Math.max(0, hpAt(v, T)), mx = v.def.max_hp || 0;
+        if (tm === ft) { hf += hp; mf += mx; } else { he += hp; me += mx; }
+      }
+      store.hpFriendPct = mf > 0 ? 100 * hf / mf : 0;
+      store.hpEnemyPct = me > 0 ? 100 * he / me : 0;
+    }
+    // 顶栏：争霸实时点数（取 ≤T 的最后采样；无广播的场次保持 null → UI 不显示）
+    if (DATA.supremacy_points && DATA.supremacy_points.length) {
+      const ft = DATA.meta.friendly_team;
+      let pf = null, pe = null;
+      for (const sp of DATA.supremacy_points) {
+        if (sp.clock > T) continue;
+        if (sp.team === ft) pf = sp.points; else pe = sp.points;
+      }
+      store.pointsFriend = pf; store.pointsEnemy = pe;
+    }
     if (DEBUG) window.__T = T;   // 调试钩子：当前回放时钟
     store.time = T;
     store.duration = DATA.meta.duration;

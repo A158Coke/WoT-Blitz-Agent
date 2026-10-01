@@ -16,6 +16,7 @@ import { poseFromYPR } from './glbRig.js'
 import mapBasesData from './mapBases.json'
 import { firstIndexAfter } from './seekPointer.js'
 import { impactKind } from './impactKind.js'
+import { pointsAt } from './supremacyPoints.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -51,6 +52,11 @@ export function initPlayback(container, store) {
   let mapScenery = null;                              // 静态场景 GLB（建筑等）
   let groundMesh = null, gridHelper = null;           // buildWorld 的占位地面/网格（会话拥有）
   let boundaryGroup = null;                           // 地图边界红线（会话拥有）
+  // 阵营/中立调色（唯一事实源）：green / red / white——炮线、基地归属、标签、
+  // 中立与未知阵营一律用 white（unknown ≠ enemy）。
+  const COLOR_FRIENDLY = 0x2ecc71;
+  const COLOR_ENEMY = 0xef4444;
+  const COLOR_UNKNOWN = 0xf5f5f5;
   let baseObjects = [];                               // 争霸基地 {baseId, bid, ring, sprite, canvas, ...}
   let destroyed = false;
   let kfId = 0;
@@ -1033,7 +1039,7 @@ export function initPlayback(container, store) {
   // 几何来自 mapBases.json（客户端 .sc2 提取，世界坐标；scene x = −游戏 x 镜像自洽）。
   // 状态来自 DATA.supremacy_bases（contract v2 wrapper12/root11 sparse 重建）——
   // seek 折叠：每基地取 clock≤t 的最后一条。渲染只做呈现，不推断协议。
-  const BASE_OWNER_FRIENDLY = 0x2ecc71, BASE_OWNER_ENEMY = 0xef4444, BASE_NEUTRAL = 0xf0f0f0;
+  const BASE_OWNER_FRIENDLY = 0x2ecc71, BASE_OWNER_ENEMY = 0xef4444, BASE_NEUTRAL = COLOR_UNKNOWN;
   function baseSideColor(team) {
     const ft = DATA.meta.friendly_team;
     if ((team !== 1 && team !== 2) || (ft !== 1 && ft !== 2)) return BASE_NEUTRAL;
@@ -1290,7 +1296,7 @@ export function initPlayback(container, store) {
   // 对比不足。同源供标签卡片、花名册圆点、无 GLB 时的代理车体三处使用，保持同一调色。
   function teamColor(v) {
     const f = DATA.meta.friendly_team, t = v.def.team;
-    if (t === 0 || f === 0) return 0x8a94a3;
+    if (t === 0 || f === 0) return COLOR_UNKNOWN;   // 中立＝白（green / red / white 口径）
     return t === f ? 0x26794a : 0x98322a;
   }
 
@@ -1922,12 +1928,10 @@ export function initPlayback(container, store) {
     scene.add(traj);
     trajLines.push({ mesh: traj, until: t1 + 1.0, fadeEnd: t1 + 2.2, base: TRAJ_OPACITY });
   }
-  // 炮线阵营色（唯一规则，评审批准）：friendly=绿 / enemy=红 / unknown=白。
-  // team 必须显式 ∈ {1,2} 才参与判定——team=0 或 friendly_team 未知一律白（绝不
-  // fallback 到任一方；与射击复现 consumer 的三态阵营模型同规则）
-  const COLOR_FRIENDLY = 0x2ecc71;
-  const COLOR_ENEMY = 0xef4444;
-  const COLOR_UNKNOWN = 0xf5f5f5;
+  // 炮线阵营色 = 射手阵营（唯一规则，评审批准）：green / red / white，
+  // 调色常量见文件顶部（唯一事实源）。team 必须显式 ∈ {1,2} 才参与判定——
+  // team=0 或 friendly_team 未知一律 white（绝不 fallback 到任一方；
+  // 与射击复现 consumer 的三态阵营模型同规则）。
   function shotTeamColor(s) {
     const d = DATA.vehicles.find((x) => x.eid === s.shooter_eid);
     const t = d ? d.team : 0;
@@ -2201,9 +2205,11 @@ export function initPlayback(container, store) {
     {
       let hf = 0, mf = 0, he = 0, me = 0;
       const ft = DATA.meta.friendly_team;
+      const ftKnown = ft === 1 || ft === 2;   // 本方阵营未知 → 谁都不归属（unknown ≠ enemy）
       for (const v of V) {
         const tm = v.def.team;
         if (tm !== 1 && tm !== 2) continue;          // 未知阵营不计入任一方
+        if (!ftKnown) continue;                      // 阵营未知：不得把全队算进敌方
         const hp = Math.max(0, hpAt(v, T)), mx = v.def.max_hp || 0;
         if (tm === ft) { hf += hp; mf += mx; } else { he += hp; me += mx; }
       }
@@ -2212,22 +2218,19 @@ export function initPlayback(container, store) {
       store.hpFriend = hf; store.hpFriendMax = mf;
       store.hpEnemy = he; store.hpEnemyMax = me;
     }
-    // 顶栏：争霸实时点数（取 ≤T 的最后采样；无广播的场次保持 null → UI 不显示）
-    if (DATA.supremacy_points && DATA.supremacy_points.length) {
-      const ft = DATA.meta.friendly_team;
-      let pf = null, pe = null;
-      for (const sp of DATA.supremacy_points) {
-        if (sp.clock > T) continue;
-        if (sp.team === ft) pf = sp.points; else pe = sp.points;
-      }
-      store.pointsFriend = pf; store.pointsEnemy = pe;
+    // 顶栏：争霸实时点数——**每 tick 确定性重算**（无采样也写 null）：从争霸场切到普通场时
+    // supremacy_points 缺失，若只在有采样时才写，上一场的点数会残留在 HUD 上。
+    // 阵营映射只认 friendly_team ∈ {1,2}（unknown ≠ enemy，见 pointsAt）。
+    {
+      const pts = pointsAt(DATA.supremacy_points, T, DATA.meta.friendly_team);
+      store.pointsFriend = pts.friend; store.pointsEnemy = pts.enemy;
     }
     // 顶栏：攻防战/遭遇战单基地——目标存在性 + 占领进度（取 ≤T 的最后一条）。
     // 无目标证据的场次保持 false/null → UI 整行不显示。判据同 buildAssaultBase。
     store.assaultObjective = DATA.assault_objective_present === true
       || (DATA.assault_objective_present === undefined
           && !!(DATA.assault_bases && DATA.assault_bases.length));
-    if (store.assaultObjective) store.assaultProgress = assaultProgressAt(T);
+    store.assaultProgress = store.assaultObjective ? assaultProgressAt(T) : null;
     if (DEBUG) window.__T = T;   // 调试钩子：当前回放时钟
     store.time = T;
     store.duration = DATA.meta.duration;
@@ -2378,6 +2381,11 @@ export function initPlayback(container, store) {
     FOLLOW_EID = 0; followAnchor = null;
     store.killfeed = [];
     store.banner = null;
+    // HUD 派生字段显式归零（与 tick 的确定性重算互为双保险：会话切换不留上一场残值）
+    store.pointsFriend = null; store.pointsEnemy = null;
+    store.assaultObjective = false; store.assaultProgress = null;
+    store.hpFriendPct = 100; store.hpEnemyPct = 100;
+    store.hpFriend = 0; store.hpFriendMax = 0; store.hpEnemy = 0; store.hpEnemyMax = 0;
     store.roster.team1 = [];
     store.roster.team2 = [];
     store.roster.unknown = [];

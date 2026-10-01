@@ -191,10 +191,14 @@ export function initPlayback(container, store) {
   }
   function onResize() {
     if (!renderer) return;
-    camera.aspect = container.clientWidth / container.clientHeight;
+    // 尺寸取整一次、两个画布共用（主场景 + 标签覆盖层）：全屏/最大化时
+    // clientWidth/Height 可能为小数且两层取整不同 → 合成错位 1px → 画面抖。
+    const w = Math.max(1, Math.round(container.clientWidth));
+    const h = Math.max(1, Math.round(container.clientHeight));
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    if (labelRenderer) labelRenderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(w, h);
+    if (labelRenderer) labelRenderer.setSize(w, h);
   }
   function onScenePointerDown(e) {
     if (e.button !== 0) return;
@@ -635,16 +639,15 @@ export function initPlayback(container, store) {
             const ms = Array.isArray(o.material) ? o.material : [o.material];
             for (const mm of ms) {
               if (!mm || !mm.transparent) continue;
-              // 大面积水平面 + 相机贴近时是掠射角：单面剔除会因法线朝向判断不稳定而
-              // 时隐时现（闪烁）。改回双面——因 depthWrite=false，双面不会自我
-              // z-fighting，只是掠射时略深（可接受，远优于闪）。
-              mm.depthWrite = false;
+              // 实测（erlenberg）：水面为恒定高度的水平面（y 恒定），与地形高度差
+              // -6.9~+7.7m 且无一采样点接近 0 → 并非与地形共面，排除 z-fighting。
+              // 其几何极简（少数大三角形），depthWrite=false 时大三角形上的深度插值
+              // 精度不足，与 512² 地形逐像素比较会在大面积上帧间交替 → 闪。
+              // 该面是无厚度水平面（双面同深度、不自我遮挡），且为全场唯一透明物 →
+              // 让其正常写深度最稳：比较结果由水面自身深度一次决定。
+              mm.depthWrite = true;
               mm.side = THREE.DoubleSide;
               mm.depthTest = true;
-              // 水面几何精度高于 512² 地形高度场，局部会与地形交叠 → 深度偏移缓解
-              mm.polygonOffset = true;
-              mm.polygonOffsetFactor = -1;
-              mm.polygonOffsetUnits = -2;
               mm.needsUpdate = true;
             }
             // 不设 renderOrder：交给 THREE 在透明队列内按摄像机距离排序
@@ -705,6 +708,33 @@ export function initPlayback(container, store) {
                        longEdgePct: +(100 * over / Math.max(1, count)).toFixed(1) });
           });
           return out.slice(0, 10);
+        };
+        if (DEBUG) window.__waterVsTerrain = () => {
+          // 水面顶点高度 vs 该处地形采样高度：差值接近 0 即深度竞争区（闪烁源）
+          const out = [];
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh || !isWaterName(o.name)) return;
+            const g = o.geometry; const pos = g.attributes.position;
+            if (!pos) return;
+            o.updateWorldMatrix(true, false);
+            const v = new THREE.Vector3();
+            let yMin = Infinity, yMax = -Infinity, dMin = Infinity, dMax = -Infinity, near0 = 0, n = 0;
+            const step = Math.max(1, Math.floor(pos.count / 300));
+            for (let i = 0; i < pos.count; i += step) {
+              v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+              const th = sampleHeight(v.x, v.z);          // 该处地形高度（米）
+              const d = v.y - th;
+              yMin = Math.min(yMin, v.y); yMax = Math.max(yMax, v.y);
+              dMin = Math.min(dMin, d); dMax = Math.max(dMax, d);
+              if (Math.abs(d) < 0.5) near0++;
+              n++;
+            }
+            out.push({ mesh: o.name, samples: n, waterY: [+yMin.toFixed(2), +yMax.toFixed(2)],
+                       diffTerrain: [+dMin.toFixed(2), +dMax.toFixed(2)],
+                       nearZeroPct: +(100 * near0 / Math.max(1, n)).toFixed(1),
+                       renderOrder: o.renderOrder, depthWrite: (Array.isArray(o.material)?o.material[0]:o.material).depthWrite });
+          });
+          return out;
         };
         if (DEBUG) window.__transparentMeshes = () => {
           // 列出全部透明网格（闪烁排查）：名 / opacity / depthWrite / side / 材质名

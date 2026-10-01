@@ -218,8 +218,13 @@ impl TankResolver {
     }
 
     /// 把坦克缓存写为 JSON 文件（`fetch-tanks` 命令用）。
+    ///
+    /// 按 tank_id 排序输出：cache 是 HashMap，迭代序随进程随机——不排序时同一份
+    /// 数据每次重建都会整文件重排（diff 无法评审，资产包每次全量重传）。
     pub fn save_to_json_file(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_string_pretty(&self.cache)?;
+        let sorted: std::collections::BTreeMap<u32, &TankInfo> =
+            self.cache.iter().map(|(id, info)| (*id, info)).collect();
+        let content = serde_json::to_string_pretty(&sorted)?;
         std::fs::write(path, content)?;
         Ok(())
     }

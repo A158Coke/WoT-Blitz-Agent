@@ -233,7 +233,7 @@ export function initPlayback(container, store) {
     gridHelper = grid;
     // 地图边界先用 world bounds 兜底（地图资产随后加载，rebuildGround 会用真实
     // 地图尺寸覆盖重建）
-    buildBoundary(cx, cz, ext, BOUNDARY_HALF_EXT);
+    buildBoundary({ cx, cz, hx: ext, hz: ext }, BOUNDARY_THICK);   // 兜底，地图就绪后重建
     WORLD_CENTER = { cx, cz, ext };
     camera.position.set(cx, ext * 1.1, cz + ext * 1.2);
     controls.target.set(cx, 0, cz);
@@ -244,10 +244,18 @@ export function initPlayback(container, store) {
   // 地图边界：四条绝对直线发光红线正方形（常驻、不闪烁不脉冲）。几何 = 地图真实
   // 世界范围（size×size，中心 meta.x/z；缺资产时回退 world bounds）。注意这只是
   // **render/map bounds**，非已证明的游戏内真实战场边界；拿到精确边界只换数据源。
+  // 地表高度（米）+ 微小抬升：贴地元素（边界带/基地圆环/HUD）共用——地形有起伏，
+  // 固定 y 会被坡地埋住（此前 0.14/0.22 在起伏地形下即"沉入地下"）
+  function groundY(x, z) {
+    return sampleHeight(x, z) + 0.12;
+  }
+
   const BOUNDARY_COLOR = 0xff2f2f;
-  const BOUNDARY_THICK = 1.8;      // 世界单位半宽（比 tracer 粗，肉眼可辨）
-  const BOUNDARY_HALF_EXT = 1;     // 兜底路径：以 ext 为半宽
-  function buildBoundary(cx, cz, half, thick) {
+  // 边界：连续三角形带（非离散分段）——沿四条边密集取点，每点按地形高度贴地，
+  // 生成单一 BufferGeometry（1 draw call，无分段接缝）。可粗、直角、随地形起伏。
+  const BOUNDARY_STEP = 2.0;       // 采样步长（米）：越小越贴合地形
+  const BOUNDARY_THICK = 1.8;
+  function buildBoundary(bounds, thick) {
     if (boundaryGroup) {
       const old = boundaryGroup.userData.sharedMaterial;
       if (old) old.dispose();
@@ -255,21 +263,59 @@ export function initPlayback(container, store) {
       disposeObject3D(boundaryGroup);
       boundaryGroup = null;
     }
-    const g = new THREE.Group();
-    const mat = new THREE.MeshBasicMaterial({ color: BOUNDARY_COLOR });  // 恒亮不受光照
-    const L = half * 2;
-    const mk = (w, d, x, z) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.1, d), mat);
-      m.position.set(x, 0.14, z);   // 略高于地面/地形，避免 z-fighting
-      g.add(m);
+    const { cx, cz, hx, hz } = bounds;
+    const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+    // 闭合路径（顺时针四条边，角点精确落在 (±hx, ±hz)）
+    const path = [];
+    const push = (ax, az, bx, bz) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const n = Math.max(2, Math.ceil(len / BOUNDARY_STEP));
+      for (let i = 0; i < n; i++) {
+        const t = i / n;
+        path.push([ax + (bx - ax) * t, az + (bz - az) * t]);
+      }
     };
-    mk(L + thick, thick, cx, cz - half);   // 北
-    mk(L + thick, thick, cx, cz + half);   // 南
-    mk(thick, L + thick, cx - half, cz);   // 西
-    mk(thick, L + thick, cx + half, cz);   // 东
+    push(x0, z0, x1, z0);   // 北
+    push(x1, z0, x1, z1);   // 东
+    push(x1, z1, x0, z1);   // 南
+    push(x0, z1, x0, z0);   // 西
+    const N = path.length;
+    const pos = new Float32Array(N * 2 * 3);
+    const idx = [];
+    const half = thick / 2;
+    for (let i = 0; i < N; i++) {
+      const [px, pz] = path[i];
+      const [nx2, nz2] = path[(i + 1) % N];
+      const [ox, oz] = path[(i - 1 + N) % N];
+      // 切线 → 左法线（水平面内）
+      let tx = nx2 - ox, tz = nz2 - oz;
+      const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+      const lx = -tz, lz = tx;
+      const y = groundY(px, pz) + 0.06;   // 贴地面（随地形）
+      const a = (px + lx * half) * 1, b = (pz + lz * half);
+      const c = (px - lx * half), d = (pz - lz * half);
+      pos[i * 6] = a; pos[i * 6 + 1] = y; pos[i * 6 + 2] = b;
+      pos[i * 6 + 3] = c; pos[i * 6 + 4] = y; pos[i * 6 + 5] = d;
+    }
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      idx.push(i * 2, i * 2 + 1, j * 2, i * 2 + 1, j * 2 + 1, j * 2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshBasicMaterial({
+      color: BOUNDARY_COLOR, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,   // 防与地形 z-fighting
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    const g = new THREE.Group();
+    g.add(mesh);
     g.userData.sharedMaterial = mat;
     boundaryGroup = g;
     scene.add(g);
+    if (DEBUG) window.__bnd = { cx: +cx.toFixed(1), cz: +cz.toFixed(1), hx: +hx.toFixed(1), hz: +hz.toFixed(1), verts: N * 2 };
   }
 
   // 相机距离钳制（评审批准初值）：禁止无限 zoom-out 与把 orbit target 拖到地图外。
@@ -579,6 +625,7 @@ export function initPlayback(container, store) {
         mapScenery.rotation.set(-Math.PI / 2, Math.PI, 0);
         mapScenery.add(gltf.scene);
         scene.add(mapScenery);
+        regroundSupremacyBases();   // 场景就位后把基地圆环/HUD 贴回地表
 
         // 天空盒（SkyFlattenSphere 天穹）不显示；草地已整体移除（GLB 无草地网格）
         gltf.scene.traverse((o) => {
@@ -859,8 +906,9 @@ export function initPlayback(container, store) {
       mapPlane.position.set(meta.x || 0, 0.04, meta.z || 0);
       scene.add(mapPlane);
     }
-    // 边界随真实地图范围重建（size×size，中心 meta.x/z）——覆盖 buildWorld 的 ext 兜底
-    buildBoundary(meta.x || 0, meta.z || 0, size / 2, BOUNDARY_THICK);
+    // 边界随地图真实范围重建（size×size，中心 meta.x/z）——覆盖 buildWorld 的 ext 兜底
+    buildBoundary({ cx: meta.x || 0, cz: meta.z || 0, hx: size / 2, hz: size / 2 }, BOUNDARY_THICK);
+    regroundSupremacyBases();   // 地形就绪后把基地圆环/HUD 重新贴回地表
   }
 
   // ---------- 争霸基地（Supremacy）----------
@@ -902,7 +950,7 @@ export function initPlayback(container, store) {
         new THREE.MeshBasicMaterial({ color: BASE_NEUTRAL, side: THREE.DoubleSide,
                                       transparent: true, opacity: 0.9, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2;
-      ring.position.set(gx, 0.22, gz);
+      ring.position.set(gx, groundY(gx, gz) + 0.06, gz);   // 贴地表（随地形起伏）
       scene.add(ring);
       // HUD：billboard sprite（字母 + 占领进度），屏幕尺寸 clamp
       const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128;
@@ -910,7 +958,7 @@ export function initPlayback(container, store) {
       const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
         map: tex, depthTest: false, depthWrite: false, transparent: true }));
       sprite.renderOrder = 998;
-      sprite.position.set(gx, BASE_HUD_H, gz);
+      sprite.position.set(gx, groundY(gx, gz) + BASE_HUD_H, gz);   // 地表之上，不被遮挡
       labelScene.add(sprite);
       baseObjects.push({ baseId: p.baseId, bid, ring, sprite, canvas, ctx: canvas.getContext('2d'),
                          tex, state: null, r });
@@ -920,6 +968,14 @@ export function initPlayback(container, store) {
   // 调试钩子（?debug）：始终指向当前 baseObjects（clearSupremacyBases 换数组后不失效）
   if (DEBUG) Object.defineProperty(window, '__curBases', { get: () => baseObjects, configurable: true });
   const BASE_HUD_H = 11;              // 初始世界高度（评审建议 10–12m，实测再调）
+  // 地形异步加载完成后调用：基地圆环/HUD 按真实地形高度重新贴地
+  function regroundSupremacyBases() {
+    for (const b of baseObjects) {
+      const gy = groundY(b.ring.position.x, b.ring.position.z);
+      b.ring.position.y = gy + 0.06;
+      b.sprite.position.y = gy + BASE_HUD_H;
+    }
+  }
   function baseStateAt(bid, t) {
     const arr = DATA.supremacy_bases;
     let st = { owner: null, capturing: null, progress: null };

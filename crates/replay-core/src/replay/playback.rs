@@ -27,7 +27,7 @@ use anyhow::bail;
 use serde::Serialize;
 
 use super::combat::{
-    self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
+    AssaultBaseStateTransition, self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
 };
 use super::filter::FilteredTimeline;
 
@@ -277,6 +277,9 @@ pub struct PlaybackData {
     /// 作者瞄准帧（recorder-only；缺帧不外推）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aim_frames: Vec<AimFrame>,
+    /// 攻防战单基地占领进度（wrapper8/root8；非攻防战场次为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assault_bases: Vec<AssaultBaseStateTransition>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -615,6 +618,8 @@ pub fn from_model(
             .map(|p| SupremacyPointsSample { clock: r2(p.clock), ..p.clone() }).collect(),
         aim_frames: model.timeline.aim_frames.iter()
             .map(|f| AimFrame { time_sec: r2(f.time_sec), ..*f }).collect(),
+        assault_bases: model.timeline.assault_bases.iter()
+            .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
     })
 }
 

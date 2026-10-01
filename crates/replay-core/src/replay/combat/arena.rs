@@ -592,6 +592,91 @@ pub fn reconstruct_supremacy_base_states(mut raw: Vec<RawSupremacyBaseUpdate>) -
     out
 }
 
+// ---------- 攻防战单基地实时状态：subtype48 wrapper8/root8（WotbTools PROVEN 移植） ----------
+//
+// 来源与 provenance：WotbTools `docs/research/replay/assault-base-state.md` +
+// `AssaultBaseStateReconstructor`（11.20 国服两场受控回放：Neptune 完整占领 / Malinovka 未占领）。
+// **Assault 不复用 Supremacy 的 wrapper12**（受控回放实测 wrapper8=296、wrapper12=0），
+// 故两种模式的承载天然互斥。
+//
+// 数据链：Type 8 EntityMethod → subtype 48（updateArena2）→ wrapper field 8 → root field 8
+// → repeated 单基地更新；嵌套 field1/field2 为**原始判别子（语义 UNKNOWN）**、
+// **field3 = 占领进度（PROVEN 0..100）**、field4 属另一族。
+// 语义红线：只对 `field1==2 && field2==1` 族的 field3 赋语义；其余字段原样保留、不命名。
+
+pub const WRAPPER_ASSAULT_BASE: u32 = 8;
+
+/// wrapper8/root8 单基地原始更新（字段全保留 raw；判别子不做命名）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawAssaultBaseUpdate {
+    pub clock: f32,
+    /// nested field1（raw 判别子，语义 UNKNOWN）
+    pub raw_field1: Option<u64>,
+    /// nested field2（raw 单目标索引，语义 UNKNOWN）
+    pub raw_field2: Option<u64>,
+    /// nested field3（该族 = 占领进度 0..100，PROVEN）
+    pub raw_field3: Option<u64>,
+    /// nested field4（另一族字段，保持 raw）
+    pub raw_field4: Option<u64>,
+}
+
+/// 攻防战占领进度迁移（单基地；只含 PROVEN 的 progress，不赋 owner/team 语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssaultBaseStateTransition {
+    pub clock: f32,
+    /// 占领进度 0..=100
+    pub progress: u8,
+}
+
+/// 收集 wrapper8/root8 原始更新（不做族过滤；族判定见重建器）。
+pub fn collect_assault_base_updates(packets: &[(u32, f32, &[u8])]) -> Vec<RawAssaultBaseUpdate> {
+    let mut out = Vec::new();
+    for (_t, clock, p) in packets {
+        if p.len() < 15 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != ARENA_UPDATE_METHOD { continue; }
+        let alen = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
+        if 12 + alen > p.len() || alen < 2 { continue; }
+        let Some((wrapper, root)) = decode_update_arena2(&p[12..12 + alen]) else { continue };
+        if wrapper != WRAPPER_ASSAULT_BASE { continue; }
+        let Some(fields) = proto_fields(root) else { continue };
+        for (f, wire, st, len) in fields {
+            if f != 8 || wire != 2 { continue; }
+            let block = &root[st..st + len];
+            let Some(bf) = proto_fields(block) else { continue };
+            let mut u = RawAssaultBaseUpdate {
+                clock: *clock, raw_field1: None, raw_field2: None,
+                raw_field3: None, raw_field4: None,
+            };
+            for (n, w, vs, _vl) in bf {
+                if w != 0 { continue; }
+                let Some(mut vo) = (vs <= block.len()).then_some(vs) else { continue };
+                let Some(v) = pb_varint(block, &mut vo) else { continue };
+                match n {
+                    1 => u.raw_field1 = Some(v),
+                    2 => u.raw_field2 = Some(v),
+                    3 => u.raw_field3 = Some(v),
+                    4 => u.raw_field4 = Some(v),
+                    _ => {}
+                }
+            }
+            out.push(u);
+        }
+    }
+    out
+}
+
+/// 原始更新 → 占领进度时间线（Java `AssaultBaseStateReconstructor` 同式）：
+/// 只取 `field1==2 && field2==1` 族、且 field3 ∈ 0..=100 的条目，按 clock 升序。
+/// 该族不存在（非攻防战场次）返回空。
+pub fn reconstruct_assault_base_states(mut raw: Vec<RawAssaultBaseUpdate>) -> Vec<AssaultBaseStateTransition> {
+    raw.retain(|u| u.raw_field1 == Some(2) && u.raw_field2 == Some(1));
+    raw.retain(|u| u.raw_field3.is_some_and(|v| v <= 100));
+    raw.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    raw.into_iter()
+        .map(|u| AssaultBaseStateTransition { clock: u.clock, progress: u.raw_field3.unwrap_or(0) as u8 })
+        .collect()
+}
+
 /// 实时点数采样（wrapper13/root12 块：field1=team(1/2)、field2=points）。门禁与 Java
 /// 同式：wrapperFieldNumber != 13 时即使 root 结构相同也绝不产出点数事件；
 /// 只消费回放真实广播，绝不按游戏规则推算。
@@ -790,5 +875,79 @@ mod supremacy_tests {
         assert_eq!(pts.len(), 2);
         assert_eq!((pts[0].team, pts[0].points), (1, 300));
         assert_eq!((pts[1].team, pts[1].points), (2, 95));
+    }
+}
+
+#[cfg(test)]
+mod assault_tests {
+    use super::*;
+
+    fn varint(v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut v = v;
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 { out.push(b); break; }
+            out.push(b | 0x80);
+        }
+        out
+    }
+    fn varint_block(fields: &[(u32, u64)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for (n, v) in fields {
+            b.extend_from_slice(&varint((n << 3) as u64));
+            b.extend_from_slice(&varint(*v));
+        }
+        b
+    }
+    fn root_blocks(field: u32, blocks: &[Vec<u8>]) -> Vec<u8> {
+        let mut root = Vec::new();
+        for b in blocks {
+            root.extend_from_slice(&varint(((field << 3) | 2) as u64));
+            root.extend_from_slice(&varint(b.len() as u64));
+            root.extend_from_slice(b);
+        }
+        root
+    }
+
+    fn mk48a(wrapper: u32, root: &[u8]) -> Vec<u8> {
+        let mut args = varint(wrapper as u64);
+        args.push(root.len() as u8);
+        args.extend_from_slice(root);
+        let mut p = vec![0u8; 12];
+        p[4..8].copy_from_slice(&48u32.to_le_bytes());
+        p[8..12].copy_from_slice(&(args.len() as u32).to_le_bytes());
+        p.extend_from_slice(&args);
+        p
+    }
+
+    #[test]
+    fn assault_progress_family_filtered_and_ordered() {
+        // field1=2 / field2=1 族（PROVEN）：progress 递增
+        let k1 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 5)])]));
+        let k2 = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 42)])]));
+        // 另一族（field1=1 / field4）：保留 raw 但不进时间线
+        let other = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 1), (4, 7)])]));
+        // 越界进度（101）：剔除
+        let bad = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 1), (3, 101)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 20.0, &k2), (8, 10.0, &k1), (8, 15.0, &other), (8, 30.0, &bad),
+        ];
+        let raw = collect_assault_base_updates(&packets);
+        assert_eq!(raw.len(), 4, "四块全部收集（含未判定族）");
+        let tl = reconstruct_assault_base_states(raw);
+        assert_eq!(tl.len(), 2, "只保留 field1=2/field2=1 族且进度合法者");
+        assert_eq!((tl[0].clock, tl[0].progress), (10.0, 5), "按 clock 升序");
+        assert_eq!((tl[1].clock, tl[1].progress), (20.0, 42));
+    }
+
+    #[test]
+    fn assault_absent_when_no_wrapper8() {
+        // 争霸场（wrapper12）：无 wrapper8 → 攻防战时间线为空（两模式天然互斥）
+        let sup = mk48a(12, &root_blocks(11, &[varint_block(&[(1, 0), (2, 1)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(8, 10.0, &sup)];
+        assert!(collect_assault_base_updates(&packets).is_empty());
+        assert!(reconstruct_assault_base_states(vec![]).is_empty());
     }
 }

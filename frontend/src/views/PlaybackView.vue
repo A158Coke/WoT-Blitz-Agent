@@ -71,19 +71,15 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
       <!-- 行 2：双方队伍血量条（含具体数值）+ 中间战果 -->
       <div class="tb-row">
         <span class="hpline">
-          <span class="hpwrap">
-            <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
-              <i :style="{ width: store.hpFriendPct + '%' }"></i>
-            </span>
-            <em class="hpnum hpnum-f">{{ fmtHp(store.hpFriend) }} / {{ fmtHp(store.hpFriendMax) }}</em>
+          <em class="hpnum hpnum-f">{{ fmtHp(store.hpFriend) }} / {{ fmtHp(store.hpFriendMax) }}</em>
+          <span class="hpbar hp-f" :title="'己方 ' + store.hpFriendPct.toFixed(0) + '%'">
+            <i :style="{ width: store.hpFriendPct + '%' }"></i>
           </span>
           <span class="score"><span class="t1">{{ store.score1 }}</span> : <span class="t2">{{ store.score2 }}</span></span>
-          <span class="hpwrap">
-            <em class="hpnum hpnum-e">{{ fmtHp(store.hpEnemy) }} / {{ fmtHp(store.hpEnemyMax) }}</em>
-            <span class="hpbar hp-e" :title="'敌方 ' + store.hpEnemyPct.toFixed(0) + '%'">
-              <i :style="{ width: store.hpEnemyPct + '%' }"></i>
-            </span>
+          <span class="hpbar hp-e" :title="'敌方 ' + store.hpEnemyPct.toFixed(0) + '%'">
+            <i :style="{ width: store.hpEnemyPct + '%' }"></i>
           </span>
+          <em class="hpnum hpnum-e">{{ fmtHp(store.hpEnemy) }} / {{ fmtHp(store.hpEnemyMax) }}</em>
         </span>
       </div>
       <!-- 行 3：争霸实时点数（上限 1000）。数值在外侧、两条紧贴中线——
@@ -248,16 +244,16 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar .score .t2 { color: var(--enemy); }
 #topbar .map { color: var(--dim); }
 /* 双方血量条 + 比分（WotBTools HUD 同构：左己方 / 右敌方 / 中间战果） */
-#topbar .hpline { display: inline-flex; align-items: center; gap: 8px; }
-#topbar .hpwrap { display: inline-flex; align-items: center; gap: 7px; }
-#topbar .hpnum { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim); }
-#topbar .hpnum-f { color: var(--ally); }
-#topbar .hpnum-e { color: var(--enemy); }
+#topbar .hpline { display: inline-flex; align-items: center; gap: 6px; }
+#topbar .hpnum { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; }
+#topbar .hpnum-f { color: var(--ally); text-align: right; }
+#topbar .hpnum-e { color: var(--enemy); text-align: left; }
 #topbar .hpbar { display: inline-block; width: 92px; height: 9px; border-radius: 5px;
                  background: rgba(255,255,255,.13); overflow: hidden; }
 #topbar .hpbar > i { display: block; height: 100%; transition: width .18s linear; }
-#topbar .hp-f > i { background: var(--ally); float: right; }   /* 己方自右向左消减 */
-#topbar .hp-e > i { background: var(--enemy); }
+/* 两条贴比分侧（靠中线）：己方填充贴右端、敌方贴左端——与点数条同构 */
+#topbar .hp-f > i { background: var(--ally); float: right; }
+#topbar .hp-e > i { background: var(--enemy); float: left; }
 #topbar .points { display: inline-flex; align-items: center; gap: 6px; }
 #topbar .points .plbl { color: var(--dim); font-size: 11px; }
 #topbar .points b { font-size: 15px; font-variant-numeric: tabular-nums; }

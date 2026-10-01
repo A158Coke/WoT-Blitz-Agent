@@ -277,7 +277,7 @@ pub struct PeriodPoint {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaybackData {
-    /// 切面契约版本（当前 1；不兼容变更递增；前端忽略未知键）
+    /// 切面契约版本（**当前 2**；不兼容变更递增，同版本只加可选字段；消费端按版本门禁拒绝错版）
     #[serde(default)]
     pub version: u32,
     /// Supremacy 基地状态时间线（争霸模式；非争霸场为空）

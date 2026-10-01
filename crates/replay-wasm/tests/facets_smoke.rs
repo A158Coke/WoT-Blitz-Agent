@@ -30,7 +30,7 @@ fn result_smoke() {
     let bytes = std::fs::read(&path).unwrap();
 
     let result: serde_json::Value =
-        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).expect("结果能力构建成功"))
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes, None).expect("结果能力构建成功"))
             .unwrap();
     let players = result["players"].as_array().unwrap().len();
     assert!((8..=28).contains(&players), "花名册 {players}");
@@ -51,7 +51,7 @@ fn playback_smoke() {
     };
     let bytes = std::fs::read(&path).unwrap();
 
-    let playback_str = wotb_replay_wasm::playback_json(&bytes).expect("时序能力构建成功");
+    let playback_str = wotb_replay_wasm::playback_json(&bytes, None).expect("时序能力构建成功");
     let pb: serde_json::Value = serde_json::from_str(&playback_str).unwrap();
     assert_eq!(pb["version"], 2, "contract v2（版本门禁；消费端拒绝错版）");
     // contract v2 新键：非争霸场为空数组也必须安全序列化在场（skip_serializing_if 语义）
@@ -64,7 +64,7 @@ fn playback_smoke() {
 
     // 结果通道（毫秒级）输出体积必须比全场时序小两个量级——Result-only 消费
     // 不被迫物化 ~MB 级 Playback（契约 v2 拆分动机）
-    let result_str = wotb_replay_wasm::result_json(&bytes).unwrap();
+    let result_str = wotb_replay_wasm::result_json(&bytes, None).unwrap();
     assert!(
         result_str.len() * 100 < playback_str.len(),
         "result {}B vs playback {}B——量级分离失效",
@@ -87,8 +87,8 @@ fn playback_result_identity_invariant() {
         .filter(|p| p.extension().map(|x| x == "wotbreplay").unwrap_or(false))
     {
         let bytes = std::fs::read(&path).unwrap();
-        let Ok(result_str) = wotb_replay_wasm::result_json(&bytes) else { continue };
-        let Ok(playback_str) = wotb_replay_wasm::playback_json(&bytes) else {
+        let Ok(result_str) = wotb_replay_wasm::result_json(&bytes, None) else { continue };
+        let Ok(playback_str) = wotb_replay_wasm::playback_json(&bytes, None) else {
             eprintln!("跳过（非整场/片段）: {}", path.display());
             continue;
         };
@@ -178,7 +178,7 @@ fn result_p0_settlement_fields_smoke() {
     };
     let bytes = std::fs::read(&path).unwrap();
     let r: serde_json::Value =
-        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).unwrap()).unwrap();
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes, None).unwrap()).unwrap();
 
     // arena_id：必须是字符串（u64 超 JS 安全整数，禁止走 number）
     let aid = r.get("arena_id").and_then(|v| v.as_str());
@@ -211,7 +211,7 @@ fn result_p1_settlement_fields_smoke() {
     };
     let bytes = std::fs::read(&path).unwrap();
     let r: serde_json::Value =
-        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).unwrap()).unwrap();
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes, None).unwrap()).unwrap();
 
     // 结算级
     let fr = r.get("finish_reason").and_then(|v| v.as_u64());
@@ -236,4 +236,71 @@ fn result_p1_settlement_fields_smoke() {
     eprintln!("P1: finish_reason={fr:?} duration={dur:?}s client_version={cv:?} \
                玩家={} 有点数者={vp} 有段位者={rk}",
         players.len());
+}
+
+/// P2 注入与第 4 入口（契约 v0.3.1）：
+/// - `parseResult` / `parsePlayback` 的 `tankNamesJson` 可选注入；
+/// - `parseAiReview` 从弹道自带 `target_eid` 取受击方身份（不按昵称反查）。
+#[test]
+fn p2_tank_names_injection_and_ai_review_entry() {
+    let Some(path) = largest_sample() else {
+        eprintln!("无回放样本，跳过");
+        return;
+    };
+    let bytes = std::fs::read(&path).unwrap();
+
+    // 取作者 tank_id，构造 {tank_id: name} 注入表
+    let base: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes, None).unwrap()).unwrap();
+    let tid = base["author_tank_id"].as_u64().unwrap();
+    assert!(tid > 0, "作者坦克 id 应非零");
+    let table = format!(r#"{{"{tid}":"INJECTED_TANK"}}"#);
+
+    // 结果通道：注入后作者与玩家行的 tank_name 命中项被替换
+    let inj: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes, Some(&table)).unwrap()).unwrap();
+    assert_eq!(inj["author_tank_name"], "INJECTED_TANK", "注入应替换作者车型名");
+    let hits = inj["players"].as_array().unwrap().iter()
+        .filter(|p| p["tank_id"].as_u64() == Some(tid))
+        .all(|p| p["tank_name"] == "INJECTED_TANK");
+    assert!(hits, "同 tank_id 的玩家行也应替换");
+    // 未注入时是 `tank_{id}` 而非空串（文档与实现统一后的实测行为）
+    let miss = inj["players"].as_array().unwrap().iter()
+        .find(|p| p["tank_id"].as_u64() != Some(tid))
+        .map(|p| p["tank_name"].as_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert!(miss.starts_with("tank_"),
+            "未注入项在客户端路径（无 resolver）应为 tank_{{id}} 而非空串，实测：{miss:?}");
+
+    // 时序通道：注入后 vehicles[].tank_name 命中项被替换
+    let pb: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::playback_json(&bytes, Some(&table)).unwrap()).unwrap();
+    let vhit = pb["vehicles"].as_array().unwrap().iter()
+        .filter(|v| v["tank_id"].as_u64() == Some(tid))
+        .all(|v| v["tank_name"] == "INJECTED_TANK");
+    assert!(vhit, "playback 注入应替换对应车辆的 tank_name");
+
+    // 第 4 入口：AiReviewFacet 形状 + Shot 身份域
+    let ai: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::ai_review_json(&bytes).unwrap()).unwrap();
+    assert_eq!(ai["version"], 1, "DTO 冻结 v1");
+    for key in ["battle", "rosters", "events", "settlements"] {
+        assert!(ai.get(key).is_some(), "缺键 {key}");
+    }
+    let events = ai["events"].as_array().unwrap();
+    assert!(!events.is_empty(), "事件流非空");
+    // 事件按时钟升序（Shot 用 t）
+    let mut last = f64::NEG_INFINITY;
+    for e in events {
+        let t = e["t"].as_f64()
+            .or_else(|| e["t_in"].as_f64())
+            .unwrap_or(0.0);
+        assert!(t >= last - 1e-6, "事件流应按时钟升序");
+        last = t;
+    }
+    // Shot 事件的 hit 由 target_eid 存在性决定（身份域与显示域解耦）
+    for e in events.iter().filter(|e| e["type"] == "shot") {
+        assert_eq!(e["hit"].as_bool().unwrap(), e.get("target_eid").is_some(),
+                   "hit 应与 target_eid 存在性一致");
+    }
 }

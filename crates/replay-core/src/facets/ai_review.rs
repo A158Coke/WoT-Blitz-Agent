@@ -6,7 +6,6 @@
 //! 已知边界如实透出：队友点亮的事件级归属不在回放中（仅结算总量），可见性窗口
 //! 是本队视角（AoI 生命周期）。
 
-use std::collections::HashMap;
 
 use serde::Serialize;
 
@@ -121,11 +120,6 @@ impl AiEvent {
 impl AiReviewFacet {
     /// 从内部模型 + 结算联表投影。
     pub fn from_model(model: &ReplayModel, summary: &BattleSummary) -> Self {
-        // 实体名 → eid（弹道目标归属；全名表——评审切面不做车辆候选过滤）
-        let name_to_eid: HashMap<&str, u32> = model.timeline.entity_names.iter()
-            .map(|(eid, n)| (n.as_str(), *eid))
-            .collect();
-
         let mut events: Vec<AiEvent> = Vec::new();
 
         // 花名册先行：可见性事件只保留可联表到花名册的车辆实体——原始 AoI 流含
@@ -188,11 +182,11 @@ impl AiReviewFacet {
             }
         }
         for s in &model.timeline.shots {
-            let target_eid = if s.target_name.is_empty() {
-                None
-            } else {
-                name_to_eid.get(s.target_name.as_str()).copied()
-            };
+            // 受击方身份直接用弹道自带的 target_eid（作者 = method38 受击者、他人 =
+            // method8 直击通知，均为服务器权威）。此前按昵称反查 entity_names：受击方
+            // 昵称损坏/缺失时该发 hit/target 全丢（身份域被显示域绑架）。名字缺失不作为
+            // 提取失败条件——target_eid 与 target_name 已解耦，本切面不再需要反查表。
+            let target_eid = s.target_eid;
             events.push(AiEvent::Shot {
                 t: s.fire_time,
                 shooter_eid: s.shooter_eid,

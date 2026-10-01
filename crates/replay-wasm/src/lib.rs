@@ -58,10 +58,23 @@ fn roster_of(summary: &wotb_replay_core::models::battle::BattleSummary) -> Vec<P
         .collect()
 }
 
+/// 解析可选的车型名表 JSON（`{tank_id: name}`，`tankNamesJson` 注入参数）。
+/// 缺省/空串/非法 JSON 一律按"未注入"处理——注入失败不得让整条解析链失败。
+fn parse_tank_names(json: Option<&str>) -> HashMap<u32, String> {
+    json.filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str::<HashMap<String, String>>(s).ok())
+        .map(|m| m.into_iter().filter_map(|(k, v)| k.parse::<u32>().ok().map(|id| (id, v))).collect())
+        .unwrap_or_default()
+}
+
 /// 结果能力（Result interpretation）：字节 → BattleSummary JSON。
 /// 只解析 meta + battle_results——**不读包流、不建时序模型**，单文件毫秒级，
 /// 供批量扫描与消费方 HoF 投影（HoF 不是 Agent 公开能力，见契约 v2）。
-pub fn result_json(bytes: &[u8]) -> anyhow::Result<String> {
+///
+/// `tank_names_json`：可选的车型名表（`{tank_id: name}`，`wotb-agent dump-tank-data`
+/// 或资产面 `tank/{id}.json` 可组装）。客户端路径无 tank_cache，缺省时 `tank_name`
+/// 为 `tank_{id}`（**不是空串**——文档与实现此前不一致，此处统一为实测行为）。
+pub fn result_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Result<String> {
     // arenaBonusType 来自容器 meta.json 原始内容（crate 的 Meta 未暴露该字段），
     // 需在打开 Replay（消费 reader）之前从字节读
     let arena_bonus_type = wotb_replay_core::replay::parser::read_arena_bonus_type(bytes);
@@ -71,12 +84,28 @@ pub fn result_json(bytes: &[u8]) -> anyhow::Result<String> {
     let mut summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     summary.arena_bonus_type = arena_bonus_type;
     summary.client_version = client_version;
+
+    // 车型名表注入：只替换命中项，未命中保持 `tank_{id}`（unknown ≠ 编造）
+    let names = parse_tank_names(tank_names_json);
+    if !names.is_empty() {
+        if let Some(n) = names.get(&summary.author_tank_id) {
+            summary.author_tank_name = n.clone();
+        }
+        for p in &mut summary.players {
+            if let Some(n) = names.get(&p.tank_id) {
+                p.tank_name = n.clone();
+            }
+        }
+    }
     Ok(serde_json::to_string(&summary)?)
 }
 
 /// 时序能力（Temporal interpretation）：字节 → PlaybackData JSON。
 /// 单次扫描构建全场时序（与服务端 `/api/playback/data` 同一构建语义）。
-pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
+///
+/// `tank_names_json`：可选的车型名表（同 [`result_json`]）——注入后 `vehicles[].tank_name`
+/// 为真实车型名；缺省时为空串（客户端路径无 tank_cache，前端按 `tank_id` 自行映射）。
+pub fn playback_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     let packets = decode_packets(&mut replay)?;
@@ -91,17 +120,42 @@ pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
         author_account_id: summary.author_account_id,
         pitch_limits: &limits,
     })?;
-    // 投影层身份一律取模型实体并表（客户端无 tank_names，前端按 tank_id 自行映射展示名）
-    let empty_tank_names: HashMap<u32, String> = HashMap::new();
+    // 投影层身份一律取模型实体并表；车型名表由消费方可选注入（缺省空表 → tank_name 空串）
+    let tank_names = parse_tank_names(tank_names_json);
     let render = PlaybackRenderInput {
         winner_team: summary.winner_team,
         map_id: summary.map_id,
         map_name: summary.map_name.clone(),
         pitch_limits: &limits,
-        tank_names: &empty_tank_names,
+        tank_names: &tank_names,
     };
     let playback = wotb_replay_core::replay::playback::from_model(&model, &render)?;
     Ok(serde_json::to_string(&playback)?)
+}
+
+/// 智能体评审通道（第 4 个 WASM 入口）：字节 → `AiReviewFacet` JSON
+/// （花名册 + 归一化事件流 spawn/shot/damage/kill/visibility/counter/damage_tick +
+/// 结算锚点 + 战局阶段）。与服务端 `wotb-agent facets --parts ai` 同一构建语义。
+///
+/// 契约：DTO 冻结 v1（与 CLI 通道逐字段同构）。事件流按回放时钟升序；
+/// `Shot.target_eid` 取自弹道自带身份（服务器权威），不按昵称反查。
+pub fn ai_review_json(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
+    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    let packets = decode_packets(&mut replay)?;
+    let packets: Vec<(u32, f32, &[u8])> = packets.iter()
+        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
+        .collect();
+
+    let limits = GunPitchLimits::new();
+    let model = ReplayModel::scan(&ScanInput {
+        packets: &packets,
+        roster: &roster_of(&summary),
+        author_account_id: summary.author_account_id,
+        pitch_limits: &limits,
+    })?;
+    let facet = wotb_replay_core::facets::ai_review::AiReviewFacet::from_model(&model, &summary);
+    Ok(serde_json::to_string(&facet)?)
 }
 
 /// 射击复现通道：字节 → 全员射击链（作者严格路径 + 他人宽松路径合并，含弹道/
@@ -200,21 +254,33 @@ pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>, shells_json: O
 mod js {
     use wasm_bindgen::prelude::*;
 
-    /// JS 入口（结果能力）：`parseResult(new Uint8Array(fileBuffer))` → BattleSummary
-    /// JSON 字符串。只读 meta + battle_results（毫秒级），不物化全场时序。
+    /// JS 入口（结果能力）：`parseResult(new Uint8Array(fileBuffer), tankNamesJson?)`
+    /// → BattleSummary JSON 字符串。只读 meta + battle_results（毫秒级），不物化全场时序。
     /// 解析失败以字符串 Error 拒绝（含链式原因），不 panic 跨界。
+    /// `tankNamesJson` 可选：`{tank_id: name}` 车型名表——注入后 `tank_name` 为真实名，
+    /// 缺省为 `tank_{id}`（客户端无 tank_cache；**不是空串**）。
     #[wasm_bindgen(js_name = parseResult)]
-    pub fn parse_result(bytes: &[u8]) -> Result<String, JsValue> {
-        super::result_json(bytes)
+    pub fn parse_result(bytes: &[u8], tank_names: Option<String>) -> Result<String, JsValue> {
+        super::result_json(bytes, tank_names.as_deref())
             .map_err(|e| JsValue::from_str(&format!("result parse failed: {e:#}")))
     }
 
-    /// JS 入口（时序能力）：`parsePlayback(new Uint8Array(fileBuffer))` → PlaybackData
-    /// JSON 字符串（位姿网格/弹道/击杀/阶段/可见性）。
+    /// JS 入口（时序能力）：`parsePlayback(new Uint8Array(fileBuffer), tankNamesJson?)`
+    /// → PlaybackData JSON 字符串（位姿网格/弹道/击杀/阶段/可见性）。
+    /// `tankNamesJson` 可选：同 `parseResult`——注入后 `vehicles[].tank_name` 为真实车型名。
     #[wasm_bindgen(js_name = parsePlayback)]
-    pub fn parse_playback(bytes: &[u8]) -> Result<String, JsValue> {
-        super::playback_json(bytes)
+    pub fn parse_playback(bytes: &[u8], tank_names: Option<String>) -> Result<String, JsValue> {
+        super::playback_json(bytes, tank_names.as_deref())
             .map_err(|e| JsValue::from_str(&format!("playback parse failed: {e:#}")))
+    }
+
+    /// JS 入口（AI 事件数据；第 4 个入口）：`parseAiReview(new Uint8Array(fileBuffer))`
+    /// → `AiReviewFacet` JSON 字符串。与服务端 `wotb-agent facets --parts ai` 逐字段同构
+    /// （花名册 + 归一化事件流 + 结算锚点 + 战局阶段），DTO 冻结 v1。
+    #[wasm_bindgen(js_name = parseAiReview)]
+    pub fn parse_ai_review(bytes: &[u8]) -> Result<String, JsValue> {
+        super::ai_review_json(bytes)
+            .map_err(|e| JsValue::from_str(&format!("ai review parse failed: {e:#}")))
     }
 
     /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer), limitsJson?, shellsJson?)`

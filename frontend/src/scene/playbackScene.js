@@ -14,6 +14,7 @@ import * as THREE from 'three'
 import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './replaySource.js'
 import { poseFromYPR } from './glbRig.js'
 import mapBasesData from './mapBases.json'
+import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -248,6 +249,18 @@ export function initPlayback(container, store) {
   // 固定 y 会被坡地埋住（此前 0.14/0.22 在起伏地形下即"沉入地下"）
   function groundY(x, z) {
     return sampleHeight(x, z) + 0.12;
+  }
+
+  // 游戏内实际战场边界（WotBTools map-semantics 的 playableBoundsMeters——比真实
+  // 地图 worldBounds(±300) 小，即战场可玩区；来源 common/map-semantics/*.semantic.json，
+  // 与回放同坐标系：x = 回放 x、y = 回放 z）。场景为 x 镜像系（scene x = −回放 x），
+  // 故场景内 x 区间 = [−xMax, −xMin]、z 区间 = [yMin, yMax]。无语义数据时回退地图 span。
+  function playableBoundsFor(mapId) {
+    const pb = playableBoundsData[String(mapId)];
+    if (!pb) return null;
+    const sxMin = -pb.xMax, sxMax = -pb.xMin;
+    return { cx: (sxMin + sxMax) / 2, cz: (pb.yMin + pb.yMax) / 2,
+             hx: (sxMax - sxMin) / 2, hz: (pb.yMax - pb.yMin) / 2 };
   }
 
   const BOUNDARY_COLOR = 0xff2f2f;
@@ -907,7 +920,8 @@ export function initPlayback(container, store) {
       scene.add(mapPlane);
     }
     // 边界随地图真实范围重建（size×size，中心 meta.x/z）——覆盖 buildWorld 的 ext 兜底
-    buildBoundary({ cx: meta.x || 0, cz: meta.z || 0, hx: size / 2, hz: size / 2 }, BOUNDARY_THICK);
+    buildBoundary(playableBoundsFor(DATA.meta.map_id)
+      || { cx: meta.x || 0, cz: meta.z || 0, hx: size / 2, hz: size / 2 }, BOUNDARY_THICK);
     regroundSupremacyBases();   // 地形就绪后把基地圆环/HUD 重新贴回地表
   }
 

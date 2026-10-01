@@ -428,3 +428,367 @@ mod arena_tests {
         assert!((ev[0].clock - 10.0).abs() < 1e-6);
     }
 }
+
+// ---------- Supremacy（争霸）目标状态：subtype48 wrapper12/root11（WotbTools PROVEN 移植） ----------
+//
+// 来源与 provenance：WotbTools `EntityMethodDecoder.parseRawSupremacyBaseUpdates` +
+// `SupremacyBaseStateReconstructor`（5 场真实回放交叉验证；docs/research/replay/supremacy-base-state.md）。
+// 数据链：Type 8 EntityMethod → subtype 48（updateArena2）→ wrapper field 12 → root field 11
+// → repeated base 块；嵌套字段 field1=base index(0..3=A..D)、field2=owner team、field3=capturing
+// team、field4=capture progress、field5/6=UNKNOWN 原样透传（禁命名）。
+// 语义红线：wire 块是 SPARSE UPDATE——absent 字段=维持前值；显式 0=清空；不推断、不外推。
+
+pub const WRAPPER_SUPREMACY_BASE: u32 = 12;
+/// 实时点数广播（WotbTools PROVEN：5 场 185/161/69/204/201 事件交叉验证；仅二次校验用，
+/// 不得由点数反推基地归属）
+pub const WRAPPER_SUPREMACY_POINTS: u32 = 13;
+
+/// subtype48 updateArena2 解包（Java `decodeUpdateArena2` 同构，含 0xFF 逃逸的
+/// bug-compatible 布局：`0xFF + u16le + 1 pad`，proto 起点在 off+4）。返回 (wrapper, root)。
+fn decode_update_arena2(args: &[u8]) -> Option<(u32, &[u8])> {
+    let mut off = 0usize;
+    let wrapper = pb_varint(args, &mut off)? as u32;
+    if off >= args.len() {
+        return None;
+    }
+    let first = args[off] as usize;
+    let (msg_len, proto_off) = if first == 0xFF {
+        if off + 4 > args.len() {
+            return None;
+        }
+        (u16::from_le_bytes([args[off + 1], args[off + 2]]) as usize, off + 4)
+    } else {
+        (first, off + 1)
+    };
+    if proto_off + msg_len != args.len() {
+        return None;
+    }
+    Some((wrapper, &args[proto_off..proto_off + msg_len]))
+}
+
+/// wrapper12/root11 sparse 原始更新（字段缺省 = None；语义与 WotbTools Java 同名 PROVEN）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawSupremacyBaseUpdate {
+    pub clock: f32,
+    /// field1 = base index（0..3 = A..D）；wire 缺省在 canonical 边界按 wire default 0（=A），
+    /// 仅此一处补缺省（Java 同式注释），其余字段 absent 一律 None
+    pub base_index: Option<u8>,
+    /// field2 = owner team（显式 0 = 清空归属）
+    pub owner_team: Option<u8>,
+    /// field3 = capturing team（显式 0 = 清空占领方，连带清 progress）
+    pub capturing_team: Option<u8>,
+    /// field4 = capture progress（0..99）
+    pub capture_progress: Option<u8>,
+    /// field5 = UNKNOWN（原样透传，禁命名）
+    pub raw_field5: Option<u64>,
+    /// field6 = UNKNOWN（原样透传，禁命名）
+    pub raw_field6: Option<u64>,
+}
+
+/// 重建后的 canonical 基地状态迁移：每条 raw 更新一条，携带该基地更新后的完整状态。
+/// 消费（seek 语义）= 取 ≤t 的每基地最后一条逐字段折叠。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupremacyBaseStateTransition {
+    pub clock: f32,
+    /// 0..3 = A..D
+    pub base_id: u8,
+    /// None = 无主
+    pub owner_team: Option<u8>,
+    pub capturing_team: Option<u8>,
+    pub capture_progress: Option<u8>,
+}
+
+/// 收集 wrapper12/root11 sparse 基地更新。校验（Java 同式）：base_index 0..=3、
+/// owner/capturing ∈ {0,1,2}、progress 0..=99；不合法块整体跳过，绝不产出部分状态。
+pub fn collect_supremacy_base_updates(packets: &[(u32, f32, &[u8])]) -> Vec<RawSupremacyBaseUpdate> {
+    let mut out = Vec::new();
+    for (_t, clock, p) in packets {
+        if p.len() < 15 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != ARENA_UPDATE_METHOD { continue; }
+        let alen = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
+        if 12 + alen > p.len() || alen < 2 { continue; }
+        let Some((wrapper, root)) = decode_update_arena2(&p[12..12 + alen]) else { continue };
+        if wrapper != WRAPPER_SUPREMACY_BASE { continue; }
+        let Some(fields) = proto_fields(root) else { continue };
+        for (f, wire, s, len) in fields {
+            if f != 11 || wire != 2 { continue; }
+            let block = &root[s..s + len];
+            let Some(bf) = proto_fields(block) else { continue };
+            let mut u = RawSupremacyBaseUpdate {
+                clock: *clock, base_index: None, owner_team: None,
+                capturing_team: None, capture_progress: None, raw_field5: None, raw_field6: None,
+            };
+            for (n, w, vs, _vl) in bf {
+                if w != 0 { continue; }
+                let Some(mut vo) = (vs <= block.len()).then_some(vs) else { continue };
+                let Some(v) = pb_varint(block, &mut vo) else { continue };
+                match n {
+                    1 => u.base_index = Some(v as u8),
+                    2 => u.owner_team = Some(v as u8),
+                    3 => u.capturing_team = Some(v as u8),
+                    4 => u.capture_progress = Some(v as u8),
+                    5 => u.raw_field5 = Some(v),
+                    6 => u.raw_field6 = Some(v),
+                    _ => {}
+                }
+            }
+            let valid_base = u.base_index.is_none_or(|b| b <= 3);
+            let valid_team = |t: Option<u8>| t.is_none_or(|x| x <= 2);
+            let valid_progress = u.capture_progress.is_none_or(|x| x <= 99);
+            if !valid_base || !valid_team(u.owner_team) || !valid_team(u.capturing_team) || !valid_progress {
+                continue;
+            }
+            out.push(u);
+        }
+    }
+    out
+}
+
+/// sparse 更新 → canonical 状态时间线（Java `SupremacyBaseStateReconstructor` 逐行移植）：
+/// absent = 维持前值；显式 0 = 清空（owner/capturing）；显式 capturing 清空连带清 progress；
+/// 占领中 owner 变更 = 完成/作废该次占领（capturing 与 progress 一并清空）。
+/// 排序 = clock 升序稳定排序（同 clock 保包序 = Java 的 sequence 序，同源包流）。
+pub fn reconstruct_supremacy_base_states(mut raw: Vec<RawSupremacyBaseUpdate>) -> Vec<SupremacyBaseStateTransition> {
+    raw.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    #[derive(Clone, Copy, Default)]
+    struct State {
+        owner: Option<u8>,
+        capturing: Option<u8>,
+        progress: Option<u8>,
+    }
+    let mut states = [State::default(); 4];
+    let mut out = Vec::with_capacity(raw.len());
+    for u in raw {
+        // canonical 边界唯一补缺省处：absent field1 → wire default 0 = A（Java 同式）
+        let idx = u.base_index.unwrap_or(0) as usize;
+        if idx >= 4 { continue; }
+        let st = &mut states[idx];
+        let prev_owner = st.owner;
+        let prev_capturing = st.capturing;
+        if let Some(o) = u.owner_team {
+            st.owner = if o == 0 { None } else { Some(o) };
+        }
+        if let Some(c) = u.capturing_team {
+            st.capturing = if c == 0 { None } else { Some(c) };
+        }
+        if let Some(p) = u.capture_progress {
+            st.progress = Some(p);
+        }
+        if u.capturing_team.is_some() && st.capturing.is_none() {
+            st.progress = None;
+        }
+        if u.owner_team.is_some() && prev_capturing.is_some() && st.owner != prev_owner {
+            st.capturing = None;
+            st.progress = None;
+        }
+        out.push(SupremacyBaseStateTransition {
+            clock: u.clock,
+            base_id: idx as u8,
+            owner_team: st.owner,
+            capturing_team: st.capturing,
+            capture_progress: st.progress,
+        });
+    }
+    out
+}
+
+/// 实时点数采样（wrapper13/root12 块：field1=team(1/2)、field2=points）。门禁与 Java
+/// 同式：wrapperFieldNumber != 13 时即使 root 结构相同也绝不产出点数事件；
+/// 只消费回放真实广播，绝不按游戏规则推算。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupremacyPointsSample {
+    pub clock: f32,
+    pub team: u8,
+    pub points: u32,
+}
+
+pub fn collect_supremacy_points(packets: &[(u32, f32, &[u8])]) -> Vec<SupremacyPointsSample> {
+    let mut out = Vec::new();
+    for (_t, clock, p) in packets {
+        if p.len() < 15 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != ARENA_UPDATE_METHOD { continue; }
+        let alen = u32::from_le_bytes([p[8], p[9], p[10], p[11]]) as usize;
+        if 12 + alen > p.len() || alen < 2 { continue; }
+        let Some((wrapper, root)) = decode_update_arena2(&p[12..12 + alen]) else { continue };
+        if wrapper != WRAPPER_SUPREMACY_POINTS { continue; }
+        let Some(fields) = proto_fields(root) else { continue };
+        for (f, wire, s, len) in fields {
+            if f != 12 || wire != 2 { continue; }
+            let block = &root[s..s + len];
+            let Some(bf) = proto_fields(block) else { continue };
+            let mut team = None;
+            let mut points = None;
+            for (n, w, vs, _vl) in bf {
+                if w != 0 { continue; }
+                let Some(mut vo) = (vs <= block.len()).then_some(vs) else { continue };
+                let Some(v) = pb_varint(block, &mut vo) else { continue };
+                match n {
+                    1 => team = Some(v as u8),
+                    2 => points = Some(v as u32),
+                    _ => {}
+                }
+            }
+            let (Some(team), Some(points)) = (team, points) else { continue };
+            if team != 1 && team != 2 { continue; }
+            if points > 100_000 { continue; }
+            out.push(SupremacyPointsSample { clock: *clock, team, points });
+        }
+    }
+    out
+}
+
+/// Type39 瞄准帧的 contract 投影（recorder-only）：只暴露已证明字段（世界系炮线
+/// yaw/pitch + 射线点）；f5（PARTIAL，死亡/观战后失效）不入 contract。
+/// 缺帧 = 缺帧，不外推、不把 stale 当当前真实 aim（消费端按 death_events 门控存活期）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AimFrame {
+    pub time_sec: f32,
+    /// f0 世界系炮线 yaw（rad）
+    pub world_yaw: f32,
+    /// f1 世界系炮线 pitch（已按项目约定取负）
+    pub world_pitch: f32,
+    /// f2..4 世界系瞄准射线一点
+    pub ray_point: [f32; 3],
+}
+
+impl From<&Type39Frame> for AimFrame {
+    fn from(f: &Type39Frame) -> Self {
+        Self { time_sec: f.clock, world_yaw: f.gun_yaw, world_pitch: f.gun_pitch_world, ray_point: f.ray_point }
+    }
+}
+
+#[cfg(test)]
+mod supremacy_tests {
+    use super::*;
+
+    fn varint(v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut v = v;
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 { out.push(b); break; }
+            out.push(b | 0x80);
+        }
+        out
+    }
+
+    /// 构造 subtype48 包：args = varint(wrapper) + msgLen + root
+    fn mk48(wrapper: u32, root: &[u8]) -> Vec<u8> {
+        let mut args = varint(wrapper as u64);
+        assert!(root.len() < 0xFF, "测试用短形长度即可");
+        args.push(root.len() as u8);
+        args.extend_from_slice(root);
+        let mut p = vec![0u8; 12];
+        p[4..8].copy_from_slice(&48u32.to_le_bytes());
+        p[8..12].copy_from_slice(&(args.len() as u32).to_le_bytes());
+        p.extend_from_slice(&args);
+        p
+    }
+
+    fn varint_block(fields: &[(u32, u64)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for (n, v) in fields {
+            b.extend_from_slice(&varint((n << 3) as u64));
+            b.extend_from_slice(&varint(*v));
+        }
+        b
+    }
+
+    fn root_blocks(field: u32, blocks: &[Vec<u8>]) -> Vec<u8> {
+        let mut root = Vec::new();
+        for b in blocks {
+            root.extend_from_slice(&varint(((field << 3) | 2) as u64));
+            root.extend_from_slice(&varint(b.len() as u64));
+            root.extend_from_slice(b);
+        }
+        root
+    }
+
+    #[test]
+    fn base_sparse_updates_reconstruct_with_java_semantics() {
+        let k1 = mk48(12, &root_blocks(11, &[varint_block(&[(1, 0), (2, 1), (3, 2), (4, 40)])]));
+        let k2 = mk48(12, &root_blocks(11, &[varint_block(&[(1, 1), (2, 2)])]));
+        let k3 = mk48(12, &root_blocks(11, &[varint_block(&[(1, 0), (3, 0)])]));
+        let k4 = mk48(12, &root_blocks(11, &[varint_block(&[(1, 0), (2, 2), (3, 1), (4, 10)])]));
+        let k5 = mk48(12, &root_blocks(11, &[varint_block(&[(1, 0), (2, 1)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            // A：满字段 owner=1 capturing=2 progress=40
+            (8, 10.0, &k1),
+            // B：sparse——只有 owner（absent 字段 = 维持前值/默认 None）
+            (8, 20.0, &k2),
+            // A：capturing 显式清空（3=0）→ progress 连带清空
+            (8, 30.0, &k3),
+            // A：owner 变更且占领中（1→2, capturing=1, progress=10）
+            (8, 40.0, &k4),
+            // A：owner 再变更（2→1）→ 占领中清空
+            (8, 50.0, &k5),
+        ];
+        let raw = collect_supremacy_base_updates(&packets);
+        assert_eq!(raw.len(), 5, "5 条 sparse 更新全部收集");
+        let t = reconstruct_supremacy_base_states(raw);
+        assert_eq!(t.len(), 5);
+        assert_eq!((t[0].base_id, t[0].owner_team, t[0].capturing_team, t[0].capture_progress),
+                   (0, Some(1), Some(2), Some(40)));
+        assert_eq!((t[1].base_id, t[1].owner_team), (1, Some(2)));
+        // capturing 显式清空 → progress 连带清空
+        assert_eq!((t[2].owner_team, t[2].capturing_team, t[2].capture_progress),
+                   (Some(1), None, None));
+        assert_eq!((t[3].owner_team, t[3].capturing_team, t[3].capture_progress),
+                   (Some(2), Some(1), Some(10)));
+        // owner 再变更且占领中 → capturing/progress 清空
+        assert_eq!((t[4].owner_team, t[4].capturing_team, t[4].capture_progress),
+                   (Some(1), None, None));
+    }
+
+    #[test]
+    fn explicit_owner_zero_is_neutral_and_absent_base_index_defaults_to_a() {
+        // block 无 field1（absent）→ canonical 边界 wire default 0 = A（唯一补缺省处）
+        let q1 = mk48(12, &root_blocks(11, &[varint_block(&[(2, 1)])]));
+        let q2 = mk48(12, &root_blocks(11, &[varint_block(&[(2, 0)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 10.0, &q1),
+            (8, 20.0, &q2), // owner 显式 0 → 无主
+        ];
+        let t = reconstruct_supremacy_base_states(collect_supremacy_base_updates(&packets));
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].base_id, 0);
+        assert_eq!(t[0].owner_team, Some(1));
+        assert_eq!(t[1].owner_team, None, "显式 0 = 清空归属（无主）");
+    }
+
+    #[test]
+    fn wrapper_gate_and_invalid_blocks() {
+        // wrapper=1（名册）即使 root 结构相同也绝不产出事件
+        let roster = mk48(1, &root_blocks(11, &[varint_block(&[(1, 0), (2, 1)])]));
+        let roster_shaped: Vec<(u32, f32, &[u8])> = vec![(8, 10.0, &roster)];
+        assert!(collect_supremacy_base_updates(&roster_shaped).is_empty());
+        assert!(collect_supremacy_points(&roster_shaped).is_empty());
+        // 不合法块整体跳过：progress=100 越界、team=3 非法
+        let badp = mk48(12, &root_blocks(11, &[
+            varint_block(&[(1, 0), (4, 100)]),
+            varint_block(&[(1, 1), (2, 3)]),
+        ]));
+        let bad: Vec<(u32, f32, &[u8])> = vec![(8, 10.0, &badp)];
+        assert!(collect_supremacy_base_updates(&bad).is_empty(), "不合法块绝不产出部分状态");
+    }
+
+    #[test]
+    fn points_samples_with_gate_and_multi_byte_varint() {
+        // points=300 需要多字节 varint；team=3 拒绝；wrapper 门禁
+        let pt = mk48(13, &root_blocks(12, &[
+            varint_block(&[(1, 1), (2, 300)]),
+            varint_block(&[(1, 2), (2, 95)]),
+            varint_block(&[(1, 3), (2, 10)]),
+        ]));
+        let pw = mk48(12, &root_blocks(12, &[varint_block(&[(1, 1), (2, 50)])]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 10.0, &pt),
+            (8, 20.0, &pw), // wrapper=12：同 root 结构绝不产出点数
+        ];
+        let pts = collect_supremacy_points(&packets);
+        assert_eq!(pts.len(), 2);
+        assert_eq!((pts[0].team, pts[0].points), (1, 300));
+        assert_eq!((pts[1].team, pts[1].points), (2, 95));
+    }
+}

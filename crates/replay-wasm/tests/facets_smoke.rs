@@ -53,7 +53,11 @@ fn playback_smoke() {
 
     let playback_str = wotb_replay_wasm::playback_json(&bytes).expect("时序能力构建成功");
     let pb: serde_json::Value = serde_json::from_str(&playback_str).unwrap();
-    assert_eq!(pb["version"], 1);
+    assert_eq!(pb["version"], 2, "contract v2（版本门禁；消费端拒绝错版）");
+    // contract v2 新键：非争霸场为空数组也必须安全序列化在场（skip_serializing_if 语义）
+    for key in ["supremacy_bases", "supremacy_points", "aim_frames"] {
+        assert!(pb.get(key).is_none_or(|v| v.is_array()), "v2 键 {key} 须为数组或缺省");
+    }
     let nv = pb["vehicles"].as_array().unwrap().len();
     assert!((8..=28).contains(&nv), "车辆数 {nv}");
     assert!(pb["meta"]["samples"].as_u64().unwrap() > 600, "整场网格过短");

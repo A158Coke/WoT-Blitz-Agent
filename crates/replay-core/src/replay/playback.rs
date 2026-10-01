@@ -26,7 +26,9 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::bail;
 use serde::Serialize;
 
-use super::combat::{self, AoiPresence, GunPitchLimits, ShotReplayData};
+use super::combat::{
+    self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
+};
 use super::filter::FilteredTimeline;
 
 /// 位姿网格步长（秒）——与现有 render_timeline / prop2 密集采样同惯例
@@ -266,6 +268,15 @@ pub struct PlaybackData {
     /// 切面契约版本（当前 1；不兼容变更递增；前端忽略未知键）
     #[serde(default)]
     pub version: u32,
+    /// Supremacy 基地状态时间线（争霸模式；非争霸场为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supremacy_bases: Vec<SupremacyBaseStateTransition>,
+    /// Supremacy 实时点数采样（仅真实广播；非争霸场为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supremacy_points: Vec<SupremacyPointsSample>,
+    /// 作者瞄准帧（recorder-only；缺帧不外推）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aim_frames: Vec<AimFrame>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -591,13 +602,19 @@ pub fn from_model(
         .collect();
 
     Ok(PlaybackData {
-        version: 1,
+        version: 2, // contract v2：+supremacy_bases/supremacy_points/aim_frames（消费端版本门禁）
         meta,
         vehicles: vehicles_out,
         shots,
         kills,
         periods: periods_out,
         visibility,
+        supremacy_bases: model.timeline.supremacy_bases.iter()
+            .map(|t| SupremacyBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
+        supremacy_points: model.timeline.supremacy_points.iter()
+            .map(|p| SupremacyPointsSample { clock: r2(p.clock), ..p.clone() }).collect(),
+        aim_frames: model.timeline.aim_frames.iter()
+            .map(|f| AimFrame { time_sec: r2(f.time_sec), ..*f }).collect(),
     })
 }
 

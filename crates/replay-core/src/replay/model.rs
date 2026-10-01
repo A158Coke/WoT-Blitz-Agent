@@ -11,8 +11,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::combat::{
-    self, ArenaPeriod, AoiPresence, CombatEventType, CombatTimeline, FeedbackCounterEvent,
-    GunPitchLimits, HpEvent, KillFeedEvent, ShotReplayData, St10Sample,
+    self, AimFrame, ArenaPeriod, AoiPresence, CombatEventType, CombatTimeline,
+    FeedbackCounterEvent, GunPitchLimits, HpEvent, KillFeedEvent, ShotReplayData, St10Sample,
+    SupremacyBaseStateTransition, SupremacyPointsSample,
 };
 use super::playback::{self, KillEvent, PlaybackPlayer};
 
@@ -79,6 +80,14 @@ pub struct Timeline {
     pub entity_names: HashMap<u32, String>,
     /// 作者 Avatar 实体（0 = 未解析）
     pub author_eid: u32,
+    /// Supremacy 基地状态时间线（争霸模式；非争霸场为空）。
+    /// WotbTools wrapper12/root11 PROVEN 移植：absent=维持前值、显式 0=清空、
+    /// 占领中 owner 变更清 capture。seek 语义 = 取 ≤t 的每基地最后一条。
+    pub supremacy_bases: Vec<SupremacyBaseStateTransition>,
+    /// Supremacy 实时点数采样（wrapper13/root12；仅真实广播，不推算）
+    pub supremacy_points: Vec<SupremacyPointsSample>,
+    /// 作者瞄准帧（Type39 投影，recorder-only；缺帧不外推，存活期由 deaths 门控）
+    pub aim_frames: Vec<AimFrame>,
 }
 
 /// 内部回放模型：包流单次扫描产物 + 结算花名册并表
@@ -136,6 +145,11 @@ impl ReplayModel {
             packets, |s| s == 1 || s == 3 || s == 6);
         let kill_feed = combat::kill_feed_from_updates(&arena_updates);
         let periods = combat::parse_arena_periods(&arena_updates);
+        // Supremacy 目标状态/点数（subtype48 wrapper12/13；非争霸场为空）——
+        // WotbTools PROVEN 语义移植，sparse 重建见 arena 模块
+        let supremacy_bases = combat::reconstruct_supremacy_base_states(
+            combat::collect_supremacy_base_updates(packets));
+        let supremacy_points = combat::collect_supremacy_points(packets);
         let hp_events = &shared.hp_events;
         let initial_hp = &shared.initial_hp;
         let equipment = &shared.vehicle_equipment;
@@ -235,6 +249,9 @@ impl ReplayModel {
                 shots,
                 entity_names: ct.entity_names,
                 author_eid,
+                supremacy_bases,
+                supremacy_points,
+                aim_frames: shared.type39_frames.iter().map(combat::AimFrame::from).collect(),
             },
             packet_histogram,
         })

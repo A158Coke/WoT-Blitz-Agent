@@ -166,3 +166,37 @@ fn shot_replays_shell_injection_smoke() {
     }
     assert!(resolved > 0, "样本应含 18010 弹（表注入生效的先验）");
 }
+
+/// P0 结算字段（WotBTools 名人堂/联赛评分阻断项）：arena_id（**字符串**，值可超
+/// JS 安全整数）、arena_bonus_type（meta.json 原始数值）、damage_received（玩家级，
+/// #301 f11，缺省 0 为真实语义）。
+#[test]
+fn result_p0_settlement_fields_smoke() {
+    let Some(path) = largest_sample() else {
+        eprintln!("无回放样本，跳过");
+        return;
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    let r: serde_json::Value =
+        serde_json::from_str(&wotb_replay_wasm::result_json(&bytes).unwrap()).unwrap();
+
+    // arena_id：必须是字符串（u64 超 JS 安全整数，禁止走 number）
+    let aid = r.get("arena_id").and_then(|v| v.as_str());
+    assert!(aid.is_some(), "arena_id 应为字符串（got {:?}）", r.get("arena_id"));
+    assert!(!aid.unwrap().is_empty());
+    assert!(aid.unwrap().chars().all(|c| c.is_ascii_digit()), "arena_id 应为十进制数字串");
+
+    // arena_bonus_type：meta.json 原始数值
+    assert!(r.get("arena_bonus_type").map(|v| v.is_u64()).unwrap_or(false),
+            "arena_bonus_type 应为数值（got {:?}）", r.get("arena_bonus_type"));
+
+    // damage_received：每个玩家都有（缺省 0）
+    let players = r["players"].as_array().unwrap();
+    assert!(!players.is_empty());
+    for p in players {
+        assert!(p.get("damage_received").map(|v| v.is_u64()).unwrap_or(false),
+                "玩家 {} 缺 damage_received", p.get("nickname").unwrap_or(&serde_json::json!("?")));
+    }
+    eprintln!("P0 字段: arena_id={:?} bonus_type={:?} 玩家数={}",
+        aid.unwrap(), r.get("arena_bonus_type"), players.len());
+}

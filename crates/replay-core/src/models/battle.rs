@@ -11,6 +11,14 @@ pub struct BattleSummary {
     pub datetime: String,
     /// 对局模式（Rating 排位 / Regular 随机 / TrainingRoom 训练）
     pub room_type: String,
+    /// 名人堂/去重键（battle_results.dat pickle tuple[0] 的 arenaUniqueId）。以
+    /// **字符串**输出：该值可超 JS 安全整数（实测 581811140883713611）。
+    #[serde(default)]
+    pub arena_id: Option<String>,
+    /// meta.json 的原始 arenaBonusType 数值（名人堂准入白名单 {1,7}、联赛模式
+    /// {2,4} 判定依据；room_type 字符串仅为其枚举名，不替代数值）。
+    #[serde(default)]
+    pub arena_bonus_type: Option<u32>,
     pub map_id: u32,
     pub map_name: String,
     /// 战斗总时长（秒）
@@ -65,6 +73,9 @@ pub struct PlayerSummary {
     pub n_hits_dealt: u32,
     pub n_penetrations_dealt: u32,
     pub damage_dealt: u32,
+    /// 承受伤害（#301 f11；缺省即 0，0 为真实数值语义）
+    #[serde(default)]
+    pub damage_received: u32,
     /// 格挡伤害（被敌弹挡住的部分）
     pub damage_blocked: u32,
     /// 助攻伤害（如点亮协助）
@@ -114,6 +125,8 @@ impl BattleSummary {
             timestamp,
             datetime: dt,
             room_type: "Regular".to_string(),
+            arena_id: None,
+            arena_bonus_type: None,
             map_id: 0,
             map_name: String::new(),
             battle_duration_secs: 0.0,
@@ -158,6 +171,7 @@ impl PlayerSummary {
             n_hits_dealt: 0,
             n_penetrations_dealt: 0,
             damage_dealt: 0,
+            damage_received: 0,
             damage_blocked: 0,
             damage_assisted_1: 0,
             damage_assisted_2: 0,

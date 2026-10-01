@@ -15,6 +15,22 @@ pub struct ReplayParser<'a> {
     tank_resolver: Option<&'a dyn TankNames>,
 }
 
+/// 从回放**原始字节**读取 meta.json 的 `arenaBonusType`（名人堂白名单 {1,7}、
+/// 联赛模式 {2,4} 的判定依据）。
+///
+/// 回放容器是 ZIP（`pk` 魔数），meta.json 为其中一条；上游 crate 的 `Meta` 只反序列化
+/// 部分字段（playerName/arenaUniqueId/battleDuration/tank_id/mapId），**不含
+/// arenaBonusType**，且 crate 不暴露原始条目访问——故此处自行解 ZIP 取原始 JSON。
+/// 非 ZIP/无该字段一律 None（unknown ≠ 0）。
+pub fn read_arena_bonus_type(raw: &[u8]) -> Option<u32> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(raw)).ok()?;
+    let mut f = zip.by_name("meta.json").ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut f, &mut text).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
+}
+
 impl<'a> ReplayParser<'a> {
     /// 构造不带解析器的解析器（坦克名无法翻译，只能显示 id）。
     pub fn new() -> Self {
@@ -32,10 +48,16 @@ impl<'a> ReplayParser<'a> {
             .unwrap_or("?")
             .to_string();
 
+        // arenaBonusType 需从容器原始字节取（见 read_arena_bonus_type），
+        // 在打开 Replay（消费 reader）之前读
+        let bonus_type = std::fs::read(path).ok().and_then(|raw| read_arena_bonus_type(&raw));
+
         let mut replay = Replay::open(File::open(path)?)
             .with_context(|| format!("Failed to open replay: {}", path.display()))?;
-        self.parse_replay(&mut replay, &file_name)
-            .with_context(|| format!("Failed to parse replay: {}", path.display()))
+        let mut summary = self.parse_replay(&mut replay, &file_name)
+            .with_context(|| format!("Failed to parse replay: {}", path.display()))?;
+        summary.arena_bonus_type = bonus_type;
+        Ok(summary)
     }
 
     /// 从已打开的回放对象构建结算汇总（与 [`Self::parse_file`] 同义；供 WASM/内存宿主
@@ -50,8 +72,12 @@ impl<'a> ReplayParser<'a> {
         let br = replay.read_battle_results()
             .context("Failed to parse battle_results")?;
         // 结算补充字段（crate 未暴露的 #301 字段：死亡原因/寿命/点亮/毁灭协助/炮印/击杀者）
+        // battle_results.dat（pickle 外层）：arenaUniqueId = 名人堂查重/去重键；
+        // buffer = #301 补充字段。两者共用同一次读取。
+        let br_dat = replay.read_battle_results_dat().ok();
+        let arena_id = br_dat.as_ref().map(|d| d.arena_unique_id.to_string());
         let settlements: std::collections::HashMap<u32, crate::wargaming::battle_results_extra::PlayerSettlement> =
-            replay.read_battle_results_dat().ok()
+            br_dat.as_ref()
                 .map(|dat| crate::wargaming::battle_results_extra::parse_settlement_extras(&dat.buffer))
                 .unwrap_or_default()
                 .into_iter()
@@ -166,12 +192,14 @@ impl<'a> ReplayParser<'a> {
                 n_enemies_spotted: settlement.and_then(|s| s.n_enemies_spotted),
                 destruction_assistance: settlement.and_then(|s| s.destruction_assistance),
                 gun_marks: settlement.and_then(|s| s.gun_marks),
+                damage_received: settlement.and_then(|s| s.damage_received).unwrap_or(0),
             });
         }
 
         let mut summary = BattleSummary::from_naive(br.timestamp_secs);
         summary.file_name = file_name.to_string();
         summary.room_type = room_type;
+        summary.arena_id = arena_id;   // arena_bonus_type 由 parse_file / 宿主入口后置填充
         summary.map_id = map_id;
         summary.map_name = map_name;
         summary.battle_duration_secs = battle_duration;

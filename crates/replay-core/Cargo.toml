@@ -10,3 +10,5 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+# 回放容器为 ZIP：读 meta.json 原始内容取 arenaBonusType（crate 的 Meta 未含该字段）
+zip = "0.6"

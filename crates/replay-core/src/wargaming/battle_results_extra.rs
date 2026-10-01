@@ -22,6 +22,8 @@
 pub struct PlayerSettlement {
     pub account_id: u32,
     pub tank_id: u32,
+    /// #301 f11 承受伤害（WotbTools PROVEN：缺省即为 0，为真实数值语义 → 输出端按 0）
+    pub damage_received: Option<u32>,
     /// 终局剩余血量；负值=哨兵族（-2 自动击毁、-3 未闭合禁猜），正=幸存余血
     pub hitpoints_left: Option<i32>,
     /// 死亡原因：-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境（4 未观测禁猜）
@@ -71,6 +73,7 @@ fn parse_player_entry(b: &[u8]) -> Option<PlayerSettlement> {
                 25 => s.killer_id = Some(v as u32),
                 101 => s.account_id = v as u32,
                 103 => s.tank_id = v as u32,
+                11 => s.damage_received = Some(v as u32),
                 105 => s.death_reason = Some(v32),
                 119 => s.destruction_assistance = Some(v as u32),
                 120 => s.gun_marks = Some(v as u32),

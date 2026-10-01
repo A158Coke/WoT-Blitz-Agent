@@ -62,8 +62,13 @@ fn roster_of(summary: &wotb_replay_core::models::battle::BattleSummary) -> Vec<P
 /// 只解析 meta + battle_results——**不读包流、不建时序模型**，单文件毫秒级，
 /// 供批量扫描与消费方 HoF 投影（HoF 不是 Agent 公开能力，见契约 v2）。
 pub fn result_json(bytes: &[u8]) -> anyhow::Result<String> {
+    // arenaBonusType 来自容器 meta.json 原始内容（crate 的 Meta 未暴露该字段），
+    // 需在打开 Replay（消费 reader）之前从字节读
+    let arena_bonus_type = wotb_replay_core::replay::parser::read_arena_bonus_type(bytes);
+
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
-    let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    let mut summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
+    summary.arena_bonus_type = arena_bonus_type;
     Ok(serde_json::to_string(&summary)?)
 }
 

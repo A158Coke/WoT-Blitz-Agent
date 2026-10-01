@@ -62,6 +62,12 @@ pub struct ShotReplayData {
     pub time_s: f32,
     pub damage: u32,
     pub target_name: String,
+    /// 受击方实体 id（作者 = method38 受击者，服务器权威；他人 = method8 直击通知）。
+    /// 身份域与显示域（[`Self::target_name`]）解耦——投影/消费方联表一律用 eid。
+    /// 此前本字段不存在，playback 投影用 target_name 反查 eid：名字缺失（如受击方
+    /// 昵称损坏）时 hit/target 全丢。名字缺失不作为提取失败条件（fail-soft）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_eid: Option<u32>,
     pub is_kill: bool,
     /// 射手实体 id（method29 shooterEntityId；作者路径恒为作者本人实体）
     pub shooter_eid: u32,
@@ -903,9 +909,9 @@ pub(crate) fn extract_shot_replays_from_shared(
         }
 
         if let Some(teid) = target_eid {
-            target_name = names.get(&teid)
-                .ok_or_else(|| anyhow::anyhow!("{}: 受击者实体 {} 不在 type=5 名册中", ctx(), teid))?
-                .clone();
+            // fail-soft：名字是显示域，缺失（受击方昵称损坏等）不中止整条作者射击链——
+            // 保留 shot，target_name 空串 + target_eid 照传（身份/弹道/判定不受影响）
+            target_name = names.get(&teid).cloned().unwrap_or_default();
         }
 
         // ⑧' 游戏原生命中段 + 结果枚举（wotinspector segment 对齐）：type=32 警告包优先（segment 低字节=结果枚举），
@@ -1152,6 +1158,7 @@ pub(crate) fn extract_shot_replays_from_shared(
             time_s: fire_time,
             damage,
             target_name,
+            target_eid,
             is_kill,
             shooter_eid: author_player_eid,
             shooter_name: names.get(&author_player_eid).cloned().unwrap_or_default(),
@@ -1577,6 +1584,7 @@ pub(crate) fn extract_other_shot_replays_from_shared(
             time_s: l.t,
             damage,
             target_name,
+            target_eid,
             is_kill,
             shooter_eid: l.shooter,
             shooter_name: names.get(&l.shooter).cloned().unwrap_or_default(),

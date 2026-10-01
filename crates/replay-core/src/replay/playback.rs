@@ -342,12 +342,10 @@ fn flight_secs(from: &[f32; 3], to: &[f32; 3], vel: &[f32; 3]) -> f32 {
 }
 
 /// 从射击复现数据映射回放弹道记录
-fn to_playback_shot(s: &ShotReplayData, name_to_eid: &HashMap<String, u32>) -> PlaybackShot {
-    let target_eid = if s.target_name.is_empty() {
-        None
-    } else {
-        name_to_eid.get(&s.target_name).copied()
-    };
+fn to_playback_shot(s: &ShotReplayData, _name_to_eid: &HashMap<String, u32>) -> PlaybackShot {
+    // 受击方身份 = 原始 eid 直传（method38/method8 服务器权威）。名字反查 eid 的
+    // 旧法在名字缺失/冲突时丢 hit——eid 是身份域，名字仅显示域。
+    let target_eid = s.target_eid;
     PlaybackShot {
         t_fire: r2(s.fire_time),
         shooter_eid: s.shooter_eid,

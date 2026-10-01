@@ -39,7 +39,7 @@ pub struct BattleSummary {
     pub map_key: Option<String>,
     /// 战斗总时长（秒）
     pub battle_duration_secs: f64,
-    /// 获胜队伍（1 或 2）
+    /// 获胜队伍（1 或 2）；0 = 无胜方（平局 / 结算缺胜方字段）
     pub winner_team: u8,
     pub author_account_id: u32,
     pub author_nickname: String,

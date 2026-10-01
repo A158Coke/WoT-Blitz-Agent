@@ -2,7 +2,6 @@ use std::fs::File;
 use std::path::Path;
 use anyhow::{Result, Context};
 use wotbreplay_parser::replay::Replay;
-use wotbreplay_parser::models::battle_results::TeamNumber;
 
 use crate::models::battle::{BattleSummary, AuthorStats, PlayerSummary};
 use super::TankNames;
@@ -161,10 +160,11 @@ impl<'a> ReplayParser<'a> {
                 .collect();
 
         let room_type = format!("{:?}", br.room_type());
-        let winner_team = match br.winner_team_number() {
-            TeamNumber::One => 1u8,
-            TeamNumber::Two => 2u8,
-        };
+        // 胜方取结算原始字段：crate 的 winner_team_number() 把「无胜方」（平局/未结算）映射成
+        // TeamNumber::One，会把平局伪装成 1 队胜。缺省/非 1·2 一律 0 = 无胜方（与 playback_viewer 同口径）。
+        let winner_team = br.winner_team_number.as_ref()
+            .map(|w| if *w == 1 { 1u8 } else if *w == 2 { 2u8 } else { 0u8 })
+            .unwrap_or(0);
 
         // 地图 ID 取低 16 位（高 16 位是模式标记）
         let map_id = br.mode_map_id & 0xFFFF;

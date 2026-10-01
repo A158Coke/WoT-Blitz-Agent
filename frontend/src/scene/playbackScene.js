@@ -528,6 +528,23 @@ export function initPlayback(container, store) {
           nm.flatShading = true;
           return nm;
         })()));
+        // 退化几何隔离（导出端修复前的防护）：SpeedTree 树批次因顶点布局解码
+        // 错误呈现 20–29 面/顶点（正常索引网格 ≤6；建筑/道具 <2），顶点错位使
+        // 面片横跨整棵模型 → 撕裂碎片，且虚增到每棵上万面。此类批次整批移除
+        // 并释放几何（不渲染、不占 draw call、回收显存）；正常几何不受影响。
+        const degradedMeshes = [];
+        gltf.scene.traverse((o) => {
+          if (!o.isMesh) return;
+          const g0 = o.geometry;
+          const vc = g0.attributes.position ? g0.attributes.position.count : 0;
+          const ic = g0.index ? g0.index.count : vc;
+          if (vc > 0 && (ic / 3) / vc > 8) degradedMeshes.push(o);
+        });
+        for (const o of degradedMeshes) {
+          o.removeFromParent();
+          o.geometry.dispose();   // 每 mesh 独立几何；材质为共享（缓存）不在此释放
+        }
+        if (DEBUG) window.__degradedSkipped = degradedMeshes.length;
         gltf.scene.traverse((o) => {
           if (!o.isMesh || !o.material) return;
           // GLTFLoader 会把自定义属性名转小写：GLB 里的 _CORNER → geometry._corner
@@ -563,6 +580,70 @@ export function initPlayback(container, store) {
           if (!o.isMesh) return;
           if (/sky/i.test(o.name || '')) o.visible = false;
         });
+        if (DEBUG) window.__sceneryHealth = (match) => {
+          // 几何健康度：面片边长相对模型尺寸的分布。若大量面片边长远超模型
+          // 自身尺寸（长边/对角线 → 1），说明顶点连接错乱（撕裂）；正常网格
+          // 绝大多数边应远小于对角线。
+          const pick = (o) => /Linden|Spruce|bush|tree/i.test(o.name || '');
+          const out = [];
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh || !pick(o)) return;
+            if (match && !(o.name || '').includes(match)) return;
+            const g = o.geometry;
+            const pos = g.attributes.position;
+            if (!pos) return;
+            g.computeBoundingBox();
+            const bb = g.boundingBox;
+            const diag = bb.min.distanceTo(bb.max) || 1;
+            const idx = g.index ? g.index.array : null;
+            const n = idx ? idx.length : pos.count;
+            let maxEdge = 0, over = 0, count = 0, sum = 0;
+            const A = new THREE.Vector3(), B = new THREE.Vector3();
+            const step = Math.max(3, Math.floor(n / 3 / 3000) * 3);   // 采样 ~3000 面
+            for (let i = 0; +i < n - 2; i += step) {
+              const a1 = idx ? idx[i] : i, b1 = idx ? idx[i + 1] : i + 1, c1 = idx ? idx[i + 2] : i + 2;
+              const vs = [a1, b1, c1];
+              for (let k = 0; k < 3; k++) {
+                A.fromBufferAttribute(pos, vs[k]);
+                B.fromBufferAttribute(pos, vs[(k + 1) % 3]);
+                const e = A.distanceTo(B);
+                maxEdge = Math.max(maxEdge, e); sum += e; count++;
+                if (e > diag * 0.3) over++;
+              }
+            }
+            out.push({ name: o.name, vtx: pos.count, tris: Math.round(n / 3),
+                       diag: +diag.toFixed(2), maxEdge: +maxEdge.toFixed(2),
+                       ratioMax: +(maxEdge / diag).toFixed(3),
+                       avgEdge: +(sum / Math.max(1, count)).toFixed(3),
+                       longEdgePct: +(100 * over / Math.max(1, count)).toFixed(1) });
+          });
+          return out.slice(0, 10);
+        };
+        if (DEBUG) window.__sceneryDetail = () => {
+          const groups = new Map(); const all = [];
+          gltf.scene.traverse((o) => {
+            if (!o.isMesh) return;
+            const g = o.geometry;
+            const vtx = g.attributes.position ? g.attributes.position.count : 0;
+            const tri = (g.index ? g.index.count : vtx) / 3;
+            const card = !!g.attributes._corner;
+            const base = (o.name || '(unnamed)').replace(/[0-9_]+$/, '');
+            const key = base + (card ? ' [card]' : '');
+            const e = groups.get(key) || { n: 0, tri: 0, vtx: 0, card };
+            e.n++; e.tri += tri; e.vtx += vtx; groups.set(key, e);
+            all.push({ name: o.name, tri: Math.round(tri), vtx, card,
+                       mat: (Array.isArray(o.material) ? o.material[0] : o.material)?.type });
+          });
+          const top = [...groups.entries()].sort((x, y) => y[1].tri - x[1].tri).slice(0, 12)
+            .map(([k, v]) => ({ key: k, meshes: v.n, tris: Math.round(v.tri),
+                                avgTri: Math.round(v.tri / v.n), vtx: v.vtx, card: v.card }));
+          all.sort((x, y) => y.tri - x.tri);
+          const cards = all.filter((x) => x.card);
+          return { topGroups: top, biggest: all.slice(0, 8),
+                   cardMeshes: cards.length,
+                   cardTris: Math.round(cards.reduce((a2, b2) => a2 + b2.tri, 0)),
+                   totalMeshes: all.length };
+        };
         if (DEBUG) window.__sceneryStats = () => {
           let meshes = 0, tris = 0, transparent = 0;
           const mats = new Set(); const names = new Map(); const waterish = [];

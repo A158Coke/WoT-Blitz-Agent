@@ -14,6 +14,9 @@ const seekEl = ref(null)
 let scene = null
 
 const SPEEDS = [0.5, 1, 2, 4, 8, 16]
+// 争霸点数上限（满值即胜利分）
+const POINTS_MAX = 1000
+const pointsPct = (v) => (v == null ? 0 : Math.max(0, Math.min(100, (v / POINTS_MAX) * 100)))
 // 紧凑血量数值（万位以上折算 k，避免顶栏被长数字撑开）
 function fmtHp(n) {
   const v = Math.max(0, Math.round(n || 0))
@@ -83,10 +86,19 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           </span>
         </span>
       </div>
-      <!-- 行 3：争霸实时点数（仅该场有点数广播时出现） -->
+      <!-- 行 3：争霸实时点数（进度条，上限 1000；两侧对称居中） -->
       <div v-if="store.pointsFriend != null || store.pointsEnemy != null" class="tb-row tb-points">
-        <span class="plbl">点数</span>
-        <b><span class="t1">{{ store.pointsFriend ?? '—' }}</span> : <span class="t2">{{ store.pointsEnemy ?? '—' }}</span></b>
+        <span class="pointsbar pb-f" :title="'己方点数 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">
+          <i :style="{ width: pointsPct(store.pointsFriend) + '%' }"></i>
+        </span>
+        <b class="pointsval">
+          <span class="t1">{{ store.pointsFriend ?? '—' }}</span>
+          <span class="psep">:</span>
+          <span class="t2">{{ store.pointsEnemy ?? '—' }}</span>
+        </b>
+        <span class="pointsbar pb-e" :title="'敌方点数 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">
+          <i :style="{ width: pointsPct(store.pointsEnemy) + '%' }"></i>
+        </span>
       </div>
     </div>
 
@@ -217,6 +229,17 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           display: flex; flex-direction: column; gap: 4px; align-items: center; white-space: nowrap; }
 #topbar .tb-row { display: flex; gap: 14px; align-items: center; justify-content: center; }
 #topbar .tb-points { font-size: 13px; color: var(--dim); }
+/* 点数条：左条己方（自右向左填充）、右条敌方；中间数值固定列宽使整行居中 */
+#topbar .pointsbar { display: inline-block; width: 92px; height: 7px; border-radius: 4px;
+                    background: rgba(255,255,255,.13); overflow: hidden; }
+#topbar .pointsbar > i { display: block; height: 100%; transition: width .18s linear; }
+#topbar .pb-f > i { background: var(--ally); float: right; }
+#topbar .pb-e > i { background: var(--enemy); }
+#topbar .pointsval { display: inline-block; min-width: 74px; text-align: center;
+                     font-variant-numeric: tabular-nums; }
+#topbar .pointsval .t1 { color: var(--ally); }
+#topbar .pointsval .t2 { color: var(--enemy); }
+#topbar .pointsval .psep { color: var(--dim); margin: 0 3px; }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #topbar .score { font-size: 16px; font-weight: 600; }
 #topbar .score .t1 { color: var(--ally); }

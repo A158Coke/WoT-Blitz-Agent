@@ -73,7 +73,7 @@ mod tests {
         assert!(decode_type5_nickname(&mk_type5(5, &[0xFF, 0xFE])).is_none());
         let cn = mk_type5(6, "兰亭公子苏".as_bytes());
         let mut trunc = cn.clone();
-        trunc[57] = trunc[57] - 1; // 长度声明少一字节 → 末字节截断
+        trunc[57] -= 1; // 长度声明少一字节 → 末字节截断
         trunc.pop();
         assert!(decode_type5_nickname(&trunc).is_none());
         // 控制字符

@@ -391,7 +391,7 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 
 ## 许可证
 
-本项目代码以 [MIT License](LICENSE) 发布，版权所有 (c) 2026 Chen Yu。
+本项目代码以 [MIT License](LICENSE) 发布。
 
 引用开源库：
 - `wotbreplay-parser` (MIT) — https://github.com/eigenein/wotbreplay-parser

@@ -104,9 +104,10 @@ pub fn export_cli(
                     tank_names: &tank_names,
                 };
                 let facet = crate::replay::playback::from_model(&model, &render)?;
+                let path = write_json(&dir, &format!("{stem}.facet.playback.json"), &facet)?;
                 println!(
-                    "  回放切面   → {}/{}.facet.playback.json（{} 车 / {} 发 / 可见窗口 {}）",
-                    dir.display(), stem, facet.vehicles.len(), facet.shots.len(), facet.visibility.len()
+                    "  回放切面   → {}（{} 车 / {} 发 / 可见窗口 {}）",
+                    path.display(), facet.vehicles.len(), facet.shots.len(), facet.visibility.len()
                 );
             }
             _ => unreachable!(),

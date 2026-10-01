@@ -15,6 +15,7 @@ import { loadPlaybackData, mapStaticUrl, resolveMapKey, serverMapUrl } from './r
 import { poseFromYPR } from './glbRig.js'
 import mapBasesData from './mapBases.json'
 import { firstIndexAfter } from './seekPointer.js'
+import { impactKind } from './impactKind.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -1293,11 +1294,79 @@ export function initPlayback(container, store) {
     return t === f ? 0x26794a : 0x98322a;
   }
 
+  // ---------- 标签软遮挡（fast-pass）----------
+  // camera → 标签锚点做一次视线检测：先撞地形或静态场景 → 弱化到
+  // LABEL_BLOCKED_OPACITY；否则全不透明度。**永不隐藏**（下限 0.35，不是 0）——
+  // 标签始终可见，被挡时只是明显变淡。只把地形与静态场景当 blocker，不含其他车辆。
+  //
+  // 成本控制（不让每个标签每帧都检测）：
+  //   · 地形用高度场解析步进（LABEL_OCCL_SAMPLES 次 sampleHeight），不 raycast
+  //     512² 地形网格（那是几十万三角形）；
+  //   · 场景（建筑/树）才 raycast，且**每 occlStride 帧只检测一辆车**（轮转），
+  //     其余帧复用上次结果；
+  //   · 单次 raycast 超过 4ms（大图三角形多）自动拉长步长，避免掉帧。
+  const LABEL_OPACITY = 1;
+  const LABEL_BLOCKED_OPACITY = 0.35;
+  const LABEL_OCCL_SAMPLES = 16;
+  const LABEL_OCCL_BUDGET_MS = 4;
+  let occlCursor = 0, occlTick = 0, occlStride = 1, occlCostMs = 0;
+  const _occlDir = new THREE.Vector3();
+
+  // 地形遮挡：沿 camera→anchor 采样高度场（地形高过视线即判遮挡）
+  function terrainBlocksAim(cx, cy, cz, ax, ay, az) {
+    if (!heightField || !heightMeta) return false;
+    for (let i = 1; i < LABEL_OCCL_SAMPLES; i++) {
+      const k = i / LABEL_OCCL_SAMPLES;
+      const x = cx + (ax - cx) * k, z = cz + (az - cz) * k;
+      const y = cy + (ay - cy) * k;
+      if (sampleHeight(x, z) > y + 0.5) return true;
+    }
+    return false;
+  }
+
+  // 静态场景遮挡（建筑/树）：raycast，far 收到锚点之前
+  function sceneryBlocksAim(anchor) {
+    if (!mapScenery || !raycaster) return false;
+    _occlDir.copy(anchor).sub(camera.position);
+    const dist = _occlDir.length();
+    if (dist < 2) return false;
+    _occlDir.divideScalar(dist);
+    const prevFar = raycaster.far;
+    raycaster.far = dist - 1.0;   // 只关心锚点之前的遮挡物
+    raycaster.set(camera.position, _occlDir);
+    const hit = raycaster.intersectObject(mapScenery, true).length > 0;
+    raycaster.far = prevFar;
+    return hit;
+  }
+
+  function updateLabelOcclusion() {
+    const n = V.length;
+    if (!n) return;
+    occlStride = Math.min(16, occlCostMs > LABEL_OCCL_BUDGET_MS
+      ? occlStride + 1 : Math.max(1, occlStride - 1));
+    if (++occlTick < occlStride) return;   // 未到检测帧：沿用缓存结果
+    occlTick = 0;
+    const v = V[occlCursor++ % n];
+    if (!v || !v.label || !v.label.visible) return;
+    const a = v.label.position;
+    let blocked = terrainBlocksAim(camera.position.x, camera.position.y, camera.position.z,
+                                   a.x, a.y, a.z);
+    if (!blocked) {
+      const t0 = performance.now();
+      blocked = sceneryBlocksAim(a);
+      occlCostMs = performance.now() - t0;
+    } else {
+      occlCostMs = 0;
+    }
+    v.labelOccluded = blocked;
+  }
+
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
   const LABEL_FRAC = 0.0275;    // 标签高 ≈ 视口高度的 2.75%（当前尺寸）
   const LABEL_ASPECT = 4;       // 画布 512×128 = 4:1
   function updateLabels() {
+    updateLabelOcclusion();   // 软遮挡：每 occlStride 帧检测一辆车
     const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
     for (const v of V) {
       if (!v.label) continue;
@@ -1312,6 +1381,9 @@ export function initPlayback(container, store) {
       v.label.position.y += Math.min(6, Math.max(3.25, d * 0.045));   // 上限随标签减半等比收紧
       // 车辆不可见时标签同步隐藏（原先经父子关系继承，现根级需显式管理）
       v.label.visible = v.group.visible && store.labelsOn;
+      // 软遮挡：被地形/静态场景挡住时弱化（永不隐藏，下限 LABEL_BLOCKED_OPACITY）
+      const target = v.labelOccluded ? LABEL_BLOCKED_OPACITY : LABEL_OPACITY;
+      if (v.label.material.opacity !== target) v.label.material.opacity = target;
     }
   }
 
@@ -1324,7 +1396,7 @@ export function initPlayback(container, store) {
       map: tex, depthTest: false, depthWrite: false,
       // 卡片本体不透明（描边/底色/文字全部 1.0 alpha，见 drawLabel）；这里保留
       // transparent 只为圆角外的透明像素——置 false 会让圆角变成黑方块。
-      transparent: true, opacity: 1,
+      transparent: true, opacity: LABEL_OPACITY,   // 由软遮挡逐帧驱动（1 / 0.35）
     }));
     sp.renderOrder = 999;   // 最后绘制：水面/半透明层不得覆盖标签；不写深度避免
                             // 透明四边形裁掉后画的相邻标签（14 车聚簇时必现）
@@ -1868,24 +1940,8 @@ export function initPlayback(container, store) {
   //   miss（无 target）/未知结果 = 不生成 target impact。
   // 判定与 2D 同源语义：作者看 hit_flags 位，他人按 game_hit_result 降级
   const IMPACT_WHITE = 0xffffff;
-  function impactKind(s) {
-    if (!impactTargetEid(s)) return null;
-    const f = s.hit_flags || 0;
-    if (s.is_author && f) {
-      if (f & 0x0008) return 'ricochet';
-      if (f & (0x0010 | 0x0040 | 0x0100 | 0x1000)) return 'pen';
-      return 'nonpen';
-    }
-    const r = s.game_hit_result;
-    if (r === 3) return 'pen';
-    if (r === 1) return 'ricochet';
-    if (r === 4) return 'nonpen';
-    if (r === 2) return 'ricochet';
-    return null; // 0/255/缺失 = 结果未知或脱靶 → 不伪造 target impact
-  }
-  function impactTargetEid(s) {
-    return s.target_eid != null ? s.target_eid : null;
-  }
+  // impactKind 见 ./impactKind.js（纯函数，可单测）：非作者路径的 game_hit_result
+  // 枚举里没有"跳弹"取值，只有作者 hit_flags & 0x0008 才是跳弹证据。
   function spawnImpact(tr) {
     const kind = impactKind(tr.shot);
     if (!kind) return; // miss / 结果未知：不生成 impact

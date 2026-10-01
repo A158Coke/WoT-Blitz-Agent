@@ -90,7 +90,12 @@ fn shot_replays_shell_injection_smoke() {
     // 此处以最小内联表覆盖断言即可，全域覆盖由 dump CLI 产物保证）
     let bare: serde_json::Value =
         serde_json::from_str(&wotb_replay_wasm::shot_replays_json(&bytes, None, None).unwrap()).unwrap();
-    let shots = bare.as_array().expect("shots 数组");
+    // 契约 v0.1.9：包装对象 + fail-visible 诊断（作者严格路径健康时无 author_error）
+    let shots = bare["shots"].as_array().expect("shots 数组");
+    assert_eq!(bare["author_path"], "ok", "健康样本作者路径应 ok");
+    assert!(bare.get("author_error").is_none(), "ok 态不得携带 author_error");
+    assert!(bare["author_eid"].as_u64().unwrap_or(0) > 0, "作者 eid 已解析");
+    assert!(bare["others"]["total_launches"].is_u64(), "他人路径统计在场");
     assert!(!shots.is_empty(), "样本应含射击事件");
     for s in shots {
         assert!(s.get("shell").is_none(), "缺省表不得输出 shell 字段");
@@ -104,7 +109,7 @@ fn shot_replays_shell_injection_smoke() {
     let injected: serde_json::Value =
         serde_json::from_str(&wotb_replay_wasm::shot_replays_json(&bytes, None, Some(table)).unwrap()).unwrap();
     let mut resolved = 0;
-    for s in injected.as_array().unwrap() {
+    for s in injected["shots"].as_array().unwrap() {
         if s["shell_id"].as_u64() != Some(18010) { continue; }
         resolved += 1;
         assert_eq!(s["shell_kind"], "ap_cr_premium", "kind 反解");

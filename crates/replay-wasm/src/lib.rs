@@ -10,7 +10,8 @@
 //! - `parseResult(bytes)`    → 结算 JSON（BattleSummary：花名册/胜负/地图/全员统计）；
 //!   只读 meta + battle_results，**不读包流、不建时序模型**，单文件毫秒级；
 //! - `parsePlayback(bytes)`  → PlaybackData JSON（位姿网格/弹道/击杀/阶段/可见性）；
-//! - `parseShotReplays(bytes)` → 全员射击链 JSON 数组（弹道/命中判定/质量标记/渲染锚点）。
+//! - `parseShotReplays(bytes)` → 全员射击链 JSON（`{shots, author_path, others}`，
+//!   契约 v0.1.9：作者严格路径 fail-visible，不再静默吞空）。
 //!
 //! 客户端路径的已知取舍（与服务端路径的差异，均为数据可得性而非实现差异）：
 //! - 无 tank_cache / models.pb：`tank_name` 空串、`gun_pitch` 走车体 pitch 兜底、
@@ -97,9 +98,16 @@ pub fn playback_json(bytes: &[u8]) -> anyhow::Result<String> {
 }
 
 /// 射击复现通道：字节 → 全员射击链（作者严格路径 + 他人宽松路径合并，含弹道/
-/// 命中判定/逐发质量标记/双方渲染锚点）。形状与上游 Web `/api/replay/shots` 的
-/// shots 数组同构，供 WotBTools 射击复现视图直接消费（three.js 渲染在消费方）。
-/// 注意：两路合并后 index 为局部值，消费方须按 time_s 全局重编号（契约 §shots）。
+/// 命中判定/质量标记/渲染锚点）。形状与上游 Web `/api/replay/shots` 的 shots 数组同构，
+/// 供 WotBTools 射击复现视图直接消费（three.js 渲染在消费方）。
+///
+/// **契约 v0.1.9（breaking）**：输出形状
+/// `{shots, author_path: "ok"|"error", author_error?, author_eid, others:{total_launches,
+/// skipped_no_endpoint, skipped_no_target_state, muzzle_fallback}}`。此前作者严格路径
+/// 任何 Err 都被 `unwrap_or_default()` 静默吞成空数组（作者射击链整体消失且无诊断）；
+/// 现 `author_path="error"` 时 `author_error` 携带链式原因（仅 error 态存在该键），
+/// `others` 透传他人宽松路径的跳过/兜底统计（fail-soft 边界透明化），消费方 fail-visible。
+/// 两路合并后 shots 内 index 为局部值，消费方须按 time_s 全局重编号（契约 §shots）。
 ///
 /// `limits_json`：可选的俯仰锚定表（{昵称: {dep, ele, front?, back?, transition?}}，
 /// GunPitchRange serde 形状——消费方由资产面 tank/{id}.json 的 pitch_limits 换算
@@ -130,21 +138,27 @@ pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>, shells_json: O
         _ => GunPitchLimits::new(),
     };
 
-    // 作者严格路径 + 他人宽松路径合并（与 playback::collect_all_shots 同构；
-    // 严格路径失败降级宽松全路径——全场回放不应因单路径失败不可用）
-    let mut shots = wotb_replay_core::replay::combat::extract_shot_replays_auto_with_limits(
-        &packets, &author_nick, &limits).unwrap_or_default();
-    shots.extend(wotb_replay_core::replay::combat::extract_other_shot_replays_with_limits(
-        &packets, author_eid, &limits).shots);
+    // 作者严格路径 + 他人宽松路径合并。strict 失败不再静默降级为空——诊断上抛，
+    // shots 仍含他人宽松路径全量（fail-visible，整场射击复现不因单路径失败不可用）
+    let (author_shots, author_error) = match wotb_replay_core::replay::combat::extract_shot_replays_auto_with_limits(
+        &packets, &author_nick, &limits,
+    ) {
+        Ok(s) => (s, None),
+        Err(e) => (Vec::new(), Some(format!("{e:#}"))),
+    };
+    let others = wotb_replay_core::replay::combat::extract_other_shot_replays_with_limits(
+        &packets, author_eid, &limits);
+    let mut shots = author_shots;
+    shots.extend(others.shots);
     shots.sort_by(|a, b| a.fire_time.partial_cmp(&b.fire_time).unwrap());
 
     // 弹种反解注入（服务端 annotate + shell 字段注入的客户端等价）：表缺失时
     // 原样输出（消费方按缺数据处理）
-    let mut out = serde_json::to_value(&shots)?;
+    let mut shots_val = serde_json::to_value(&shots)?;
     if let Some(table) = shells_json.filter(|s| !s.is_empty())
         .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(s).ok())
     {
-        if let Some(arr) = out.as_array_mut() {
+        if let Some(arr) = shots_val.as_array_mut() {
             for v in arr.iter_mut() {
                 let shell_id = v.get("shell_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                 if shell_id == 0 { continue; }
@@ -158,7 +172,21 @@ pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>, shells_json: O
             }
         }
     }
-    Ok(serde_json::to_string(&out)?)
+    let mut outcome = serde_json::Map::new();
+    outcome.insert("shots".into(), shots_val);
+    outcome.insert("author_path".into(), serde_json::Value::String(
+        if author_error.is_some() { "error".into() } else { "ok".into() }));
+    if let Some(err) = author_error {
+        outcome.insert("author_error".into(), serde_json::Value::String(err));
+    }
+    outcome.insert("author_eid".into(), serde_json::json!(author_eid));
+    outcome.insert("others".into(), serde_json::json!({
+        "total_launches": others.total_launches,
+        "skipped_no_endpoint": others.skipped_no_endpoint,
+        "skipped_no_target_state": others.skipped_no_target_state,
+        "muzzle_fallback": others.muzzle_fallback,
+    }));
+    Ok(serde_json::Value::Object(outcome).to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -183,7 +211,9 @@ mod js {
     }
 
     /// JS 入口（射击复现用）：`parseShotReplays(new Uint8Array(fileBuffer), limitsJson?, shellsJson?)`
-    /// → 全员射击链 JSON 数组字符串（弹道/命中判定/质量标记/渲染锚点）。
+    /// → `{shots, author_path, author_error?, author_eid, others}` JSON 字符串
+    /// （弹道/命中判定/质量标记/渲染锚点；契约 v0.1.9 起 fail-visible——作者严格
+    /// 路径失败不再静默吞空，`author_path="error"` 时 `author_error` 携带原因）。
     /// `limitsJson` 可选：俯仰锚定表 JSON（{昵称: GunPitchRange}，消费方由资产面
     /// tank/{id}.json 的 pitch_limits 组装 dep=max、ele=−min）——注入后 prop2 俯仰
     /// 按车型极限解码（与服务端路径同级）；缺省空表时俯仰降级标记如实透传。

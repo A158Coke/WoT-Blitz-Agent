@@ -33,6 +33,10 @@ pub struct BattleSummary {
     pub client_version: Option<String>,
     pub map_id: u32,
     pub map_name: String,
+    /// meta.json 原始 `mapName`（地图代号，如 `skit`）。底图 / 语义 / i18n 按此键控；
+    /// `map_name` 是解析器枚举名，未知地图会退化为 `map_{id}`。缺省 None（不猜）。
+    #[serde(default)]
+    pub map_key: Option<String>,
     /// 战斗总时长（秒）
     pub battle_duration_secs: f64,
     /// 获胜队伍（1 或 2）
@@ -119,7 +123,8 @@ pub struct PlayerSummary {
     /// 死亡原因：-1=存活哨兵、缺省=普通击毁、1=火焰、2=撞击、3=世界/环境（结算缺失时 None）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub death_reason: Option<i32>,
-    /// 是否存活（death_reason == -1 推导；结算缺失时 None，不猜）
+    /// 是否存活（death_reason == -1 推导；death_reason 缺省 = 普通击毁 → false；
+    /// 只有该战斗者整条结算缺失时才为 None，不猜）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub survived: Option<bool>,
     /// 存活寿命（整秒）
@@ -137,6 +142,18 @@ pub struct PlayerSummary {
     /// 炮印数（0..3）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gun_marks: Option<u32>,
+    /// 经验（#301 f23；crate `base_xp` 在 11.19+ 语料恒为 0，以此为准）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xp: Option<u32>,
+    /// 银币（#301 f106；crate `credits_earned` 在 11.19+ 语料恒为 0，以此为准）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<u32>,
+    /// 本战斗者的结算 result/entity ID（#301 外层 f1；`killer_id` 引用此命名空间）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<u32>,
+    /// 击杀者账号 ID：`killer_id` 经同场 `result_id` 联表得到；联不上为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub killer_account_id: Option<u32>,
 }
 
 impl BattleSummary {
@@ -157,6 +174,7 @@ impl BattleSummary {
             client_version: None,
             map_id: 0,
             map_name: String::new(),
+            map_key: None,
             battle_duration_secs: 0.0,
             winner_team: 0,
             author_account_id: 0,
@@ -221,6 +239,10 @@ impl PlayerSummary {
             n_enemies_spotted: None,
             destruction_assistance: None,
             gun_marks: None,
+            xp: None,
+            credits: None,
+            result_id: None,
+            killer_account_id: None,
         }
     }
 }

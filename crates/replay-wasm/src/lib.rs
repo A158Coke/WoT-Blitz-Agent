@@ -79,11 +79,13 @@ pub fn result_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Resul
     // 需在打开 Replay（消费 reader）之前从字节读
     let arena_bonus_type = wotb_replay_core::replay::parser::read_arena_bonus_type(bytes);
     let client_version = wotb_replay_core::replay::parser::read_client_version(bytes);
+    let map_key = wotb_replay_core::replay::parser::read_map_key(bytes);
 
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let mut summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
     summary.arena_bonus_type = arena_bonus_type;
     summary.client_version = client_version;
+    summary.map_key = map_key;
 
     // 车型名表注入：只替换命中项，未命中保持 `tank_{id}`（unknown ≠ 编造）
     let names = parse_tank_names(tank_names_json);

@@ -31,6 +31,20 @@ pub fn read_arena_bonus_type(raw: &[u8]) -> Option<u32> {
     v.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
 }
 
+/// 从回放**原始字节**读取 meta.json 的原始 `mapName`（地图代号，如 `skit`）。
+///
+/// crate 的 `Meta` 把地图反序列化为枚举（未知地图丢失原名），底图/语义/i18n 需要原始代号。
+/// meta.json 可能含非 UTF-8 字节（见 combat::shots），故按 lossy 解码。缺省/空串一律 None。
+pub fn read_map_key(raw: &[u8]) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(raw)).ok()?;
+    let mut f = zip.by_name("meta.json").ok()?;
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut f, &mut buf).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&buf)).ok()?;
+    v.get("mapName").and_then(|x| x.as_str())
+        .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 /// 从回放**原始字节**读取客户端版本串（`data.wotreplay` 头部）。
 ///
 /// 布局（crate `Data::from_reader` 同源，实测 `11.20.0`）：
@@ -80,6 +94,7 @@ impl<'a> ReplayParser<'a> {
         let raw_bytes = std::fs::read(path).ok();
         let bonus_type = raw_bytes.as_deref().and_then(read_arena_bonus_type);
         let client_version = raw_bytes.as_deref().and_then(read_client_version);
+        let map_key = raw_bytes.as_deref().and_then(read_map_key);
 
         let mut replay = Replay::open(File::open(path)?)
             .with_context(|| format!("Failed to open replay: {}", path.display()))?;
@@ -87,6 +102,7 @@ impl<'a> ReplayParser<'a> {
             .with_context(|| format!("Failed to parse replay: {}", path.display()))?;
         summary.arena_bonus_type = bonus_type;
         summary.client_version = client_version;
+        summary.map_key = map_key;
         Ok(summary)
     }
 
@@ -224,7 +240,8 @@ impl<'a> ReplayParser<'a> {
                 mm_rating: info.mm_rating,
                 display_rating: info.display_rating(),
                 death_reason: settlement.and_then(|s| s.death_reason),
-                survived: settlement.and_then(|s| s.death_reason).map(|d| d == -1),
+                // death_reason 缺省 = 普通击毁（字段表见 battle_results_extra）；整条结算缺失才 None
+                survived: settlement.map(|s| s.death_reason == Some(-1)),
                 life_time_secs: settlement.and_then(|s| s.life_time_secs),
                 killer_id: settlement.and_then(|s| s.killer_id),
                 n_enemies_spotted: settlement.and_then(|s| s.n_enemies_spotted),
@@ -235,7 +252,18 @@ impl<'a> ReplayParser<'a> {
                 victory_points_seized: settlement.and_then(|s| s.victory_points_seized),
                 hitpoints_left: settlement.and_then(|s| s.hitpoints_left),
                 rank: ranks.get(&info.account_id).copied(),
+                xp: settlement.and_then(|s| s.xp),
+                credits: settlement.and_then(|s| s.credits),
+                result_id: settlement.and_then(|s| s.result_id),
+                killer_account_id: None,
             });
+        }
+        // killer_id 是 result/entity ID：经同场 result_id → account_id 联表成击杀者账号
+        let account_by_result: std::collections::HashMap<u32, u32> = players.iter()
+            .filter_map(|p| p.result_id.map(|r| (r, p.account_id)))
+            .collect();
+        for p in &mut players {
+            p.killer_account_id = p.killer_id.and_then(|k| account_by_result.get(&k).copied());
         }
 
         let mut summary = BattleSummary::from_naive(br.timestamp_secs);

@@ -396,7 +396,7 @@ fn parse_tank_main(sub: &[u8], tank_id: u32) -> Result<Option<TankFullData>> {
             (16, 0) => tank.tier = sr.varint()? as u32,
             (17, 0) => tank.tank_type = decode_class_code(sr.varint()? as u32),
             (21, 2) => {
-                // 引擎: field2=名字, field6=功率(马力), field7=起火率(万分比)
+                // 引擎: field2=名字, field5=起火率(0~1 的概率, fixed32), field6=功率(马力), field7=重量(kg)
                 let l = sr.varint()? as usize;
                 let eb = sr.bytes(l)?;
                 let mut name = String::new();
@@ -412,7 +412,7 @@ fn parse_tank_main(sub: &[u8], tank_id: u32) -> Result<Option<TankFullData>> {
                             name = extract_name(nb);
                         },
                         (6, 0) => power = er.varint()? as f64,
-                        (7, 0) => fire = er.varint()? as f64 / 10000.0,
+                        (5, 5) => fire = f32::from_le_bytes(er.bytes(4)?.try_into().unwrap()) as f64,
                         _ => er.skip_field(w)?,
                     }
                 }
@@ -433,7 +433,8 @@ fn parse_tank_main(sub: &[u8], tank_id: u32) -> Result<Option<TankFullData>> {
                 }
             }
             (22, 2) => {
-                // 履带: field1=模块id, field2=tier, field3=本地化名, field4=重量(kg), field5=车体旋速(deg/s), field7/8=地形阻力(硬/中)
+                // 履带: field1=模块id, field2=tier, field3=本地化名, field4=重量(kg), field5=车体旋速(deg/s),
+                // field7/8=散步系数(非阻力), field9/10/11=地形阻力 硬/中/软
                 let l = sr.varint()? as usize;
                 let tb = sr.bytes(l)?;
                 let mut module_id = 0u32;
@@ -454,8 +455,8 @@ fn parse_tank_main(sub: &[u8], tank_id: u32) -> Result<Option<TankFullData>> {
                         },
                         (4, 0) => weight = tr.varint()? as f64,
                         (5, 5) => traverse_speed = f32::from_le_bytes(tr.bytes(4)?.try_into().unwrap()) as f64,
-                        (7, 5) => resistance_hard = Some(f32::from_le_bytes(tr.bytes(4)?.try_into().unwrap()) as f64),
-                        (8, 5) => resistance_medium = Some(f32::from_le_bytes(tr.bytes(4)?.try_into().unwrap()) as f64),
+                        (9, 5) => resistance_hard = Some(f32::from_le_bytes(tr.bytes(4)?.try_into().unwrap()) as f64),
+                        (10, 5) => resistance_medium = Some(f32::from_le_bytes(tr.bytes(4)?.try_into().unwrap()) as f64),
                         _ => tr.skip_field(w)?,
                     }
                 }
@@ -1160,7 +1161,12 @@ mod parse_tests {
         assert!(!is7.engines.is_empty(), "IS-7 should have engine");
         let eng = &is7.engines[0];
         assert!(eng.power > 0.0, "engine power");
-        assert!(eng.fire_chance > 0.0 && eng.fire_chance < 0.5, "fire chance");
+        // 起火率 = 引擎 field5（fixed32 概率）；field7 是引擎重量(kg)，误读会得到 700/10000 = 0.07
+        assert!((eng.fire_chance - 0.15).abs() < 1e-4, "fire chance {}", eng.fire_chance);
+        // 履带地形阻力 = field9/10；field7/8 是散步系数（IS-7 为 0.22），误读会得到 0.22
+        let trk = &is7.tracks[0];
+        assert!((trk.resistance_hard.unwrap() - 1.0).abs() < 1e-4, "res hard {:?}", trk.resistance_hard);
+        assert!((trk.resistance_medium.unwrap() - 1.35).abs() < 1e-4, "res med {:?}", trk.resistance_medium);
         assert!(ap.velocity > 0.0, "shell velocity");
         assert!(ap.range > 0.0, "shell range");
         assert!(ap.penetration_far > 0.0 && ap.penetration_far <= ap.penetration, "pen far");

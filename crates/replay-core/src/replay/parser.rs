@@ -32,6 +32,21 @@ fn meta_arena_bonus_type(meta: &serde_json::Value) -> Option<u32> {
     meta.get("arenaBonusType").and_then(|x| x.as_u64()).map(|x| x as u32)
 }
 
+fn meta_player_vehicle_name(meta: &serde_json::Value) -> Option<String> {
+    meta.get("playerVehicleName").and_then(|x| x.as_str())
+        .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// 结算阵容完整性：花名册与战绩的账号集合完全一致；任一侧为空 → false。
+pub fn roster_complete(roster_accounts: &[u32], result_accounts: &[u32]) -> bool {
+    if roster_accounts.is_empty() || result_accounts.is_empty() {
+        return false;
+    }
+    let a: std::collections::BTreeSet<u32> = roster_accounts.iter().copied().collect();
+    let b: std::collections::BTreeSet<u32> = result_accounts.iter().copied().collect();
+    a == b
+}
+
 fn meta_map_key(meta: &serde_json::Value) -> Option<String> {
     meta.get("mapName").and_then(|x| x.as_str())
         .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
@@ -56,6 +71,7 @@ pub fn apply_container_fields(summary: &mut BattleSummary, raw: &[u8]) {
     let meta = read_meta_json(raw);
     summary.arena_bonus_type = meta.as_ref().and_then(meta_arena_bonus_type);
     summary.map_key = meta.as_ref().and_then(meta_map_key);
+    summary.author_vehicle_codename = meta.as_ref().and_then(meta_player_vehicle_name);
     summary.client_version = read_client_version(raw);
 }
 
@@ -287,6 +303,9 @@ impl<'a> ReplayParser<'a> {
         summary.room_type = room_type;
         summary.arena_id = arena_id;   // arena_bonus_type 由 parse_file / 宿主入口后置填充
         summary.finish_reason = root_fields.finish_reason;
+        let roster_accounts: Vec<u32> = br.players.iter().map(|p| p.account_id).collect();
+        let result_accounts: Vec<u32> = br.player_results.iter().map(|pr| pr.info.account_id).collect();
+        summary.roster_complete = Some(roster_complete(&roster_accounts, &result_accounts));
         summary.result_duration_secs = root_fields.duration_secs;
         summary.map_id = map_id;
         summary.map_name = map_name;
@@ -373,5 +392,15 @@ mod tests {
         }
         assert_eq!(read_arena_bonus_type(&zip_bytes), Some(2));
         assert_eq!(read_map_key(&zip_bytes).as_deref(), Some("skit"));
+    }
+
+    /// 结算阵容完整性：账号集合（与顺序无关）完全一致才完整；多余 / 缺失 / 空 → 不完整。
+    #[test]
+    fn roster_complete_requires_identical_account_sets() {
+        assert!(roster_complete(&[1, 2, 3], &[3, 2, 1]));
+        assert!(!roster_complete(&[1, 2, 3, 4], &[1, 2, 3]));
+        assert!(!roster_complete(&[1, 2], &[1, 2, 3]));
+        assert!(!roster_complete(&[], &[1]));
+        assert!(!roster_complete(&[1], &[]));
     }
 }

@@ -37,6 +37,14 @@ pub struct BattleSummary {
     /// `map_name` 是解析器枚举名，未知地图会退化为 `map_{id}`。缺省 None（不猜）。
     #[serde(default)]
     pub map_key: Option<String>,
+    /// 结算阵容完整性：battle_results 花名册（players）与战绩（player_results）的账号集合完全一致
+    /// （所有参战成员都有结算记录、花名册无无法解释的多余账号）。任一侧为空 → false；
+    /// 未读到 battle_results → None。消费方据此决定能否用「一方全员阵亡」推导结束方式。
+    #[serde(default)]
+    pub roster_complete: Option<bool>,
+    /// meta.json 原始 `playerVehicleName`（录像者车辆代号，如 `GB84_Chieftain_Mk6`）。缺省 None（不猜）。
+    #[serde(default)]
+    pub author_vehicle_codename: Option<String>,
     /// 战斗总时长（秒）
     pub battle_duration_secs: f64,
     /// 获胜队伍（1 或 2）；0 = 无胜方（平局 / 结算缺胜方字段）
@@ -175,6 +183,8 @@ impl BattleSummary {
             map_id: 0,
             map_name: String::new(),
             map_key: None,
+            roster_complete: None,
+            author_vehicle_codename: None,
             battle_duration_secs: 0.0,
             winner_team: 0,
             author_account_id: 0,

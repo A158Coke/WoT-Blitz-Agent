@@ -743,7 +743,44 @@ pub fn has_assault_objective(raw: &[RawAssaultBaseUpdate]) -> bool {
 // 可行性：`起点 + 时长` 预测就绪 n=409、误差中位 −0.012s；本方 325 发中 317 发（97.5%）在
 // ±0.5s 内有相位起点。推送是**相位转移驱动**（非固定采样）→ 天然适合驱动进度条。
 pub const ARENA_SUB_RELOAD_TIME: u32 = 15;
+/// 装填**时长更新**（= 引擎里的 `ReloadTimeUpdate`；实测 140 包 vs 我们 v2=4 相位 145 条）
+pub const ARENA_SUB_RELOAD_TIME_UPDATE: u32 = 16;
 pub const ARENA_SUB_RELOAD_TIME_LIST: u32 = 17;
+
+/// 权威"当前生效完整装填时长"（方法 0x23/35 的实体字段流；载荷 = [.. ][eid u32][f32 秒]）。
+/// 实测值 8.805 / 7.526 / 7.867 / 8.189 秒 —— 与文档 B4「method35 float1 = 当前生效完整装填
+/// 配置时长（肾上腺素/弹药架/装填手联动，非倒计时）」一致，可用于校准/替换相位推断。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawReloadDuration {
+    pub clock: f32,
+    pub eid: u32,
+    pub duration_s: f32,
+}
+
+/// 从原始包流收集"有效装填时长"（方法 0x23 = 35）。
+pub fn reload_durations_from_packets(packets: &[(u32, f32, &[u8])]) -> Vec<RawReloadDuration> {
+    const METHOD_RELOAD_TIME_FIELD: u32 = 0x23;
+    let mut out = Vec::new();
+    for (_t, clock, p) in packets {
+        if p.len() < 20 {
+            continue;
+        }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != METHOD_RELOAD_TIME_FIELD {
+            continue;
+        }
+        let eid = u32::from_le_bytes([p[12], p[13], p[14], p[15]]);
+        let dur = f32::from_le_bytes([p[16], p[17], p[18], p[19]]);
+        if !dur.is_finite() || dur <= 0.0 || dur > 600.0 {
+            continue;
+        }
+        out.push(RawReloadDuration { clock: *clock, eid, duration_s: dur });
+    }
+    out.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+/// f2=**剩余弹数更新**（无时长；f4 = 弹夹/弹鼓剩余发数。实测 16/16 条与同车开火同刻，
+/// 且 max(f4)+1 == 客户端 burst_size）
+pub const RELOAD_PHASE_AMMO_COUNT: u8 = 1;
 /// f2=装填开始（f3 = 本次相位时长）
 pub const RELOAD_PHASE_START: u8 = 3;
 /// f2=装填中途时长变更（肾上腺素/弹药架）
@@ -773,10 +810,15 @@ pub struct RawReloadPhase {
 pub fn reload_phases_from_updates(updates: &[ArenaUpdate]) -> Vec<RawReloadPhase> {
     let mut out = Vec::new();
     for u in updates {
-        if u.subtype != ARENA_SUB_RELOAD_TIME && u.subtype != ARENA_SUB_RELOAD_TIME_LIST { continue; }
-        // 包装层字段号：sub15 → field14，sub17 → field16（实测；与 subtype 同值的
-        // updateArena2 族不同，故此处按 subtype 显式取值）
-        let wrap_no: u32 = if u.subtype == ARENA_SUB_RELOAD_TIME { 14 } else { 16 };
+        if u.subtype != ARENA_SUB_RELOAD_TIME
+            && u.subtype != ARENA_SUB_RELOAD_TIME_UPDATE
+            && u.subtype != ARENA_SUB_RELOAD_TIME_LIST
+        {
+            continue;
+        }
+        // 包装层字段号 = subtype − 1（sub15→field14、sub17→field16 实测；sub16→field15 由同族推得，
+        // 解析结果在真实样本上自洽）。与 subtype 同值的 updateArena2 族不同。
+        let wrap_no: u32 = u.subtype - 1;
         let Some(fields) = proto_fields(&u.payload) else { continue };
         for (f, wire, st, len) in fields {
             if f != wrap_no || wire != 2 { continue; }

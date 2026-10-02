@@ -30,7 +30,7 @@ use anyhow::bail;
 use serde::Serialize;
 
 use super::combat::{
-    RawReloadPhase,
+    RawReloadDuration, RawReloadPhase,
     AssaultBaseStateTransition, self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
     ConsumableTransition,
     ModuleCrewStateEvent,
@@ -309,6 +309,9 @@ pub struct PlaybackData {
     /// 契约 additive：同版本只加字段（消费方忽略未知键），不递增 playbacks 契约版本。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reloads: Vec<RawReloadPhase>,
+    /// 权威「当前生效完整装填时长」（方法 35，**仅本方**；additive：消费方忽略未知键）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reload_effective: Vec<RawReloadDuration>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -654,6 +657,12 @@ pub fn from_model(
             .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
         consumables: model.timeline.consumables.iter()
             .map(|c| ConsumableTransition { clock: r2(c.clock), ..*c }).collect(),
+        reload_effective: model
+            .timeline
+            .reload_effective
+            .iter()
+            .map(|d| RawReloadDuration { clock: r2(d.clock), ..d.clone() })
+            .collect(),
         reloads: model.timeline.reloads.iter()
             .map(|r| RawReloadPhase { clock: r2(r.clock), ..r.clone() }).collect(),
         module_crew_states: model.timeline.module_crew_states.iter()

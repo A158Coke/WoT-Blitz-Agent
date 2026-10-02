@@ -108,6 +108,9 @@ pub enum AiEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         hp_raw: Option<u16>,
     },
+    /// prop3（type=7 sub=3）血量属性广播：原始 u16（哨兵族原样）。与 `Damage`（method1）
+    /// 互补而非重复——录像者自身车辆的血量变化常只有这一路。
+    Health { t: f32, eid: u32, hp_raw: u16 },
     /// method8 伤害/命中反馈通知（原始全变体，不分类；字段缺失 = 载荷不足）。
     /// eid = envelope 方法调用目标实体；分类口径（直击 / 未解码变体 / 短体）属于消费方。
     HitNotice {
@@ -137,6 +140,7 @@ impl AiEvent {
             | AiEvent::Damage { t, .. }
             | AiEvent::Kill { t, .. }
             | AiEvent::HitNotice { t, .. }
+            | AiEvent::Health { t, .. }
             | AiEvent::Counter { t, .. }
             | AiEvent::DamageTick { t, .. } => *t,
             AiEvent::Visibility { t_in, .. } => *t_in,
@@ -200,6 +204,9 @@ impl AiReviewFacet {
             if roster_eids.contains(&p.eid) {
                 events.push(AiEvent::Visibility { t_in: p.t_in, eid: p.eid, t_out: p.t_out, hp_raw: p.hp_raw });
             }
+        }
+        for h in &model.timeline.prop3_health {
+            events.push(AiEvent::Health { t: h.clock, eid: h.eid, hp_raw: h.hp_raw });
         }
         for h in &model.timeline.hit_notices {
             events.push(AiEvent::HitNotice {
@@ -435,5 +442,24 @@ mod tests {
         assert_eq!((n[0].shooter_eid, n[0].victim_eid, n[0].result, n[0].secondary), (Some(0x55), Some(0x44), Some(3), Some(2)));
         assert_eq!(n[1].result, Some(1));
         assert_eq!((n[2].payload_len, n[2].shooter_eid, n[2].victim_eid, n[2].result), (17, Some(0x55), None, None));
+    }
+
+    /// prop3 血量广播：type=7 sub=3 且载荷 ≥14 才收，原始 u16（含哨兵）原样；短包/其它 sub 不收。
+    #[test]
+    fn prop3_health_is_collected_raw() {
+        let prop3 = |sub: u32, hp: u16, len: usize| {
+            let mut p = vec![0u8; len];
+            p[0..4].copy_from_slice(&0x77u32.to_le_bytes());
+            p[4..8].copy_from_slice(&sub.to_le_bytes());
+            if len >= 14 { p[12..14].copy_from_slice(&hp.to_le_bytes()); }
+            p
+        };
+        let (a, b, c, d) = (prop3(3, 1200, 14), prop3(3, 0xFFFD, 16), prop3(3, 999, 13), prop3(2, 5, 14));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(7, 2.0, &b), (7, 1.0, &a), (7, 3.0, &c), (7, 4.0, &d), (8, 5.0, &a)];
+        let got = crate::replay::combat::collect_prop3_health(&packets);
+        assert_eq!(got, vec![
+            crate::replay::combat::Prop3Health { clock: 1.0, eid: 0x77, hp_raw: 1200 },
+            crate::replay::combat::Prop3Health { clock: 2.0, eid: 0x77, hp_raw: 0xFFFD },
+        ]);
     }
 }

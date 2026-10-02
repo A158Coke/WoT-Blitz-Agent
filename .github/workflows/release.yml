@@ -64,6 +64,9 @@ jobs:
           } elseif (-not $tagExists) {
             # bootstrap/self-heal：VERSION 已在 main，但对应 tag 尚未发布。
             $shouldRelease = $true
+          } elseif ($tagSha -eq $sha -and [int]$env:GITHUB_RUN_ATTEMPT -gt 1) {
+            # tag 已创建但后续上传失败时，rerun 允许恢复同一 commit 的 release。
+            $shouldRelease = $true
           }
 
           "version=$version" >> $env:GITHUB_OUTPUT

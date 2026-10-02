@@ -241,6 +241,7 @@ export function initPlayback(container, store) {
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
     if (labelRenderer) labelRenderer.setSize(w, h);
+    resizeLabelCanvases();   // 标签贴图分辨率随视口高度重算（卡片屏幕占比恒定）
   }
   function onScenePointerDown(e) {
     if (e.button !== 0) return;
@@ -1420,7 +1421,30 @@ export function initPlayback(container, store) {
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
   const LABEL_FRAC = 0.0275;    // 标签高 ≈ 视口高度的 2.75%（当前尺寸）
-  const LABEL_ASPECT = 4;       // 画布 512×128 = 4:1
+  const LABEL_ASPECT = 4;       // 画布 4:1（布局按 512×128 设计坐标系写）
+  const LABEL_TEX_BASE_H = 128; // 设计高度：drawLabel 里的绝对像素都以此为准
+  const LABEL_TEX_SS = 1.5;     // 贴图超采样：略高于 1:1，兼顾清晰与显存
+
+  // 标签贴图分辨率跟随**实际屏幕尺寸**（修复"标签发糊"）：卡片在屏上恒为视口高的
+  // LABEL_FRAC，贴图只需覆盖这段像素（×超采样）。旧实现固定 512×128——1080p 下卡片
+  // 只有 ~18 CSS px 高，贴图被 mipmap 缩小 7 倍，昵称落到屏上约 3.7 px 并被三线性
+  // 平均成一团糊。布局代码一行不改：drawLabel 用 ctx.scale 映射回设计坐标系。
+  function labelTexSize() {
+    const pr = Math.min(window.devicePixelRatio || 1, 2);   // 与 labelRenderer 同口径
+    const cssH = Math.max(0, container.clientHeight) * LABEL_FRAC;
+    const h = Math.max(16, Math.min(LABEL_TEX_BASE_H, Math.round(cssH * pr * LABEL_TEX_SS)));
+    return { h, w: h * LABEL_ASPECT };
+  }
+  // 视口变化后重算贴图尺寸（卡片屏幕占比恒定 → 贴图像素数必须跟着变，否则又会发糊）
+  function resizeLabelCanvases() {
+    const { w, h } = labelTexSize();
+    for (const v of V) {
+      if (!v.labelCanvas || (v.labelCanvas.width === w && v.labelCanvas.height === h)) continue;
+      v.labelCanvas.width = w; v.labelCanvas.height = h;
+      v.labelDirty = true;   // 尺寸变了必须重绘（血量未变会被内容检测早退）
+      drawLabel(v);
+    }
+  }
   function updateLabels() {
     updateLabelOcclusion();   // 软遮挡：每 occlStride 帧检测一辆车
     const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * LABEL_FRAC;
@@ -1444,7 +1468,8 @@ export function initPlayback(container, store) {
   }
 
   function makeLabel(v) {
-    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
+    const { w, h } = labelTexSize();
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
     v.labelCanvas = cv;
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;   // canvas 本身是 sRGB，颜色直出
@@ -1487,13 +1512,18 @@ export function initPlayback(container, store) {
     if (hp === v.labelHp && dead === v.labelDead && !v.labelDirty) return;
     v.labelHp = hp; v.labelDead = dead; v.labelDirty = false;
     const cv = v.labelCanvas, ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, 512, 128);
+    // 画布像素尺寸随屏幕尺寸变（labelTexSize），布局仍按 512×128 设计坐标系绘制
+    const ls = cv.height / LABEL_TEX_BASE_H;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(ls, 0, 0, ls, 0, 0);
     const team = '#' + new THREE.Color(teamColor(v)).getHexString();
     // 死亡态不再靠整体降透明度表达（会重新引入半透明），改用更暗的中性色
     const base = dead ? '#4a525c' : team;
     // 卡片：投影 + 纵向渐变底 + 队伍色描边 + 左侧队伍色竖条（底色/描边/竖条/文字全部不透明）
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 5;
+    // shadowBlur/shadowOffset 不随 CTM 缩放，需按 ls 手动等比（否则小贴图下投影相对过重）
+    ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14 * ls; ctx.shadowOffsetY = 5 * ls;
     rrPath(ctx, 26, 6, 460, 116, 18);
     ctx.fillStyle = '#0f141b'; ctx.fill();
     ctx.restore();

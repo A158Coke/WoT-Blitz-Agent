@@ -53,11 +53,18 @@ export function groupByVehicle(reloads) {
 
 /**
  * 推导弹夹容量 N（单发车 = 1）：相邻两次整夹装填之间**最多的连续弹夹内间隔数** + 1。
- * 数据里没有弹夹内间隔（纯单发车、或该车无相位流）→ 1。
+ *
+ * 没有整夹装填（f2=3）相位时一律返回 1——**不能用弹夹内间隔的连串长度去猜**：
+ * 单发车（如 J39 样本 eid=1467934）只发 f2=7 且一发一串，连串长度 ≈ 开火次数（实测 17），
+ * 猜出来的 N 会让条带常年停在 94%+。研究也把这类「零起点」车列为未闭环项。
+ * 代价：真正有弹夹但本场没打出整夹的车（如 Emil II）也按单发显示（0→1 逐发），
+ * 属于「数据不足以分段」的保守显示，不猜。
  */
 export function inferMagazineSize(events) {
+  const list = events || [];
+  if (!list.some((e) => e.phase === PHASE_START)) return 1;
   let run = 0, maxRun = 0;
-  for (const e of events || []) {
+  for (const e of list) {
     if (e.phase === PHASE_MAG_INTERVAL) {
       run += 1;
       if (run > maxRun) maxRun = run;

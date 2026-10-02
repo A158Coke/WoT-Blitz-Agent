@@ -30,6 +30,10 @@ describe('reloadBar · 弹夹容量推断', () => {
     const ev = [clip(10, 7, 3.0), mag(1, 7, 3), mag(2, 7, 3), clip(40, 7, 3.0), mag(1, 7, 3), mag(2, 7, 3)]
     expect(inferMagazineSize(ev)).toBe(3)
   })
+  it('只有弹夹内间隔、没有任何整夹装填 → 1（单发车，如 J39 样本 eid=1467934：17 连串）', () => {
+    const ev = [mag(10, 7, 2.63), mag(20, 7, 2.63), mag(30, 7, 2.63), mag(40, 7, 2.63)]
+    expect(inferMagazineSize(ev)).toBe(1)
+  })
   it('取最长的一串（夹内间隔数不齐时按最大者）', () => {
     const ev = [clip(10, 7, 3.0), mag(1, 7, 3), clip(20, 7, 3.0), mag(1, 7, 3), mag(2, 7, 3), mag(3, 7, 3)]
     expect(inferMagazineSize(ev)).toBe(4)

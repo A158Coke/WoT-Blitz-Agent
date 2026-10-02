@@ -1583,17 +1583,20 @@ export function initPlayback(container, store) {
     // 保持满条（= 已装填），不猜。
     const sx = 56, sy = 112, sw = 400, sh = 16;
     const rfill = Number.isFinite(v.reloadFill) ? v.reloadFill : 1;
-    rrPath(ctx, sx, sy, sw, sh, 8);
-    ctx.fillStyle = 'rgba(0, 0, 0, .45)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.stroke();
-    if (rfill > 0) {
-      rrPath(ctx, sx + 2, sy + 2, Math.max(2, (sw - 4) * rfill), sh - 4, 6);
-      ctx.fillStyle = '#f4f8fc'; ctx.fill();
-    }
+    // N 段：段间留可见空隙（弹夹车一眼能数出几发）；单发车为整条
     const rn = Math.max(1, Math.round(v.reloadSize) || 1);
-    if (rn > 1) {   // 弹夹车：段间细暗线，「1/N 一条 = 一发」一眼可数
-      ctx.fillStyle = 'rgba(0, 0, 0, .45)';
-      for (let k = 1; k < rn; k++) ctx.fillRect(sx + 2 + (sw - 4) * (k / rn) - 1, sy + 2, 2, sh - 4);
+    const gap = rn > 1 ? 14 : 0;                     // 设计 px；≈2 屏幕 px
+    const segW = (sw - gap * (rn - 1)) / rn;
+    for (let k = 0; k < rn; k++) {
+      const x = sx + k * (segW + gap);
+      rrPath(ctx, x, sy, segW, sh, 7);
+      ctx.fillStyle = 'rgba(0, 0, 0, .45)'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.32)'; ctx.stroke();
+      const f = Math.max(0, Math.min(1, rfill * rn - k));   // 本段已填充比例
+      if (f > 0) {
+        rrPath(ctx, x + 2, sy + 2, Math.max(2, (segW - 4) * f), sh - 4, 5);
+        ctx.fillStyle = '#f4f8fc'; ctx.fill();
+      }
     }
     v.label.material.map.needsUpdate = true;
   }

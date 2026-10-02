@@ -729,6 +729,88 @@ pub fn has_assault_objective(raw: &[RawAssaultBaseUpdate]) -> bool {
     })
 }
 
+// ---------- 实时装填相位（subtype 15 RELOAD_TIME / 17 RELOAD_TIME_LIST）----------
+//
+// 线格式（探针 `src/bin/probe_arena_reload.rs` 实测，与作者专属 0x0d/0x23 逐位同构交叉验证）：
+// args = [subtype u8][len u8][protobuf]；protobuf 里 wrapper field14（sub15）/ field16（sub17）
+// → repeated field1 → 条目 { f1=eid varint, f2=相位码 varint, f3=fixed32 f32 秒, f4=计数 varint }。
+//
+// 语义边界（只消费已验证者）：f2=3 装填开始（f3 = 本次相位时长）、f2=4 装填中途时长变更
+// （肾上腺素/弹药架）、f2=7 弹夹/弹鼓内单发间隔（f3 = 该发时长）、f4=1 = 枪管就绪。
+// f2 其余取值、f4 其余计数**语义未闭环**（研究只闭环 f4=1）→ 原样透传、不赋语义。
+//
+// 覆盖范围（协议广播范围，非实现缺口）：**仅本方全队**，敌方无该流。
+// 可行性：`起点 + 时长` 预测就绪 n=409、误差中位 −0.012s；本方 325 发中 317 发（97.5%）在
+// ±0.5s 内有相位起点。推送是**相位转移驱动**（非固定采样）→ 天然适合驱动进度条。
+pub const ARENA_SUB_RELOAD_TIME: u32 = 15;
+pub const ARENA_SUB_RELOAD_TIME_LIST: u32 = 17;
+/// f2=装填开始（f3 = 本次相位时长）
+pub const RELOAD_PHASE_START: u8 = 3;
+/// f2=装填中途时长变更（肾上腺素/弹药架）
+pub const RELOAD_PHASE_DURATION_CHANGE: u8 = 4;
+/// f2=弹夹/弹鼓内单发装填间隔（f3 = 该发时长）
+pub const RELOAD_PHASE_MAG_INTERVAL: u8 = 7;
+/// f4=1 = 枪管就绪（唯一已闭环的计数取值）
+pub const RELOAD_READY_COUNT: u64 = 1;
+
+/// 单条装填相位（**原样透传**：未闭环的相位码/计数不赋语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawReloadPhase {
+    pub clock: f32,
+    pub eid: u32,
+    /// 原始相位码 f2（3/4/7 已交叉验证，其余未闭环）
+    pub phase: u8,
+    /// 本次相位时长（秒）——f3 缺省为 None；**不是倒计时**
+    pub duration_s: Option<f32>,
+    /// 原始计数 f4（原样透传）；1 = 就绪
+    pub count: Option<u64>,
+}
+
+/// 从已收集的 arena update 流（keep_subtype 需含 15/17）解析装填相位条目，按 clock 升序。
+///
+/// 消费方（前端进度条）口径：每车取 ≤ t 的最后一条**已闭环**条目——f2=3/7 带时长者 =
+/// 正在装填（`progress = clamp((t − clock) / duration_s)`），f4=1 = 就绪（条到 1 后停住）。
+pub fn reload_phases_from_updates(updates: &[ArenaUpdate]) -> Vec<RawReloadPhase> {
+    let mut out = Vec::new();
+    for u in updates {
+        if u.subtype != ARENA_SUB_RELOAD_TIME && u.subtype != ARENA_SUB_RELOAD_TIME_LIST { continue; }
+        // 包装层字段号：sub15 → field14，sub17 → field16（实测；与 subtype 同值的
+        // updateArena2 族不同，故此处按 subtype 显式取值）
+        let wrap_no: u32 = if u.subtype == ARENA_SUB_RELOAD_TIME { 14 } else { 16 };
+        let Some(fields) = proto_fields(&u.payload) else { continue };
+        for (f, wire, st, len) in fields {
+            if f != wrap_no || wire != 2 { continue; }
+            let Some(end) = st.checked_add(len).filter(|e| *e <= u.payload.len()) else { continue };
+            let wrap = &u.payload[st..end];
+            let Some(blocks) = proto_fields(wrap) else { continue };
+            for (bf, bwire, bst, blen) in blocks {
+                if bf != 1 || bwire != 2 { continue; }
+                let Some(bend) = bst.checked_add(blen).filter(|e| *e <= wrap.len()) else { continue };
+                let sub = &wrap[bst..bend];
+                let Some(ef) = proto_fields(sub) else { continue };
+                let (mut eid, mut phase, mut dur, mut count) = (None, None, None, None);
+                for (n, w, vs, _vl) in ef {
+                    match (n, w) {
+                        (1, 0) => { let mut o = vs; eid = pb_varint(sub, &mut o).map(|v| v as u32); }
+                        (2, 0) => { let mut o = vs; phase = pb_varint(sub, &mut o).map(|v| v as u8); }
+                        (3, 5) => {
+                            if vs + 4 <= sub.len() {
+                                dur = Some(f32::from_le_bytes([sub[vs], sub[vs + 1], sub[vs + 2], sub[vs + 3]]));
+                            }
+                        }
+                        (4, 0) => { let mut o = vs; count = pb_varint(sub, &mut o); }
+                        _ => {}
+                    }
+                }
+                let (Some(eid), Some(phase)) = (eid, phase) else { continue };
+                out.push(RawReloadPhase { clock: u.clock, eid, phase, duration_s: dur, count });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.clock.partial_cmp(&b.clock).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
 /// 实时点数采样（wrapper13/root12 块：field1=team(1/2)、field2=points）。门禁与 Java
 /// 同式：wrapperFieldNumber != 13 时即使 root 结构相同也绝不产出点数事件；
 /// 只消费回放真实广播，绝不按游戏规则推算。
@@ -1047,6 +1129,67 @@ mod assault_tests {
         let other = mk48a(8, &root_blocks(8, &[varint_block(&[(1, 2), (2, 9), (4, 1)])]));
         let p4: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &other)];
         assert!(!has_assault_objective(&collect_assault_base_updates(&p4)));
+    }
+
+    // ---------- 装填相位（arena subtype 15/17）----------
+
+    /// 条目：f1=eid(0)、f2=phase(0)、f3=f32(5)、f4=count(0, 可选)
+    fn reload_entry(eid: u64, phase: u64, dur: f32, count: Option<u64>) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend(varint((1 << 3) as u64)); b.extend(varint(eid));
+        b.extend(varint((2 << 3) as u64)); b.extend(varint(phase));
+        b.extend(varint(((3 << 3) | 5) as u64)); b.extend_from_slice(&dur.to_le_bytes());
+        if let Some(c) = count { b.extend(varint((4 << 3) as u64)); b.extend(varint(c)); }
+        b
+    }
+    /// protobuf：field{wrap_no}(wire2) → repeated field1(wire2) → 条目
+    fn reload_root(wrap_no: u32, entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut inner = Vec::new();
+        for e in entries {
+            inner.extend(varint(((1 << 3) | 2) as u64));
+            inner.extend(varint(e.len() as u64));
+            inner.extend_from_slice(e);
+        }
+        let mut root = Vec::new();
+        root.extend(varint(((wrap_no << 3) | 2) as u64));
+        root.extend(varint(inner.len() as u64));
+        root.extend_from_slice(&inner);
+        root
+    }
+
+    #[test]
+    fn reload_phases_from_sub15_and_sub17() {
+        // sub15 → wrapper field14；sub17 → wrapper field16（两者字段号不同，必须分别取）
+        let e_start = reload_entry(500, 3, 12.39, None);          // 装填开始 + 时长
+        let e_ready = reload_entry(500, 0, 12.49, Some(1));       // f4=1 就绪
+        let p15 = mk48a(15, &reload_root(14, &[e_start, e_ready]));
+        let p17 = mk48a(17, &reload_root(16, &[reload_entry(700, 7, 2.5, None)]));  // 弹夹内单发
+        // 非装填 subtype（sub1）即使字段结构相同也不产出
+        let p1 = mk48a(1, &reload_root(14, &[reload_entry(999, 3, 9.0, None)]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(8, 5.0, &p15), (8, 1.0, &p17), (8, 2.0, &p1)];
+        let updates = collect_arena_updates_filtered(&packets, |s| {
+            s == ARENA_SUB_RELOAD_TIME || s == ARENA_SUB_RELOAD_TIME_LIST
+        });
+        assert_eq!(updates.len(), 2, "只有 sub15/sub17 被收集（sub1 过滤掉）");
+        let r = reload_phases_from_updates(&updates);
+        assert_eq!(r.len(), 3, "sub15 两条 + sub17 一条");
+        assert_eq!((r[0].clock, r[0].eid, r[0].phase), (1.0, 700, RELOAD_PHASE_MAG_INTERVAL));
+        assert_eq!(r[0].duration_s, Some(2.5));
+        assert_eq!((r[1].clock, r[1].eid, r[1].phase), (5.0, 500, RELOAD_PHASE_START));
+        assert_eq!(r[1].duration_s, Some(12.39));
+        assert_eq!(r[2].count, Some(RELOAD_READY_COUNT), "f4=1 原样透传（就绪）");
+        assert_eq!(r[2].phase, 0);
+    }
+
+    #[test]
+    fn reload_phases_sorted_and_per_vehicle_kept_apart() {
+        // 同一包内多实体、跨包乱序：输出按 clock 升序且 eid 不被合并
+        let p_a = mk48a(15, &reload_root(14, &[reload_entry(11, 3, 8.0, None)]));
+        let p_b = mk48a(15, &reload_root(14, &[reload_entry(22, 7, 3.0, None)]));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(8, 9.0, &p_a), (8, 2.0, &p_b)];
+        let r = reload_phases_from_updates(&collect_arena_updates_filtered(
+            &packets, |s| s == ARENA_SUB_RELOAD_TIME));
+        assert_eq!(r.iter().map(|x| (x.clock, x.eid)).collect::<Vec<_>>(), vec![(2.0, 22), (9.0, 11)]);
     }
 
     #[test]

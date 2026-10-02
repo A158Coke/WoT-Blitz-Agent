@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use super::combat::{
     self, AimFrame, ArenaPeriod, AoiPresence, AssaultBaseStateTransition, CombatEventType,
     CombatTimeline, ConsumableTransition, FeedbackCounterEvent, GunPitchLimits, HpEvent,
-    KillFeedEvent, ModuleCrewStateEvent, ShotReplayData, St10Sample,
+    KillFeedEvent, ModuleCrewStateEvent, RawReloadPhase, ShotReplayData, St10Sample,
     SupremacyBaseStateTransition, SupremacyPointsSample,
 };
 use super::playback::{self, KillEvent, PlaybackPlayer};
@@ -104,7 +104,8 @@ pub struct Timeline {
     /// 消耗品生命周期事件（Type32 flag=0；含 wireCode/state/param 原样）
     pub consumables: Vec<ConsumableTransition>,
     /// 车辆模块/乘员状态事件（Avatar method16）
-    pub module_crew_states: Vec<ModuleCrewStateEvent>,
+    pub module_crew_states: Vec<ModuleCrewStateEvent>,    /// 实时装填相位（arena subtype 15/17，**仅本方全队**；相位码 f2 与计数 f4 原样透传）
+    pub reloads: Vec<RawReloadPhase>,
 }
 
 /// 内部回放模型：包流单次扫描产物 + 结算花名册并表
@@ -161,7 +162,9 @@ impl ReplayModel {
         // arena 流一次收集 {1,3,6}（comps/periods/kill_feed 三个消费方合用；
         // 高频 RELOAD_TIME 等子类型在收集期即丢弃）
         let arena_updates = combat::collect_arena_updates_filtered(
-            packets, |s| s == 1 || s == 3 || s == 6);
+            packets, |s| s == 1 || s == 3 || s == 6
+            // 装填相位（subtype 15/17）也在此收集：本方全队的装填开始/就绪/弹夹内间隔
+            || s == combat::ARENA_SUB_RELOAD_TIME || s == combat::ARENA_SUB_RELOAD_TIME_LIST);
         let kill_feed = combat::kill_feed_from_updates(&arena_updates);
         let periods = combat::parse_arena_periods(&arena_updates);
         // Supremacy 目标状态/点数（subtype48 wrapper12/13；非争霸场为空）——
@@ -172,6 +175,8 @@ impl ReplayModel {
         // 攻防战单基地（wrapper8/root8；与争霸 wrapper12 天然互斥——实测两者不共存）
         let assault_updates = combat::collect_assault_base_updates(packets);
         // 目标存在性与进度分开：无占领活动的攻防/遭遇战场次 progress 为空但目标已在
+        // 实时装填相位（原样透传；消费方只认已闭环子集 f2∈{3,4,7}、f4=1）
+        let reloads = combat::reload_phases_from_updates(&arena_updates);
         let assault_objective_present = combat::has_assault_objective(&assault_updates);
         let assault_bases = combat::reconstruct_assault_base_states(assault_updates);
         // 消耗品生命周期（Type32 flag=0；与 flag=1 炮弹警告同包不同族）
@@ -287,6 +292,7 @@ impl ReplayModel {
                 assault_bases,
                 consumables,
                 module_crew_states,
+                reloads,
             },
             packet_histogram,
         })

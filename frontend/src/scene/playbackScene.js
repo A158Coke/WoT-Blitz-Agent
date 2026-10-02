@@ -22,6 +22,7 @@ import {
   foldAssaultProgress, foldSupremacyTransitions,
 } from './baseStatus.js'
 import { orientDiscUv } from './baseDecal.js'
+import { groupByVehicle, inferMagazineSize, reloadViewAt } from './reloadBar.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { battleEndTime } from './battleEnd.js'
@@ -1397,9 +1398,9 @@ export function initPlayback(container, store) {
   // 名牌 = 一行「车型名 · 玩家昵称」；血量条在卡片内、名字下方，**沿用最初版血条的格式**
   //（暗槽 #0a0e13 / #3a4450 描边 + 队色纵向渐变填充 + 浅灰 ghost + 条内白字黑描边）。
   // 卡片与文字的样式对齐 WotbTools 2D 版（.pb-labels）：半透明黑底 + 极淡白边 + 阵营色文字。
-  const LABEL_FRAC = 0.0275;        // 卡片高 ≈ 视口高的 2.75%（653px 视口 → 72×18 CSS px）
-  const LABEL_ASPECT = 4;           // 512×128（4:1，与最初版同一版式）
-  const LABEL_TEX_BASE_H = 128;     // 设计高度：drawLabel 里的绝对像素都以此为准
+  const LABEL_FRAC = 0.0302;        // 卡片高 ≈ 视口高的 3.02%（653px 视口 → 72×19.7 CSS px）
+  const LABEL_ASPECT = 512 / 140;   // 512×140：名牌一行 + 血量条 + **实时装填条**（最下一行）
+  const LABEL_TEX_BASE_H = 140;     // 设计高度：drawLabel 里的绝对像素都以此为准
   const TEX_SS = 1.5;               // 贴图超采样：略高于 1:1，兼顾清晰与显存
 
   // 贴图分辨率跟随**实际屏幕尺寸**（修「发糊」）：卡片在屏上恒为视口高的 LABEL_FRAC，贴图只需
@@ -1442,6 +1443,12 @@ export function initPlayback(container, store) {
       // 软遮挡：被地形/静态场景挡住时弱化（永不隐藏，下限 LABEL_BLOCKED_OPACITY）
       const target = v.labelOccluded ? LABEL_BLOCKED_OPACITY : LABEL_OPACITY;
       if (v.label.material.opacity !== target) v.label.material.opacity = target;
+      // 装填条：按 T 二分求值（不累加计时器）。重绘门控——进度量化成 1% 桶才重绘整张
+      // canvas 并传纹理，否则 14 车会每帧重绘（装填中每车最多 ~100 次/发）。
+      const rv = reloadViewAt(v.reloadEvents, T, v.reloadSize);
+      v.reloadFill = rv.fill;
+      const bucket = Math.round(rv.fill * 100);
+      if (bucket !== v.reloadBucket) { v.reloadBucket = bucket; v.labelDirty = true; drawLabel(v); }
     }
   }
 
@@ -1505,13 +1512,13 @@ export function initPlayback(container, store) {
     ctx.save();
     // shadowBlur/shadowOffset 不随 CTM 缩放，需按 ls 手动等比（否则小贴图下投影相对过重）
     ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 14 * ls; ctx.shadowOffsetY = 5 * ls;
-    rrPath(ctx, 26, 6, 460, 116, 18);
+    rrPath(ctx, 26, 6, 460, 128, 18);
     ctx.fillStyle = 'rgba(0, 0, 0, .55)';   // 2D 同款底色（半透明黑；阴影一次填充落其下）
     ctx.fill();
     ctx.restore();
     // 受击闪（FLASH_MS）：描边瞬亮，弱化而非隐藏
     const flashing = (flashByEid.get(v.def.eid) || 0) > performance.now();
-    rrPath(ctx, 26, 6, 460, 116, 18);
+    rrPath(ctx, 26, 6, 460, 128, 18);
     ctx.lineWidth = flashing ? 10 : 6;
     ctx.strokeStyle = flashing ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.14)';
     ctx.stroke();
@@ -1542,7 +1549,7 @@ export function initPlayback(container, store) {
     ctx.shadowBlur = 0;
     // —— 血量条（**最初版格式**）：暗槽 + 队色纵向渐变填充 + 浅灰 ghost + 条内白字黑描边 ——
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
-    const bx = 56, by = 68, bw = 400, bh = 44;
+    const bx = 56, by = 60, bw = 400, bh = 44;
     rrPath(ctx, bx, by, bw, bh, 11);
     ctx.fillStyle = '#0a0e13'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = '#3a4450'; ctx.stroke();
@@ -1571,6 +1578,23 @@ export function initPlayback(container, store) {
     ctx.lineWidth = 5; ctx.strokeStyle = '#000000';
     ctx.strokeText(txt, 256, by + bh / 2 + 1);
     ctx.fillStyle = '#fff'; ctx.fillText(txt, 256, by + bh / 2 + 1);
+    // —— 实时装填条（血量条下方，细长白条）：单发车整条 = 一发；弹夹/弹鼓车 1/N 条 = 一发
+    // （N 由相位数据推导，见 scene/reloadBar.js）。相位流只覆盖**本方全队**：无相位流的车
+    // 保持满条（= 已装填），不猜。
+    const sx = 56, sy = 112, sw = 400, sh = 16;
+    const rfill = Number.isFinite(v.reloadFill) ? v.reloadFill : 1;
+    rrPath(ctx, sx, sy, sw, sh, 8);
+    ctx.fillStyle = 'rgba(0, 0, 0, .45)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.stroke();
+    if (rfill > 0) {
+      rrPath(ctx, sx + 2, sy + 2, Math.max(2, (sw - 4) * rfill), sh - 4, 6);
+      ctx.fillStyle = '#f4f8fc'; ctx.fill();
+    }
+    const rn = Math.max(1, Math.round(v.reloadSize) || 1);
+    if (rn > 1) {   // 弹夹车：段间细暗线，「1/N 一条 = 一发」一眼可数
+      ctx.fillStyle = 'rgba(0, 0, 0, .45)';
+      for (let k = 1; k < rn; k++) ctx.fillRect(sx + 2 + (sw - 4) * (k / rn) - 1, sy + 2, 2, sh - 4);
+    }
     v.label.material.map.needsUpdate = true;
   }
 
@@ -2464,6 +2488,17 @@ export function initPlayback(container, store) {
     loadMapImage().catch(e => console.warn('地图资产加载失败（回退网格）:', e));
     buildVehicles();
     buildRoster();
+    // 实时装填相位（`DATA.reloads`，arena subtype 15/17；**仅本方全队**）→ 按 eid 归到车。
+    // 求值是纯函数（时间二分），seek/拖动天然正确；无相位流的车 → 满条，不猜。
+    {
+      const reloadByEid = groupByVehicle(DATA.reloads);
+      for (const v of V) {
+        v.reloadEvents = reloadByEid.get(v.def.eid) || [];
+        v.reloadSize = inferMagazineSize(v.reloadEvents);
+        v.reloadFill = 1;
+        v.reloadBucket = 100;   // 与初值（满条）一致，避免首帧无谓重绘
+      }
+    }
     buildTransientSources();   // 战斗反馈事件源（伤害/击毁）
     if (DEBUG) window.__pbData = DATA;   // 调试钩子：检查 contract v2 字段到达情况
     buildBases();

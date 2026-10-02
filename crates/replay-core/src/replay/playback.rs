@@ -30,6 +30,7 @@ use anyhow::bail;
 use serde::Serialize;
 
 use super::combat::{
+    RawReloadPhase,
     AssaultBaseStateTransition, self, AoiPresence, GunPitchLimits, ShotReplayData, AimFrame, SupremacyBaseStateTransition, SupremacyPointsSample,
     ConsumableTransition,
     ModuleCrewStateEvent,
@@ -302,6 +303,12 @@ pub struct PlaybackData {
     /// 车辆模块/乘员状态事件（Avatar method16；无事件场次为空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_crew_states: Vec<ModuleCrewStateEvent>,
+
+    /// 实时装填相位（arena subtype 15/17，**仅本方全队**；相位码 f2 与计数 f4 原样透传，
+    /// 消费侧只解释已闭环子集：f2=3/4/7、f4=1）。
+    /// 契约 additive：同版本只加字段（消费方忽略未知键），不递增 playbacks 契约版本。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reloads: Vec<RawReloadPhase>,
     pub meta: PlaybackMeta,
     /// 实体 id 升序（确定性输出）
     pub vehicles: Vec<VehicleTrack>,
@@ -647,6 +654,8 @@ pub fn from_model(
             .map(|t| AssaultBaseStateTransition { clock: r2(t.clock), ..t.clone() }).collect(),
         consumables: model.timeline.consumables.iter()
             .map(|c| ConsumableTransition { clock: r2(c.clock), ..*c }).collect(),
+        reloads: model.timeline.reloads.iter()
+            .map(|r| RawReloadPhase { clock: r2(r.clock), ..r.clone() }).collect(),
         module_crew_states: model.timeline.module_crew_states.iter()
             .map(|m| ModuleCrewStateEvent { clock: r2(m.clock), ..*m }).collect(),
     })

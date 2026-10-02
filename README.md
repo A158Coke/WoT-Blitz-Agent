@@ -18,6 +18,7 @@ AI 游戏分析助手 — 针对 World of Tanks Blitz（坦克世界闪击战）
 | 击穿判定内核 | Rust 统一实现：跳弹/转正/overmatch/间隙甲/HEAT 间隙衰减/HE 溅射/装备修正 |
 | BlitzKit 数据集成 | tanks.pb 735 辆（弹种/穿深/血量）+ models.pb（spaced 权威 + **逐板装甲厚度/车体炮塔碰撞盒/俯仰极限**，唯一来源）+ GLB 几何 |
 | LLM Agent | 自然语言对话，10 个工具自主获取数据并生成分析（含热力图截图） |
+| 消费方切面导出 | `dataset`（权威数据集：metadata/settlement/diagnostics）与 `facets`（消费方切面：playback / ai-review）；WASM 四入口（`parseResult`/`parsePlayback`/`parseShotReplays`/`parseAiReview`）供浏览器/消费方直接投影（契约 v2，见 [docs/replay-contract-v2-supremacy-type39.md](docs/replay-contract-v2-supremacy-type39.md)） |
 | 射击复现（实验性） | 从回放提取射击事件链，3D 查看器按射手视角复现弹道与判定；**游戏弹孔解码点**（服务器 segment 按游戏 `DecodeShotSegment` 同构公式解出的部件 AABB 量化点，橙色 ◆ 标记，与本地 raycast 弹着点对照）；目标/射手模型按**实际搭载配置**选炮塔/主炮变体 |
 | 全场实时回放 | 14 车连续播放整场战斗：客户端滤波位姿（AvatarFilter 移植，60Hz→0.1s 网格）+ prop2 炮塔/炮管随动 + 弹道飞行动画 + 实时血量/击杀流/计分板；播放/暂停/0.5~16x 倍速/进度拖拽，自由/俯视/跟随镜头，可选 GLB 真实车模。多配置坦克按 **实际搭载**（ARENA_INFO 组成 blob → 发射弹种 → 初始血量 三级证据）自动选炮塔/主炮变体。3D 场景叠加（离线导出真贴图场景 + 分层地表实时合成）；场上标签（昵称+坦克名+血量条，恒定屏幕占比/半透明）；队伍色弹道轨迹线。**画质三档**（低/中/高，加载时选择，Tauri/移动端默认低）：低=客户端小地图地面（保留 3D 起伏）+ 尖首盒子代理车模 + 无建筑 + 抗锯齿关，中=烘焙底图+建筑，高=分层地表+建筑+抗锯齿；档位取 `?q=` > localStorage > 设备默认 |
 
@@ -159,8 +160,12 @@ python tools/compare_tank_glb.py --tank 9489 --render # 并排渲染三联图（
 **733/735** 与 BlitzKit 产物逐字节等价（含节点顺序与 POSITION/NORMAL/TEXCOORD_0/1/2/索引
 原始字节）；并排渲染逐辆轮廓 IoU ≈ 1.000。贴图**槽位集合与 BlitzKit 完全对齐**
 （731/735 图片数相同、无一辆缺槽位；baseColor 逐像素 89.8% 一致；alphaMode 一致 99.1%）。
-`normal` / `metallicRoughness` 两槽按 PBR 语义另行装配，与 BlitzKit 的指派不同属**有意为之**
-——其指派本身不成立，详见 [docs/local-model-export.md](docs/local-model-export.md)。
+两处按设计不同、且**逐通道实测推翻了"BlitzKit 指派不成立"的笼统说法**：`normal` 槽 BlitzKit
+取旧法线图（`images/<T>_NM`，DXT1），我们取 PBR 法线图（`images_pbr/<T>_NM`，BC5 + 重建 z）；
+`metallicRoughness` 槽必须把 `baseRMMap` 的 ch0/ch1 **搬到 G/B**（glTF 规定 G=粗糙度、
+B=金属度，原样返回会把金属度当粗糙度）——搬通道后 G 与 BlitzKit 1010/1011 一致，B（金属度）
+只有我们取到真值；`occlusion` 两边同取 `miscMap.R`（1011/1011 逐像素相同）。
+详见 [docs/local-model-export.md](docs/local-model-export.md) §4。
 
 #### 地图资产清单（`data/cache/maps/<space>.*`，运行时缓存）
 
@@ -359,6 +364,7 @@ compare        # 回放 vs API 累计对比
 combat         # 战斗事件时间线 + 射击推断（--json 含射击复现数据）
 loadout        # 单回放开局配置解析（队伍/坦克/初始血量/耐久加成/弹种表）
 dataset        # 权威回放数据集导出（metadata/settlement/diagnostics JSON）
+facets         # 消费方切面导出（playback / ai-review JSON；--parts 选择，供 WotbTools 等消费方投影）
 playback       # 全场实时回放（浏览器连续播放整场战斗）
 player         # WG API 玩家查询
 snapshot       # API 数据快照（take/diff）
@@ -375,6 +381,9 @@ fetch-models   # 全量预下载坦克 GLB 模型到 data/cache/models/（约 2G
 update-data    # 游戏版本更新后一键刷新全部数据（版本感知增量更新）
 config         # 查看/编辑配置
 usage          # Token 用量统计
+dump-map-index # 导出地图注册表 JSON（id → key/space/display，资产打包入口）
+dump-tank-data # 导出逐车 tank/{id}.json（装甲/配置/原点，资产打包入口）
+dump-shell-kinds # 导出全局弹种 id → 弹种表 JSON（射击复现弹种反解，静态资产面常量）
 dump-methods   # 逆向工具：转储 method38/8/type=32 原始包字节
 dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 ```
@@ -385,14 +394,14 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 |------|------|
 | `src/main.rs` / `src/lib.rs` | 入口：桌面 CLI 与库形态（移动端壳路径依赖本 crate，共用全部业务模块） |
 | `src/agent/` | LLM Agent：工具编排与自然语言对话 |
-| `crates/replay-core/` | **回放解析核心库**（零网络依赖，原生/WASM 双目标）：内部领域模型、事件解码、实时回放时间线、数据投影（结果/回放/评审，架构契约 v2：名人堂是消费方投影，非 Agent 能力） |
+| `crates/replay-core/` | **回放解析核心库**（零网络依赖，原生/WASM 双目标）：内部领域模型、事件解码、实时回放时间线、数据投影（结果/回放/评审，架构契约 v2：名人堂是消费方投影，非 Agent 能力）。消费方切面（`crates/replay-core/src/facets/`）**只做投影与互验、不下判断**——AI 切面附带原始未滤波证据（type=10 原始位姿与 prop2 炮塔、prop3 血量广播、method8 原始命中通知全变体、未钳制 HP）供消费方自建口径 |
 | `crates/replay-wasm/` | **浏览器通道入口**（契约第 6 节纯客户端回放）：.wotbreplay 字节 → 核心库 → 独立能力 JSON（`parseResult`/`parsePlayback`/`parseShotReplays`/`parseAiReview`）；前两者可选注入 `tankNamesJson`（车型名表），射击复现可选注入俯仰锚定表与弹种反解表；`scripts/build-wasm.ps1` 构建到 `frontend/public/wasm/` |
 | `src/replay/` | 兼容垫片（re-export 核心库）+ 服务端增值标注（loadout 弹种表，依赖 BlitzKit 坦克表 IO） |
 | `src/wargaming/` | WG API、坦克/模型/地图资产、3D 装甲查看器与实时回放前端 |
 | `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
 | `src/models/`、`src/data.rs` | 服务端数据模型（report/config）；运行时路径层（桌面/移动私有目录重定向） |
 | `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
-| `docs/` | 项目文档：[索引](docs/index.md)、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
+| `docs/` | 项目文档：[索引](docs/index.md)、解耦进度总览（[decoupling-status](docs/decoupling-status.md)）、本地模型自产（[local-model-export](docs/local-model-export.md)）、回放契约 v2（[replay-contract-v2](docs/replay-contract-v2-supremacy-type39.md)）、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
 | `tools/export_tank_glb.py` | 坦克 GLB 的**本机客户端**自产管线（并行于 BlitzKit 缓存，见上） |
 | `tools/compare_tank_glb.py` | 两来源坦克模型的对照器：数值等价回归 + 并排渲染差异图 |

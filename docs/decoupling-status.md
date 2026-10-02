@@ -17,6 +17,7 @@
 |---|---|---|
 | 两处 protobuf 字段号 bug（引擎起火率、履带地形阻力） | ✅ 已提交 `5032251` | 报告 A §8；`data/tank_data/*.json` 已重生成 |
 | **GLB 自产管线**（`model.glb` / `collision.glb`） | ✅ 可用，未接管 | `tools/export_tank_glb.py` + `tools/compare_tank_glb.py`；`collision` 735/735、`model` 733/735 **逐字节**等价（含 UV0/1/2 与节点顺序）；规则见 [local-model-export.md](local-model-export.md) §3 |
+| **GLB 贴图通道语义**（`baseRMMap` ch0→G 粗糙度、ch1→B 金属度） | ✅ 已修复（2026-10-02） | 修复前原样返回会让 glTF 把 G 采成金属度、R 位（glTF 不采样）白占；搬通道后 **G 与 BlitzKit 1010/1011 一致**，B（金属度）只有我们取到真值。逐通道实测同时更正了报告 B §3.3 的图源判断（对方 `normal` 实为 legacy `normalmap`、`occlusion` 与我们同取 `miscMap.R` 1011/1011），见 [local-model-export.md](local-model-export.md) §4 |
 | **封面图自产管线** | ✅ 可用，未接管 | `tools/export_tank_icons.py`；703/735（详见 §4） |
 | 全向炮塔拖拽角度无界累加 | ✅ 已提交 `b74774f` | 与解耦无关的顺带修复 |
 
@@ -139,8 +140,11 @@
 
 ### 已决
 
-- 贴图验收口径 = **semantic**（按 PBR 语义正确装配），不再提供"复刻 BlitzKit 指派"的口径
-  ——后者在 PBR 语义上不成立且 occlusion 的 R/B 通道无客户端来源，见 [local-model-export.md](local-model-export.md) §4。
+- 贴图验收口径 = **semantic**（按 PBR 语义正确装配），不再提供"复刻 BlitzKit 指派"的口径。
+  逐通道实测（2026-10-02）显示复刻没有意义：对方的 `normal` 取的是**旧法线图**
+  `images/<T>_NM`、`metallicRoughness` 的 R 位是近似常量、B（金属度）位对不上客户端任一张
+  贴图的任一通道，照抄等于把已知不成立的 PBR 语义写进产物；而 `occlusion` 两边**本已相同**
+  （都取 `miscMap.R`，1011/1011 逐像素一致），无需复刻。见 [local-model-export.md](local-model-export.md) §4。
 
 ## 6. 已定案、不再算待办（BlitzKit 侧不可复刻，留作对照基线）
 

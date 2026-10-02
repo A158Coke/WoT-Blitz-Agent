@@ -4,6 +4,11 @@
 > （约 80 篇，语料 Blitz 11.19.0 中国服 34 竞技场 + 受控实验回放）与本项目的逐条比对结论：
 > **采纳 / 驳回 / 本地验证裁决**，附双方证据。后续接手者据此防止误采或回退已定案。
 > 本地验证工具：`src/bin/verify_p1.rs`（`cargo run --release --bin verify_p1`，样本 `data/replay_samples/` 5 场真实战斗）。
+>
+> **2026-10-02 增补**：本项目已转为 WotbTools 的**上游解析方**（WASM 四入口 + 静态资产面，
+> 对方契约 `contracts/agent/replay-facets-v2.md`、版本锁定 `deploy/agent/source.json`）。
+> 面向消费方的切面进展见文末 §五；对方"外部交叉验证"文档
+> （`docs/research/replay/external-wot-blitz-agent-cross-validation.md`）已按本轮的证伪与新增证据同步刷新。
 
 ## 一、本地验证裁决（P1 分歧组）
 
@@ -105,7 +110,36 @@ type10 49B 布局/10Hz/米制；prop1=死亡边界；prop4 结构；prop3 0xFFFD
   哨兵族保留 raw）保持；PlayerSummary/ReplayDataset 新字段全部 Option。阶段 2（observations/
   simulation 拆层）未做。
 
+**面向消费方切面的进展（2026-10-01~10-02，已发布 v0.3.4–v0.3.8）：**
+
+WotbTools 的 canonical 流水线（Java `wotb-core` + 前端）需要 Agent 侧**只透出证据、不下判断**。
+这一轮改动全部由此驱动，字段均为**附加**（`AiReviewFacet` v1 / `PlaybackData` v2 版本不变）：
+
+- **包流自行分帧**（v0.3.4）：不再依赖 crate 对 payload 的严格反序列化——单个 pickle 形状偏差
+  （对方 fixture `tournament-14-14-example` 的 bool 字段为整数 0）曾让 `parsePlayback`/
+  `parseAiReview`/`parseShotReplays` 整场失败。改为自校验头部 + 连续 `[len][type][clock][payload]`
+  分帧，截断即报错；真实样本上与 crate 逐包等价（有单测）。
+- **原始 HP 证据**（v0.3.5）：`Damage.hp_raw`（method1 未钳制 u16——钳 0 会把"确知 HP=0"与
+  `0xFFFD/0xFFFE/0xFFFF` 终态哨兵混为一谈）；AoI 每次开段 Type5 物化 HP（偏移 51，仅战斗车辆）。
+- **method8 原始命中通知**（v0.3.5）：`HitNotice` 收集**全变体、不分类**——旧链只收 `args[8]==1`
+  的直击元素用于射击配对，其余结果被静默丢弃，而对方的掉血归属是 fail-closed 的（需要"窗口内
+  存在无法排除的冲突"这一路证据）。
+- **prop3 血量广播**（v0.3.6）：`Health` 事件来自 type=7 sub=3（≥14B，原始 u16 原样，不对短包写 0）。
+  method1 与 prop3 **不是镜像**：录像者自身血量常只走 prop3（对方冻结样本 3 场分别 4/17/11 条
+  录像者 prop3 无对应 method1），缺这一路会让录像者血量链断档。
+- **原始世界位姿与炮塔观测**（v0.3.7）：切面的 0.1s 网格是渲染滤波（AvatarFilter）输出，AoI 重入后
+  有收敛滞后（对方实测单帧偏差 276 m、约 5 s 收敛），**不能当位置证据**。新增 `poses`
+  （type=10 原始位姿，`attachmentParent≠0` 的挂接局部变换不收）与 `turrets`（type=7 prop2 原始 u16）。
+- **结算阵容完整性**（v0.3.8）：`roster_complete`（battle_results 花名册与战绩账号集合完全一致）
+  与 `author_vehicle_codename`（meta.json 原始 `playerVehicleName`）。前者是对方推导
+  「一方全员阵亡 → 全歼」与占点总量的前置门禁。
+- **争霸/攻防基地与 type39 瞄准帧**（契约 v2，见
+  [replay-contract-v2-supremacy-type39.md](replay-contract-v2-supremacy-type39.md)）：wrapper12/root11
+  基地状态（SPARSE UPDATE 逐行重建）+ wrapper13/root12 实时点数 + type39 7×f32 瞄准帧；
+  `PlaybackData.version` 1→2，消费端必须显式拒错版。**只消费回放真实广播，绝不按游戏规则推算比分。**
+
 **剩余待办：**
 - ReplayDataset 阶段 2（observations/simulation 拆层，面向 Java 消费）
 - method16/17/12 消费（模块/乘员时间线、弹药余弹、实时计数器——可选，视 UI 需求）
 - AoI 协议边界收紧 coverage（0.094~2s 短隐藏段，前端消费）
+- 上游版本同步：对方 `deploy/agent/source.json` 仍锁 v0.3.1，v0.3.4–v0.3.8 的切面增量待其升级

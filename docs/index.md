@@ -1,6 +1,6 @@
 # 文档索引
 
-> 全部 Markdown 文档的定位与状态一览（2026-09-28 整理）。入口永远是根目录 [README](../README.md)。
+> 全部 Markdown 文档的定位与状态一览（2026-10-02 整理）。入口永远是根目录 [README](../README.md)。
 
 ## 使用文档（随项目演进，保持最新）
 
@@ -8,8 +8,10 @@
 |---|---|
 | [README.md](../README.md) | 项目总入口：功能总览、快速开始、Web UI/CLI/打包/移动端、仓库结构 |
 | [回放射击事件逆向分析.md](../回放射击事件逆向分析.md) | 回放数据段**权威参考**：每个数据段的字节布局、已破解语义、本项目使用状态（使用中/辅助/未使用） |
-| [回放未解析数据清单.md](../回放未解析数据清单.md) | 主文档配套速查表：全部数据段使用状态一页总览 + 回退链/质量标记 + 死路清单 |
-| [docs/wotbtools-cross-reference.md](wotbtools-cross-reference.md) | 与 WotbTools 逆向结论的逐条裁决记录（采纳/驳回/互证），防止误采或回退已定案 |
+| [回放未解析数据清单.md](../回放未解析数据清单.md) | 主文档配套速查表：全部数据段使用状态一页总览 + 回退链/质量标记 + 死路清单（2026-10-02 已按主文档校正 method8 hash6 与 method0x1b 掩码两处） |
+| [docs/replay-contract-v2-supremacy-type39.md](replay-contract-v2-supremacy-type39.md) | **回放契约 v2**：争霸基地状态（sparse 重建）+ 实时点数 + type39 瞄准帧的字段语义、门禁与版本护栏 |
+| [docs/wotbtools-cross-reference.md](wotbtools-cross-reference.md) | 与 WotbTools 逆向结论的逐条裁决记录（采纳/驳回/互证），防止误采或回退已定案；**文末附面向消费方切面的最新进展** |
+| [docs/architecture-debt.md](architecture-debt.md) | 架构债与长期改动方案：已完成项（combat.rs 拆分、双路径合并）与仍留存的 tankViewer 目录拆分 |
 
 ## 方案文档（已执行完毕，留档）
 
@@ -17,6 +19,24 @@
 |---|---|
 | [docs/vue-migration-plan.md](vue-migration-plan.md) | ✅ 已完成（2026-09-28）：前端四页全部切流 Vue 3 SPA，嵌入 HTML 与 web/vendor 已退役 |
 | [docs/mobile_plan.md](mobile_plan.md) | ✅ 已完成（2026-09）：Android 双形态 APK 已分发；实际实现与方案的差异见文首注记 |
+
+## 对接消费方（WotbTools）的当前进度（2026-10-02）
+
+本项目的回放能力由 WotbTools 以 WASM/静态资产面消费（上游契约与版本锁定见对方仓
+`contracts/agent/replay-facets-v2.md`、`deploy/agent/source.json`）。面向消费方的**最新一轮**
+改动（已发布 v0.3.4–v0.3.8）：
+
+| 版本 | 内容 |
+|---|---|
+| v0.3.4 | 包流**自行分帧**，不再依赖 crate 对 payload 的反序列化——单个 pickle 形状偏差不再让整场失败 |
+| v0.3.5 | 原始 HP 证据：`Damage.hp_raw`（未钳制 u16，区分"血量归零"与"终态血量未知"）与 AoI 开段物化 HP；method8 原始命中通知（全变体、不分类，供消费方做 fail-closed 掉血归属） |
+| v0.3.6 | prop3 血量属性广播（录像者自身血量的唯一来源，与 method1 非镜像） |
+| v0.3.7 | AI 切面透出**原始未滤波**位姿（type=10）与炮塔观测（prop2）——切面 0.1s 网格是渲染滤波输出，不能当位置证据 |
+| v0.3.8 | 结算阵容完整性 `roster_complete` 与录像者车辆代号 `author_vehicle_codename` |
+
+切面字段均为**附加**（`AiReviewFacet` v1 / `PlaybackData` v2 版本不变）。
+对方 `deploy/agent/source.json` 仍锁 v0.3.1，这一轮增量待其升级固化。
+详见 [docs/wotbtools-cross-reference.md](wotbtools-cross-reference.md) §五。
 
 ## 可行性评估（待决策，2026-10-01）
 
@@ -34,7 +54,7 @@
 | 文档 | 状态 |
 |---|---|
 | [docs/decoupling-status.md](decoupling-status.md) | **解耦进度总览与剩余清单**（2026-10-02）：换源本体未动（运行期 0 引用、33 处消费点、资产面仍是 BlitzKit）；已落地 GLB 与封面两条自产管线；含待决策口径（数据模型塌缩 / 25 辆无显示名 / `is_collector` 快照 / `hull_traverse`）与"不再算待办"的 BlitzKit 侧差异 |
-| [docs/local-model-export.md](local-model-export.md) | ✅ 已实施（2026-10-01）：报告 B 的几何替代做成 `tools/export_tank_glb.py`，验收口径从"按可达节点求和"收紧到**逐字节 + 节点顺序**——`collision.glb` **735/735**、`model.glb` **733/735** 等价（余 2 辆为 BlitzKit 侧行为，见该文 §5）；贴图槽位与 BlitzKit 完全对齐（731/735 图片数相同、无缺槽位）。**不替换运行期数据源**（产物落 `data/cache/local_models/`） |
+| [docs/local-model-export.md](local-model-export.md) | ✅ 已实施（2026-10-01，2026-10-02 补 §4 贴图实测）：报告 B 的几何替代做成 `tools/export_tank_glb.py`，验收口径从"按可达节点求和"收紧到**逐字节 + 节点顺序**——`collision.glb` **735/735**、`model.glb` **733/735** 等价（余 2 辆为 BlitzKit 侧行为，见该文 §5）；贴图槽位与 BlitzKit 完全对齐（731/735 图片数相同、无缺槽位）。§4 逐通道实测推翻了报告 B §3.3 的图源判断，并定下 `baseRMMap` 的**通道搬迁**（ch0→G 粗糙度、ch1→B 金属度）。**不替换运行期数据源**（产物落 `data/cache/local_models/`） |
 
 ## 逆向分析报告（历史定稿，部分单点结论已被后续修正）
 

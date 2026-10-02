@@ -28,6 +28,32 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 const GRID_DT = 0.1
 
+// 场景静态 GLB 的曝光修整系数（只作用于 convMat 里的 MeshLambertMaterial，
+// 即建筑/岩石/栅栏/集装箱；坦克代理车与 GLB 车模各走各的路径，不受影响）。
+//
+// 缘起：整套光照（HemisphereLight 2.4 + DirectionalLight 3.0）是按坦克 GLB
+// （MeshStandardMaterial，有 metalness/roughness）调的，而场景是降级到 Lambert 渲染的
+// ——朝上/朝阳的面被整体推亮，最典型的是岩石（贴图 albedo 仅 87.5/255，却渲染到
+// 150/255 上下、四成像素越过 180 近白）。实测（各系数只改本项，机位与场景不变；
+// 4 块岩石 + 各 2 个建筑样本的平均）：
+//   系数   岩石亮度  岩石近白占比   红房子   集装箱   白栅栏
+//   1.00     151        40.1%        74      127      156
+//   0.75     134        26.9%        60      109      144   ← 取值
+//   0.60     121        16.4%        50       95      135
+//   0.50     110         7.8%        42       84      126
+//
+// 取值理由与已知代价：红房子在 1.00 时其实接近其 albedo 的正确曝光（88/255 → 74），
+// 所以**任何全局压暗都会连带伤到已正确的一侧**——岩石过曝的根因是朝上面吃满了天光，
+// 属光照动态范围问题，不是材质问题，全局旋钮无法两全。0.75 是"近白像素砍掉三分之一、
+// 暗侧再暗约 13%"的折中；想彻底消除近白可取 0.6（代价是红房子掉到 50，明显偏暗）。
+// 真正的解法是重平衡光照或补环境光遮蔽，但那会同时改变坦克观感，故不在前端单方面动。
+// 还原原状：设为 1。
+const SCENERY_LAMBERT_EXPOSURE = 0.75
+
+// 叶卡 alpha 裁切阈值。客户端 AlphaBlend 软边缘 + 0.05 低阈值会让近透明像素仍写
+// 深度（叶片互相遮挡 → 破洞/闪烁）；提到 MASK 量级消除，并保留软边缘。
+const CARD_ALPHA_CUT = 0.33
+
 // 三档渲染预设（面板与场景共用；桌面默认高，Tauri/移动 WebView 默认低）。
 // 抗锯齿/DPR/场景资源在渲染器与场景首次创建时一次性定型，加载后改档需整页刷新。
 export const QUALITY_PRESETS = {
@@ -405,18 +431,26 @@ export function initPlayback(container, store) {
   const isWaterName = (n) => /water|sea|lake|river|fountain/i.test(n || '');
 
   function makeBillboardMaterial(m) {
-    const occMean = (m.userData && m.userData.extras && m.userData.extras.occMean) || 0.8;
+    // GLB 的 material.extras 由 GLTFLoader 的 assignExtrasToUserData 用
+    // Object.assign 平铺进 userData（不是嵌在 userData.extras 下）——写成
+    // userData.extras.occMean 会恒取到 undefined，退化成 0.8 固定值，
+    // 使各材质"按自身贴图均值归一化遮挡"的标定失效。
+    const occRaw = m.userData && Number(m.userData.occMean);
+    const occMean = Number.isFinite(occRaw) && occRaw > 0 ? occRaw : 0.8;
+    // 每实体的 SH(L0) 染色：导出器把它写进 baseColorFactor（松树 1.7725 / 灌木 0.669）。
+    // 客户端是 albedo × 自身 SH(L0)——此前硬编码 1.77（正好等于松树的取值），
+    // 灌木因此亮 2.65×。改读材质自身取值。
+    const shTintRaw = m.color ? Number(m.color.r) : NaN;
+    const shTint = Number.isFinite(shTintRaw) && shTintRaw > 0 ? shTintRaw : 1.77;
     // 客户端着色器为伽马空间直采直写：关闭 sRGB 纹理解码（自定义着色器无输出
     // 重编码，sRGB 采样得到的线性值直出会整体发黑）
     if (m.map) { m.map.colorSpace = THREE.NoColorSpace; m.map.needsUpdate = true; }
     return new THREE.ShaderMaterial({
       uniforms: {
         map: { value: m.map || null },
-        uSH: { value: 1.77 },
+        uSH: { value: shTint },
         uOccMean: { value: occMean },
-        // 叶卡裁切阈值：客户端 AlphaBlend 软边缘 + 0.05 低阈值会让近透明像素仍写
-        // 深度（叶片互相遮挡 → 破洞/闪烁）；提到 MASK 量级消除，并保留软边缘
-        uAlphaCut: { value: 0.33 },
+        uAlphaCut: { value: CARD_ALPHA_CUT },
       },
       vertexShader: `
         attribute vec4 _corner;
@@ -441,6 +475,7 @@ export function initPlayback(container, store) {
         uniform sampler2D map;
         uniform float uSH;
         uniform float uOccMean;
+        uniform float uAlphaCut;
         varying vec2 vUv;
         varying float vOcc;
         void main() {
@@ -600,10 +635,13 @@ export function initPlayback(container, store) {
         const convMat = (m, isCard) => cachedSceneryMat(
           // alphaTest/transparent 必须进键：GLTFLoader 不暴露 alphaMode，同 name+map
           // 的 MASK 与 OPAQUE 材质只靠这两项区分，漏掉会串用（先建的赢）
+          // （`m.alphaMode` 当前恒为 undefined，保留仅作将来 GLTFLoader 补上时的保护）
+          // 染色值取原始分量而非 getHexString：后者会把 >1 的 SH(L0) 钳到 ffffff，
+          // 于是"同一张贴图、不同 SH 染色"的材质在键上无法区分（叶卡 uSH 就取它）。
           [isCard ? 'C' : 'M', m.name || '', m.map ? m.map.uuid : '',
-           m.color && m.color.getHexString ? m.color.getHexString() : '',
+           m.color ? [m.color.r, m.color.g, m.color.b].map((v) => v.toFixed(4)).join(',') : '',
            m.alphaMode || '', m.alphaTest ?? 0, !!m.transparent, m.opacity ?? 1,
-           (m.userData && m.userData.extras && m.userData.extras.occMean) || ''].join('|'),
+           (m.userData && m.userData.occMean) || ''].join('|'),
           () => (isCard ? makeBillboardMaterial(m) : (() => {
           // ST|（SpeedTree 树/灌木）：客户端 speedtree-materials-fp = albedo × SH，
           // 无场景光照——用不受光材质（染色值经 baseColorFactor→color 传入）
@@ -631,7 +669,11 @@ export function initPlayback(container, store) {
           const pseudoOpaque = !!m.transparent && (m.opacity ?? 1) >= 0.99;
           const nm = new THREE.MeshLambertMaterial({
             map: m.map || null,
-            color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+            // 曝光修整：这套光照是按坦克 GLB 调的，场景降级到 Lambert 后朝上面过曝
+            // （岩石贴图 87.5/255 却渲染到 137/255、27% 像素近白）。只作用于本函数
+            // 建出的场景材质，代理车/GLB 车模不受影响。系数表见 SCENERY_LAMBERT_EXPOSURE。
+            color: (m.color ? m.color.clone() : new THREE.Color(0xffffff))
+              .multiplyScalar(SCENERY_LAMBERT_EXPOSURE),
             transparent: !!m.transparent && !pseudoOpaque,
             opacity: m.opacity ?? 1,
             side: THREE.DoubleSide,

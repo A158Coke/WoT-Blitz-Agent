@@ -29,7 +29,16 @@ function clampProgress(value) {
 export function baseView(state, friendlyTeam) {
   const baseId = state?.baseId
   if (baseId === ASSAULT_BASE_ID) {
-    return { baseId, kind: 'assault', owner: 'neutral', capturing: null, progress: clampProgress(state?.captureProgress) }
+    const progress = clampProgress(state?.captureProgress)
+    return {
+      baseId,
+      kind: 'assault',
+      owner: 'neutral',
+      capturing: null,
+      // canonical 的显式 0 = 占领已重置：timeline 保留该事实，显示层映射为 reset/idle（null），
+      // 直到后续出现正进度（上游 WotbTools a2a24f15 同款修复）。
+      progress: progress != null && progress > 0 ? progress : null,
+    }
   }
   const capturingSide = state?.capturingTeam == null ? null : baseSide(state.capturingTeam, friendlyTeam)
   const capturing = capturingSide === 'neutral' ? null : capturingSide

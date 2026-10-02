@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { assaultHasObjective, baseSide, baseView, foldAssaultProgress, foldSupremacyTransitions } from './baseStatus.js'
 
+describe('baseStatus · 攻防基地 canonical 0 → 显示层 idle（上游 a2a24f15 同款）', () => {
+  it('captureProgress 显式 0 映射为 null（重置/未激活），正进度保留', () => {
+    const v0 = baseView({ baseId: 'BASE', captureProgress: 0 })
+    expect(v0.progress).toBeNull()
+    const v7 = baseView({ baseId: 'BASE', captureProgress: 7.3 })
+    expect(v7.progress).toBeCloseTo(7.3, 6)
+    const vNull = baseView({ baseId: 'BASE', captureProgress: null })
+    expect(vNull.progress).toBeNull()
+  })
+})
+
 describe('baseStatus', () => {
   it('阵营：友方队伍未知或无主时一律中立', () => {
     expect(baseSide(1, 1)).toBe('friendly')

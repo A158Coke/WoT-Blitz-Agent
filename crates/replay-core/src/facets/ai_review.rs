@@ -108,6 +108,21 @@ pub enum AiEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         hp_raw: Option<u16>,
     },
+    /// method8 伤害/命中反馈通知（原始全变体，不分类；字段缺失 = 载荷不足）。
+    /// eid = envelope 方法调用目标实体；分类口径（直击 / 未解码变体 / 短体）属于消费方。
+    HitNotice {
+        t: f32,
+        eid: u32,
+        payload_len: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shooter_eid: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        victim_eid: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        secondary: Option<u8>,
+    },
     /// 作者战斗反馈计数（0x0c；code 语义见 combat::feedback_code）
     Counter { t: f32, code: u8, count: u16, value: u16 },
     /// 累计伤害进度（prop10；相邻差 = 区段内伤害）
@@ -121,6 +136,7 @@ impl AiEvent {
             | AiEvent::Shot { t, .. }
             | AiEvent::Damage { t, .. }
             | AiEvent::Kill { t, .. }
+            | AiEvent::HitNotice { t, .. }
             | AiEvent::Counter { t, .. }
             | AiEvent::DamageTick { t, .. } => *t,
             AiEvent::Visibility { t_in, .. } => *t_in,
@@ -184,6 +200,17 @@ impl AiReviewFacet {
             if roster_eids.contains(&p.eid) {
                 events.push(AiEvent::Visibility { t_in: p.t_in, eid: p.eid, t_out: p.t_out, hp_raw: p.hp_raw });
             }
+        }
+        for h in &model.timeline.hit_notices {
+            events.push(AiEvent::HitNotice {
+                t: h.clock,
+                eid: h.eid,
+                payload_len: h.payload_len,
+                shooter_eid: h.shooter_eid,
+                victim_eid: h.victim_eid,
+                result: h.result,
+                secondary: h.secondary,
+            });
         }
         for c in &model.timeline.counters {
             events.push(AiEvent::Counter { t: c.clock, code: c.event_code, count: c.count, value: c.value });
@@ -379,5 +406,34 @@ mod tests {
         let presence = crate::replay::combat::collect_aoi_lifecycle(&packets2);
         assert_eq!(presence.len(), 1);
         assert_eq!(presence[0].hp_raw, None);
+    }
+
+    /// method8 原始通知：全变体透出（直击 / 非直击结果 / 短体），字段缺失 = None，非 type=8 包不收。
+    #[test]
+    fn hit_notices_keep_every_method8_variant() {
+        let method8 = |args: &[u8]| {
+            let mut p = vec![0u8; 12];
+            p[0..4].copy_from_slice(&0x44u32.to_le_bytes());
+            p[4..8].copy_from_slice(&8u32.to_le_bytes());
+            p[8..12].copy_from_slice(&(args.len() as u32).to_le_bytes());
+            p.extend_from_slice(args);
+            p
+        };
+        let mut direct = vec![0u8; 21];
+        direct[0..4].copy_from_slice(&0x55u32.to_le_bytes());
+        direct[4..8].copy_from_slice(&0x44u32.to_le_bytes());
+        direct[8] = 1;
+        direct[9] = 3;
+        direct[10] = 2;
+        let mut other = direct.clone();
+        other[9] = 1;
+        let short = vec![0x55u8, 0, 0, 0, 0x44];
+        let (a, b, c) = (method8(&direct), method8(&other), method8(&short));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(8, 1.0, &a), (8, 2.0, &b), (8, 3.0, &c), (7, 4.0, &a)];
+        let n = crate::replay::combat::collect_hit_notices(&packets);
+        assert_eq!(n.len(), 3, "type=7 包不收");
+        assert_eq!((n[0].shooter_eid, n[0].victim_eid, n[0].result, n[0].secondary), (Some(0x55), Some(0x44), Some(3), Some(2)));
+        assert_eq!(n[1].result, Some(1));
+        assert_eq!((n[2].payload_len, n[2].shooter_eid, n[2].victim_eid, n[2].result), (17, Some(0x55), None, None));
     }
 }

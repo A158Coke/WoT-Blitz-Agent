@@ -72,6 +72,8 @@ pub struct Timeline {
     pub kill_feed: Vec<KillFeedEvent>,
     /// AoI 可见窗口（Type33/Type5 物化开段、Type4 关段；敌方重入 = 多段）
     pub presence: Vec<AoiPresence>,
+    /// method8 伤害/命中反馈通知原始流（全变体，不分类；见 [`combat::HitNotice`]）
+    pub hit_notices: Vec<combat::HitNotice>,
     /// 作者战斗反馈计数（0x0c；code 语义见 [`combat::feedback_code`]）
     pub counters: Vec<FeedbackCounterEvent>,
     /// prop10 累计伤害进度（原始序列；相邻差 = 区段伤害）
@@ -151,6 +153,7 @@ impl ReplayModel {
 
         let ct = CombatTimeline::parse_packets(packets);
         let presence = combat::collect_aoi_lifecycle(packets);
+        let hit_notices = combat::collect_hit_notices(packets);
         let counters = combat::collect_feedback_counters(packets);
         // arena 流一次收集 {1,3,6}（comps/periods/kill_feed 三个消费方合用；
         // 高频 RELOAD_TIME 等子类型在收集期即丢弃）
@@ -266,6 +269,7 @@ impl ReplayModel {
                 deaths,
                 kill_feed,
                 presence,
+                hit_notices,
                 counters,
                 damage_progress,
                 periods,

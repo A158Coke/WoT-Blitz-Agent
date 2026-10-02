@@ -485,6 +485,48 @@ pub(crate) fn collect_direct_hits8(packets: &[(u32, f32, &[u8])]) -> Vec<DirectH
     direct_hits8
 }
 
+/// method8（0x08）伤害/命中反馈通知的**原始**形态：全变体、不分类（[`collect_direct_hits8`]
+/// 只收 `args[8]==1` 的直击元素并做射击配对，本收集器保留每一包供消费方自行分类）。
+/// envelope eid = 方法调用目标实体（通常 = 受击者）；args =
+/// `[shooter u32][victim u32][count u8][result u8][cmpIndex u8][hash6][tail…]`。
+/// 字段缺失（载荷不足）一律 None——不臆测；分类口径（直击 / 未解码变体 / 短体）属于消费方。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HitNotice {
+    pub clock: f32,
+    /// envelope 实体（方法调用目标）
+    pub eid: u32,
+    /// 包载荷总长（字节；含 12 字节 envelope 头）
+    pub payload_len: u32,
+    pub shooter_eid: Option<u32>,
+    pub victim_eid: Option<u32>,
+    /// args[9]：游戏命中结果枚举（与 type=32 segment 低字节同域）
+    pub result: Option<u8>,
+    /// args[10]：受击部件索引 cmpIndex
+    pub secondary: Option<u8>,
+}
+
+/// method8 原始通知收集（仅 type=8 实体方法包；按时钟排序，稳定保留包序）。
+pub fn collect_hit_notices(packets: &[(u32, f32, &[u8])]) -> Vec<HitNotice> {
+    let mut out: Vec<HitNotice> = Vec::new();
+    for (ptype, clock, p) in packets {
+        if *ptype != 8 || p.len() < 12 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != 0x08 { continue; }
+        let a = &p[12..];
+        let u32_at = |o: usize| (a.len() >= o + 4).then(|| u32::from_le_bytes([a[o], a[o + 1], a[o + 2], a[o + 3]]));
+        out.push(HitNotice {
+            clock: *clock,
+            eid: u32::from_le_bytes([p[0], p[1], p[2], p[3]]),
+            payload_len: p.len() as u32,
+            shooter_eid: u32_at(0),
+            victim_eid: u32_at(4),
+            result: a.get(9).copied(),
+            secondary: a.get(10).copied(),
+        });
+    }
+    out.sort_by(|x, y| x.clock.partial_cmp(&y.clock).unwrap());
+    out
+}
+
 /// type=32 警告/命中通知收集（作者/他人路径共用）。不排序：作者路径取窗口内最早一条（取后自排），
 /// 他人路径按 hash6 令牌精确配对与顺序无关——各自保持原语义。
 /// Type32 mobile `flag=0` 长体的**消耗品生命周期**事件（WotbTools PROVEN 移植）。

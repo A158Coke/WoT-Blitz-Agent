@@ -110,7 +110,7 @@ type10 49B 布局/10Hz/米制；prop1=死亡边界；prop4 结构；prop3 0xFFFD
   哨兵族保留 raw）保持；PlayerSummary/ReplayDataset 新字段全部 Option。阶段 2（observations/
   simulation 拆层）未做。
 
-**面向消费方切面的进展（2026-10-01~10-02，已发布 v0.3.4–v0.3.8）：**
+**面向消费方切面的进展（2026-10-01~10-03，已发布 v0.3.4–v0.3.9）：**
 
 WotbTools 的 canonical 流水线（Java `wotb-core` + 前端）需要 Agent 侧**只透出证据、不下判断**。
 这一轮改动全部由此驱动，字段均为**附加**（`AiReviewFacet` v1 / `PlaybackData` v2 版本不变）：
@@ -138,7 +138,15 @@ WotbTools 的 canonical 流水线（Java `wotb-core` + 前端）需要 Agent 侧
   基地状态（SPARSE UPDATE 逐行重建）+ wrapper13/root12 实时点数 + type39 7×f32 瞄准帧；
   `PlaybackData.version` 1→2，消费端必须显式拒错版。**只消费回放真实广播，绝不按游戏规则推算比分。**
 
+- **装填相位与有效时长**（v0.3.9）：`PlaybackData.reloads` 相位语义定稿 + 新增 `reload_effective`
+  （方法 0x23 = 当前生效完整装填配置时长）。**本轮唯一一条把"未消费"翻成"使用中"的协议面**，
+  详见下方「§六 装填数据裁决」。
+- **攻防基地 canonical 0**（上游同步）：对方 `baseStatus` 把攻防基地 canonical 0 在显示层映射为
+  idle——本仓 `frontend/src/scene/baseStatus.js` 已同步（`arena.rs` 探针口径不变：canonical 0
+  仍是"无基地数据"）。
+
 **剩余待办：**
+
 - ReplayDataset 阶段 2（observations/simulation 拆层，面向 Java 消费）
 - method16/17/12 消费（模块/乘员时间线、弹药余弹、实时计数器——可选，视 UI 需求）
 - AoI 协议边界收紧 coverage（0.094~2s 短隐藏段，前端消费）
@@ -147,6 +155,42 @@ WotbTools 的 canonical 流水线（Java `wotb-core` + 前端）需要 Agent 侧
   `coverage`（packet 计数与 `decodedPacketRatio`）、`finish_reason`、`unsupported_damage`
   （只有双方无数值），并实测确认 `Shot.game_hit_result` 与对方 Java `primaryResultRaw` 同义。
   其中"未钳零原始 HP"与"Visibility 当前 HP"已由 v0.3.5 的 `hp_raw` 覆盖。
-- 上游版本同步：**已解除**——对方 `deploy/agent/source.json` 现已 pin `v0.3.8` / `f35baa46`，
-  v0.3.4–v0.3.8 的切面增量已在其生产链路上（同日对方完成"服务器没有 parser"的客户端解析迁移
-  #447，本项目由此成为其唯一回放解析器）。
+- 上游版本同步：**已解除**——对方 `deploy/agent/source.json` 现已 pin `v0.3.9` / `b4e50e1`
+  （2026-10-03 核对），v0.3.4–v0.3.9 的切面增量已在其生产链路上（此前对方完成"服务器没有 parser"
+  的客户端解析迁移 #447，本项目由此成为其唯一回放解析器；装填条渲染对齐落在对方 PR #451）。
+
+## §六 装填数据裁决（2026-10-02 定稿，v0.3.9）
+
+**协议面（本仓）**：装填的唯一数据源是 updateArena（m0x30）**subtype 15/16/17**，
+条目 `{f1=eid, f2=相位码, f3=f32 秒, f4=计数}`，**仅本方全队**广播、由**相位转移**驱动推送
+（非固定采样）。相位码与计数语义：
+
+| 相位码 f2 | 语义 | 时长/计数 |
+|---|---|---|
+| 1 | 剩余弹数更新 | 无时长；与同车开火同刻（16/16 对齐） |
+| 3 | 整夹重装开始 | f3 = 整夹时长；消费侧用 `reload_effective`（0x23）校准刻度 |
+| 4 | 装填中途时长变更 | f3 = **新的完整有效时长**，不是倒计时 |
+| 5 | 就绪 / 取消 | **f4=1 是就绪标志，不是剩余弹数** |
+| 6 | 弹鼓逐发补槽 | f3 = 该发时长 |
+| 7 | 夹内推弹上膛 | f3 = 上膛间隔；**不补弹、不增加已装发数** |
+| 8 | **语义未定（禁猜）** | 无 f3/f4；样本 11 条全部来自 tank 21793「Sheridan Missile」，11/11 紧随该车 f2=3 前 0.5~3.2 s；渲染侧不解释 |
+
+样本实测分布（9 场 527 条）：`{1:16, 3:251, 4:74, 5:77, 6:47, 7:62, 8:11}`（相位码 **2 未出现**）。
+
+**除 f2=5 外，f4 = 该事件时刻的服务器剩余弹数快照**——与客户端 item_defs `<clip><count>`、
+BlitzKit `burst_size` 三方一致（63 车互验）。**subtype 16 = 引擎 `ReloadTimeUpdate`**：载荷
+`{field15:{eid, f2=1, f3=1|8}}`，与装填完成/开火**零相关**（110/140 条），原样透传、不消费——
+旧猜测"服务器下发每发装好通知"由此证伪（也没有完成时刻的剩余数快照：f2=3 完成 0/345 条）。
+
+**显示面（客户端行为，我们复刻的口径）**：满夹 `A|A|A`；开火 → 夹内推弹期为 `A|B|C`
+（B = 正在推弹的那一格，**期间不补弹**）→ 完成 `A|A|C`；弹鼓另有 f2=6 补槽 `A|A|B` → 满
+（期间再开火则取消）；空夹 → f2=3 整夹重装期间为**一整条不分割**（B）→ 完成 `A|A|A`；
+**开火会取消进行中的装填**。客户端服务器侧只在转移点说话，中间进度是**本地外推**
+（`reloadingShellTime0..5` × `gunReloadTimeFactor`/`reloadEqFactor`/`reloadBoost*`），
+回放拖动时由 `ReloadScreenForRewind` 重建状态——与我们"服务器 f4 快照重锚 + 本地外推"同构。
+
+**落地口径**：本仓切面 `reloads`（相位原样透传）+ `reload_effective`（0x23）；渲染在
+WotbTools `frontend/src/scene/reloadBar.js`（42 条单测，含整夹/弹鼓/取消/f4 漂移纠正/
+方法 35 作用域回归），本仓同构副本 `frontend/src/scene/reloadBar.js`。协议事实另记入
+[../回放射击事件逆向分析.md](../回放射击事件逆向分析.md) §3.8、§3.10 与
+[../回放未解析数据清单.md](../回放未解析数据清单.md)。

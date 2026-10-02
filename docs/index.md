@@ -1,6 +1,6 @@
 # 文档索引
 
-> 全部 Markdown 文档的定位与状态一览（2026-10-02 整理）。入口永远是根目录 [README](../README.md)。
+> 全部 Markdown 文档的定位与状态一览（2026-10-03 整理）。入口永远是根目录 [README](../README.md)。
 
 ## 使用文档（随项目演进，保持最新）
 
@@ -25,11 +25,11 @@
 > [docs/vue-migration-plan.md](vue-migration-plan.md) 里提到的 `scripts/package.ps1` /
 > `build-all.ps1` 同样只作历史记录——桌面便携包打包链已删除，前端仅本机调试用。
 
-## 对接消费方（WotbTools）的当前进度（2026-10-02）
+## 对接消费方（WotbTools）的当前进度（2026-10-03）
 
 本项目的回放能力由 WotbTools 以 WASM/静态资产面消费（上游契约与版本锁定见对方仓
 `contracts/agent/replay-facets-v2.md`、`deploy/agent/source.json`）。面向消费方的**最新一轮**
-改动（已发布 v0.3.4–v0.3.8）：
+改动（已发布 v0.3.4–v0.3.9）：
 
 | 版本 | 内容 |
 |---|---|
@@ -38,11 +38,12 @@
 | v0.3.6 | prop3 血量属性广播（录像者自身血量的唯一来源，与 method1 非镜像） |
 | v0.3.7 | AI 切面透出**原始未滤波**位姿（type=10）与炮塔观测（prop2）——切面 0.1s 网格是渲染滤波输出，不能当位置证据 |
 | v0.3.8 | 结算阵容完整性 `roster_complete` 与录像者车辆代号 `author_vehicle_codename` |
+| v0.3.9 | **装填数据补齐**：`PlaybackData.reloads` 相位语义定稿（m0x30 subtype 15/16/17：f2=1/3/4/5/6/7 与 f4 = 服务器剩余弹数快照）+ 新增 additive 字段 `reload_effective`（方法 0x23 = 当前生效完整装填配置时长）；上游同步对方 `baseStatus` 攻防基地 canonical 0 → idle |
 
 切面字段均为**附加**（`AiReviewFacet` v1 / `PlaybackData` v2 版本不变）。
 
-**对方侧状态（2026-10-02 核对）**：`deploy/agent/source.json` 已 pin **`v0.3.8` / `f35baa46`**
-（v0.3.4–v0.3.8 的切面增量已在生产链路上）；同日对方完成**客户端解析迁移**（A158Coke/WotbTools#447
+**对方侧状态（2026-10-03 核对）**：`deploy/agent/source.json` 已 pin **`v0.3.9` / `b4e50e1`**
+（v0.3.4–v0.3.9 的切面增量已在生产链路上）；此前对方完成**客户端解析迁移**（A158Coke/WotbTools#447
 「服务器没有 parser」）——服务端解析器模块整体删除，浏览器/Android 跑本项目的 WASM，**本项目由此成为
 该仓唯一的回放解析器**；AI 复盘走 WASM → canonical facts → `ClientAiReviewProjection`，parity 由
 `ClientAiProjectionParityTest` 进 required CI 常驻看护。
@@ -53,8 +54,12 @@
 `Shot.game_hit_result` 与对方 Java `primaryResultRaw` 同义；其中"未钳零原始 HP"已由 v0.3.5 的
 `hp_raw` 覆盖。
 
-回放前端同日与对方 3D 回放对齐（顶部基地状态条 + 3D 贴地圆环/圆盘贴花，与对方
-`utils/baseStatus.js`／`scene/baseDecal.js` 同构，口径唯一化在 `frontend/src/scene/baseStatus.js`）。
+**前端面收敛（2026-10-03）**：本项目不再维护自己的前端与桌面/移动端分发——
+Windows 便携包打包链与 Android（Tauri）形态已整体删除（见 [README §分发形态](../README.md)），
+`frontend/` 冻结留档；**后续前端开发一律在 WotbTools 仓库进行**，本项目只出 Rust 核心与
+v* tag 的 WASM 发行产物。装填条渲染（本轮与客户端逐状态对齐：整夹一条不分割、夹内推弹不补弹、
+弹鼓逐发补槽、开火取消、服务器 f4 快照重锚）落在 WotbTools `scene/reloadBar.js`（42 条单测），
+本仓同构副本见 `frontend/src/scene/reloadBar.js`。
 
 详见 [docs/wotbtools-cross-reference.md](wotbtools-cross-reference.md) §五。
 

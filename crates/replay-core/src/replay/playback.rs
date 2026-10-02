@@ -304,12 +304,17 @@ pub struct PlaybackData {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_crew_states: Vec<ModuleCrewStateEvent>,
 
-    /// 实时装填相位（arena subtype 15/17，**仅本方全队**；相位码 f2 与计数 f4 原样透传，
-    /// 消费侧只解释已闭环子集：f2=3/4/7、f4=1）。
+    /// 实时装填相位（arena subtype 15/16/17，**仅本方全队**；相位码 f2 与计数 f4 原样透传）。
+    /// 语义表见 `combat::arena` 的相位常量块：f2=1 剩余弹数更新 / 3 整夹重装 / 4 中途时长变更 /
+    /// 5 就绪（f4=1 是就绪标志，非剩余数）/ 6 弹鼓逐发补槽 / 7 夹内推弹（不补弹）/ 8 语义未定（禁猜，
+    /// 样本仅 tank 21793 发出、无 f3/f4）；**除 f2=5 外 f4 = 服务器剩余弹数快照**
+    /// （消费侧据此重锚，纠正本地外推漂移）。
     /// 契约 additive：同版本只加字段（消费方忽略未知键），不递增 playbacks 契约版本。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reloads: Vec<RawReloadPhase>,
-    /// 权威「当前生效完整装填时长」（方法 35，**仅本方**；additive：消费方忽略未知键）
+    /// 权威「当前生效完整装填时长」（方法 35/0x23，**仅本方**）：作整夹重装（f2=3）相位的
+    /// 时长刻度（相位 f3 只在相位起点给出，配置中途变化只能由本流补上）。
+    /// 契约 additive：消费方忽略未知键。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reload_effective: Vec<RawReloadDuration>,
     pub meta: PlaybackMeta,

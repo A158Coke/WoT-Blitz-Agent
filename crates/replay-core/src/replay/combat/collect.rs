@@ -373,7 +373,10 @@ pub(crate) struct ArenaWarning32 {
 /// 血量链降幅区间（参考 WotbTools PlaybackCombatReconstruction.deriveLosses）。
 pub(crate) struct DmgLoss { pub(crate) victim: u32, pub(crate) source: u32, pub(crate) t_prev: f32, pub(crate) t_cur: f32, pub(crate) dmg: u32, pub(crate) hp_cur: u16 }
 
-/// method29 (0x1d) 发射事件收集（作者/他人路径共用）：clock ≥5s，按 shooter 过滤 + shotId 去重（重复包保留首条），
+/// method29 (0x1d) 发射事件收集（作者/他人路径共用）：clock ≥5s，按 shooter 过滤 + shotId 去重。
+/// **Shot 身份 = unique shotId = 一次开火**：同一 shotId 后续再次出现 method29 仍属于同一发
+/// （11.20 China 边界样本在命中后出现第二条、位置/速度均变化的 method29），不能把 method29
+/// 包数量当射击次数；当前 Shot 级复现保留首条作为 primary launch。
 /// 按发射时刻排序。返回 (发射列表, 每射手首个 args<37 包的 args_len)——作者路径据此对**自己**的
 /// 短包 fail-fast，他人路径跳过（宽松）。共享扫描（keep=全真）下两路语义各自保留。
 pub(crate) fn collect_launches(
@@ -403,7 +406,7 @@ pub(crate) fn collect_launches(
             continue;
         }
         let shot_id = u32::from_le_bytes([a[4], a[5], a[6], a[7]]);
-        if !seen_shots.insert(shot_id) { continue; }   // 重复包保留首条（非数据伪造）
+        if !seen_shots.insert(shot_id) { continue; }   // 同一 Shot 的后续 method29；Shot 级 primary launch 保留首条
         let f = |o: usize| f32::from_le_bytes([a[o], a[o+1], a[o+2], a[o+3]]);
         out.push(LaunchEntry {
             t: *clock,
@@ -909,3 +912,43 @@ mod module_crew_tests {
         assert!(collect_module_crew_states(&packets).is_empty());
     }
 }
+
+#[cfg(test)]
+mod launch_identity_tests {
+    use super::*;
+
+    fn method29(shooter: u32, shot_id: u32, point: [f32; 3], vel: [f32; 3]) -> Vec<u8> {
+        let mut args = vec![0u8; 37];
+        args[0..4].copy_from_slice(&shooter.to_le_bytes());
+        args[4..8].copy_from_slice(&shot_id.to_le_bytes());
+        args[8] = 4;
+        for (i, v) in point.into_iter().chain(vel).enumerate() {
+            let off = 9 + i * 4;
+            args[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let mut p = vec![0u8; 12];
+        p[4..8].copy_from_slice(&0x1du32.to_le_bytes());
+        p[8..12].copy_from_slice(&(args.len() as u32).to_le_bytes());
+        p.extend_from_slice(&args);
+        p
+    }
+
+    #[test]
+    fn repeated_method29_with_same_shot_id_is_one_shoot_and_keeps_primary_launch() {
+        let first = method29(7, 45509301, [99.82513, 25.24507, 20.54626], [-616.206, -2.696, -287.546]);
+        let continuation = method29(7, 45509301, [-51.16804, 24.38959, -49.91319], [-668.906, -87.832, 85.235]);
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (8, 110.26195, &first),
+            (8, 110.35225, &continuation),
+        ];
+
+        let (launches, short) = collect_launches(&packets, |_| true);
+        assert!(short.is_empty());
+        assert_eq!(launches.len(), 1, "同一 shotId 的后续 method29 不得增加射击数");
+        assert_eq!(launches[0].shot_id, 45509301);
+        assert!((launches[0].t - 110.26195).abs() < 1e-5);
+        assert_eq!(launches[0].point, [99.82513, 25.24507, 20.54626]);
+        assert_eq!(launches[0].vel, [-616.206, -2.696, -287.546]);
+    }
+}
+

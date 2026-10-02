@@ -44,6 +44,26 @@
 5/5 场最佳匹配实体（作者车）prop9(raw as **rad**) vs 本车 prop2 coarse10 偏航：median |Δ| = **0.0015~0.0016 rad（0.09°）**；
 值域 [−3.12, +3.13] = 恰 ±π。prop9 = 炮塔相对偏航镜像（非俯仰、非角度制）确凿。A2 修复（俯仰回退改 method36 field2）成立。
 
+### B6. 同一 shotId 多 interaction —— **Shot 计数按开火，不按装甲交互** ✅已改码
+
+2026-10-02 新增 11.20 China Kranvagn 边界样本：作者一发 `shotId=45509301` 在约
+110.35s 对同一 victim 产生两条不同 type=32 segment，同时 method38 给出
+`0x0028`（ricochet + non-penetration）与 `0x0020`（non-penetration）。
+method8 在同钟重复广播两份相同事件，`hash6=0aa36c50a15c`；两条 type=32 中仅一条
+具有同一 hash6，另一条 hash6 不同。
+
+结论分两层：
+
+- **已闭合**：`unique shotId = 一次开火 / 一个 Shot`；同一 Shot 内可出现多个装甲交互。
+  `collect_launches` 继续按 shotId 去重，首条 method29 是 Shot 级 primary launch，后续同
+  shotId method29 **不得增加射击数**。
+- **已闭合**：作者严格路径不能只按 `victim + time` 要求所有 type=32 segment 相同；
+  优先用已验证的 `method8.hash6 ↔ type32.hash6` 同事件令牌关联，token 证据不足时仍保持
+  fail-fast。
+- **PARTIAL / 禁猜**：该样本同 shotId 在命中附近出现第二条、位置与速度均变化的 method29，
+  强烈符合跳弹/续飞段，但单样本不足以把“后续 method29”公开定名为 trajectory continuation。
+  当前只保留第一条作为 primary launch，不新增公开多段弹道 DTO。
+
 ## 二、直接采纳（WotbTools PROVEN，按用户指示免验证）
 
 | 项 | 结论 | 落地 |

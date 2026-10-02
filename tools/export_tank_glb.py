@@ -28,15 +28,15 @@ BlitzKit 契约要点（对照基准）：
   * `collision.glb` 按**装甲板号连续 run** 切节点（命名 `<part>_armor_<N>`），与客户端三角序一致；
   * NaN 规范化为 `0x7fc00000`；索引按最大索引自适应 uint16/uint32。
 
-贴图槽位两种口径（`--texture-mode`）：
+贴图槽位口径（`--texture-mode`）：
   * `semantic`（缺省，推荐）：按 PBR 语义正确装配——
-    baseColor←baseColorMap、normal←baseNormalMap（BC5 重建 z）、
-    metallicRoughness←baseRMMap（G=粗糙度、B=金属度）、occlusion←miscMap.R；
-  * `semantic`（缺省，推荐）：baseColor←baseColorMap/albedo、normal←baseNormalMap/normalmap
-    （BC5 重建 z）、metallicRoughness←baseRMMap（G=粗糙度、B=金属度）、occlusion←miscMap.R；
+    baseColor←`baseColorMap`（老式车退 `albedo`）、normal←`baseNormalMap`（老式车退 `normalmap`，
+    BC5 双通道重建 z）、metallicRoughness←`baseRMMap`（**搬通道**：ch0→G 粗糙度、ch1→B 金属度；
+    glTF 采样 G/B，原样返回会把金属度当粗糙度）、occlusion←`miscMap.R`；
   * `none`：不导出贴图（只比几何时用，最快）。
-  注：**不提供"复刻 BlitzKit 指派"的口径**——其指派在 PBR 语义上不成立且 occlusion 的 R/B
-  通道无客户端来源、无法逐字节复现（见 docs/feasibility-glb-local-export.md §3.3）。
+  注：**不提供"复刻 BlitzKit 指派"的口径**——其指派在 PBR 语义上不成立，且逐通道实测与
+  报告 B §3.3 的描述也**不符**（BK 的 normal 实为 legacy `normalmap`、MR.G 实为 `baseRMMap.ch0`、
+  occlusion 与我们同为 `miscMap.R`），复刻只会误导；见 docs/local-model-export.md §4。`
 
 用法：
     python tools/export_tank_glb.py --tank 9489 --tank 7169      # 指定若干 tank_id
@@ -501,11 +501,12 @@ class Glb:
 #    缺内联时再走命名约定 `3d/Tanks/<Nation>/images/<材质名去 _mtr>`（`T_34_mtr` → `images/T-34`、
 #    `T_34_track_mtr` → `images/T-34_track`），后缀 `_NM` 法线、`_RM`/`_MISC`/`_MASK`。
 #
-# 关于 `--texture-mode blitzkit`（复刻 BlitzKit 现行指派）—— **已移除**：报告 B §3.3 已定性
-# 其指派在 PBR 语义上不成立（normal←miscMap.R 灰度、metallicRoughness←legacy normalmap、
-# occlusion←baseRMMap.R），且 occlusion 的 R(≈0.02)/B 两通道**没有客户端来源**、无法逐通道
-# 复现，因此该口径永远无法做到逐字节一致，保留只会误导。要看 BlitzKit 的实际贴图直接看它的
-# 产物即可（`tools/compare_tank_glb.py` 的并排渲染就是干这个的）。
+# 关于 `--texture-mode blitzkit`（复刻 BlitzKit 现行指派）—— **已移除**：其指派在 PBR 语义上
+# 不成立，且逐通道实测（E-100 / `E_100_mtr`）显示报告 B §3.3 的描述也不准：BK 的 `normal`
+# 实为 **legacy `normalmap`（旧法线图 DXT1）**、`MR.G` 实为 `baseRMMap` 的 **ch0**、
+# `occlusion` 与我们一样取 `miscMap.R`（全量 1011/1011 一致）；真正对不拢的是 **BK 的 MR.B
+# （金属度位）**——与客户端任一张贴图的任一通道都差 26+。复刻这种指派没有意义；要看 BlitzKit
+# 的实际贴图直接看它的产物（`tools/compare_tank_glb.py` 的并排渲染就是干这个的）。
 
 
 def _legacy_base(material_name: str | None, stem: str) -> str:
@@ -622,7 +623,17 @@ def _prep_texture(arr: np.ndarray, slot: str) -> np.ndarray | None:
         z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
         return np.dstack([rgb[:, :, 0], rgb[:, :, 1], (z * 127.5 + 127.5).astype(np.uint8)])
     if slot == "metallicRoughness":
-        return rgb  # BC5 G=粗糙度、B=金属度，正是 glTF 语义
+        # DAVA 的 `baseRMMap` 是 BC5 **双通道**：ch0=粗糙度、ch1=金属度（解码后落在 R/G 位、
+        # B 位补零）。glTF 的 `metallicRoughnessTexture` 规定 **G=粗糙度、B=金属度**，
+        # 所以必须把这两个通道**搬到 G/B**——原样返回会让 glTF 拿 ch1 当粗糙度、
+        # 并把 R 位（glTF 不采样）当数据白扔。实测 BlitzKit 也是把 ch0 放进 G。
+        # 判定是否双通道：B 位恒 0（BC5 解码补零的特征，与 normal 同一判据）。
+        if arr.shape[2] >= 3 and arr[:, :, 2].max() == 0:
+            out = np.zeros_like(rgb)
+            out[:, :, 1] = arr[:, :, 0]      # ch0 → G（粗糙度）
+            out[:, :, 2] = arr[:, :, 1]      # ch1 → B（金属度）
+            return out
+        return rgb  # 三通道来源（老式车的 images/<T>_RM）：通道语义未证实，原样保留
     if slot == "occlusion":
         return np.dstack([rgb[:, :, 0]] * 3)  # AO 在 R 通道
     return rgb

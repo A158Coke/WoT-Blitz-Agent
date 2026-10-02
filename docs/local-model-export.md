@@ -134,16 +134,37 @@ rust-embed 有 `#[exclude = "cache/**"]`，**不会**把这几百 MB 嵌进 exe�
 
 ## 4. 贴图：移交语义口径，不提供"复刻 BlitzKit 指派"
 
-`--texture-mode` 只有 `semantic`（缺省）/`none`。**刻意不提供**复刻 BlitzKit 指派的口径：
-报告 B §3.3 已定性其指派在 PBR 语义上不成立（normal←miscMap.R 灰度、metallicRoughness←
-legacy normalmap、occlusion←baseRMMap.R），且 occlusion 的 R(≈0.02)/B 两通道**没有客户端
-来源**，故该口径永远无法逐字节一致，留着只会误导。要看 BlitzKit 的实际贴图，直接看它的
-产物或本工具的三联图即可。
+`--texture-mode` 只有 `semantic`（缺省）/`none`。**刻意不提供**复刻 BlitzKit 指派的口径：其指派
+在 PBR 语义上不成立（详见 §4.2 的逐通道实测），且 `occlusion` 的 R/B 两通道没有客户端来源，
+复刻不可能逐字节一致，留着只会误导。要看 BlitzKit 的实际贴图，直接看它的产物或本工具的三联图。
 
-语义口径装配：`baseColor ← baseColorMap/albedo`、`normal ← baseNormalMap/normalmap`
-（BC5 双通道按 glTF 约定重建 z）、`metallicRoughness ← baseRMMap`（BC5 G=粗糙度、B=金属度）、
-`occlusion ← miscMap.R`。BC1/2/3/5 解码自写（含 DAVA 把 BC5 装在 DXT5 fourcc 里的情形，
-`pfFlags` bit31 置位），PVR3 复用地图导出器的解码器。
+语义口径装配：
+
+| glTF 槽 | 客户端来源 | 通道处理 |
+|---|---|---|
+| `baseColorTexture` | `baseColorMap` /（老式车）`albedo` | 保留 alpha（是否真用由"alpha 是否有变化"决定） |
+| `normalTexture` | `baseNormalMap` /（老式车）`normalmap` | BC5 双通道按 glTF 约定重建 z |
+| `metallicRoughnessTexture` | `baseRMMap` | §4.1 的通道搬迁（**必须搬**，不能原样返回） |
+| `occlusionTexture` | `miscMap.R` | R → 三通道灰度 |
+
+BC1/2/3/5 解码自写（含 DAVA 把 BC5 装在 DXT5 fourcc 里的情形，`pfFlags` bit31 置位），
+PVR3 复用地图导出器的解码器。
+
+### 4.1 `baseRMMap` 的通道语义与摆放（实测）
+
+客户端 `baseRMMap` 是 BC5 双通道（解码后落在 R/G 位、B 位补零）。**哪个通道是粗糙度**用分布
+特征判别（金属度图是物理二值量，粗糙度是连续量）：
+
+| 车 | ch0 极值(<0.1 或 >0.9)占比 | ch1 极值占比 | ch1 的极值里 0/1 占比 | 结论 |
+|---|---|---|---|---|
+| E-100 | 0.156 | 0.692 | **1.00** | ch1 二值 → **ch1 = 金属度**、ch0 = 粗糙度 |
+| IS-7 | 0.164 | 0.615 | 1.00 | 同上 |
+| Progetto | 0.179 | 0.705 | 1.00 | 同上 |
+
+glTF 规定 `metallicRoughnessTexture` **G=粗糙度、B=金属度**，所以必须**搬通道**
+（ch0→G、ch1→B）。⚠️ 早期实现原样返回 `(ch0, ch1)`，导致 glTF 采到 G=ch1（把金属度当粗糙度）、
+且 R 位（glTF 不采样）白占——全量实测**我们的 G 与 BlitzKit 在 1011/1011 上都不一致**；
+搬通道后 **G 一致 1010/1011**。三通道来源（老式车的 `images/<T>_RM`）通道语义未证实，仍原样保留。
 
 ### 4.2 与 BlitzKit 的贴图一致度（全量实测）
 
@@ -155,16 +176,25 @@ legacy normalmap、occlusion←baseRMMap.R），且 occlusion 的 R(≈0.02)/B �
 | 槽位 | 一致 | 接近 | 不同 | 说明 |
 |---|---|---|---|---|
 | `baseColorTexture` | **1414 / 1575**（89.8%） | 46 | 115 | 主要同源；残差见下 |
-| `occlusionTexture` | **1011 / 1011**（100%） | 0 | 0 | 实测两边同图——见下 |
-| `normalTexture` | 554 / 1568 | 2 | **1012** | **按设计不同**：BlitzKit 用 `miscMap.R` 灰度，我们用真法线 |
-| `metallicRoughnessTexture` | 0 / 1011 | 0 | **1011** | **按设计不同**：BlitzKit 用 legacy `normalmap`，我们用 `baseRMMap` |
+| `occlusionTexture` | **1011 / 1011**（100%） | 0 | 0 | 两边都取 `miscMap.R` 灰度（单点 MAD 0.16–0.42） |
+| `normalTexture` | 554 / 1568 | 2 | **1012** | **按设计不同**：BlitzKit 取**旧法线图** `images/<T>_NM`（DXT1），我们取 PBR `images_pbr/<T>_NM`（BC5 + 重建 z） |
+| `metallicRoughnessTexture` | G 通道 **1010/1011** / B 通道 0/1011 | — | — | G（粗糙度位）两边都取 ch0 ✅；**B（金属度位）只有我们取到真值**（ch1），BlitzKit 的 B 对不上客户端任一张贴图任一通道（最接近也差 26+） |
 
-即：真正的分歧只在 `normal` 与 `metallicRoughness` 两槽，且都是 BlitzKit 指派不成立所致
-（报告 B §3.3）。附带一条对报告 B 的修正：其 §3.3 记 `occlusion ← baseRMMap.R`，但全量实测
-**1011/1011 与我们的 `miscMap.R` 逐像素相同**（E-100 单点 MAD 0.32），故该行的"图源"判断
-在 E-100/IS-7 两辆之外不成立。
+**逐通道实测**（E-100 / `E_100_mtr`，把 BK 每个输出通道与客户端各贴图各通道逐一比对）：
 
-`normal` 那 554 个"一致"也有确定解释：**551/554 是老式车**——老式车没有 `miscMap`，
+| BK 的槽 | 实测来源 |
+|---|---|
+| `baseColor` | `E_100_BC` 三通道（R/G/B MAD 0.17/0.21/0.20）✅ |
+| `normal` | **legacy `images/E-100_NM`（DXT1 旧法线）三通道**（0.34/0.40/0.74） |
+| `MR` | G = `E_100_RM` 的 **ch0**（0.48）✅；R ≈ 常量 5；**B 对不上任何通道**（最接近 27.7） |
+| `occlusion` | `E_100_MISC` 的 R 通道灰度（0.42）✅ |
+
+⚠️ **对报告 B §3.3 的更正**：该表记 `normalTexture ← miscMap.R 灰度`，**实测不成立**——
+`miscMap` 的任一通道与 BK 的 `normal` 都差 60+，BK 的 `normal` 实为 legacy `normalmap`；
+其记的 `occlusion ← baseRMMap.R` 同样不成立（全量 1011/1011 与 `miscMap.R` 一致）。
+`metallicRoughness ← legacy normalmap` 也不准确：BK 的 MR.G 实为 `baseRMMap` 的 ch0。
+
+`normal` 那 554 个"一致"有确定解释：**551/554 是老式车**——老式车没有 PBR 法线槽，
 BlitzKit 与我们都退到 legacy `normalmap` 同一份文件，所以一致。
 
 **baseColor 残差全部来自 PVR3 来源的色贴图**（157 个"不同/接近"），且**成因已定**：同一张图，

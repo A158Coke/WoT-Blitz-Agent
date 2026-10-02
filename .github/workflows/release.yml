@@ -2,35 +2,95 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+          fetch-depth: 0
 
-      - name: 校验 tag 与 VERSION 一致
+      - name: 解析 VERSION 并判断是否需要发布
+        id: version
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
-          $expected = "v$version"
-          $tag = '${{ github.ref_name }}'
-          if ($tag -ne $expected) {
-            throw "Release tag mismatch: tag=$tag, VERSION=$version, expected=$expected"
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "VERSION 必须是 SemVer x.y.z，当前为 '$version'"
           }
 
-      - name: 发布前测试（坏 tag 不出包）
+          $tag = "v$version"
+          $sha = $env:GITHUB_SHA
+          $eventName = $env:GITHUB_EVENT_NAME
+          $before = '${{ github.event.before }}'
+
+          git fetch --tags --force
+
+          $versionChanged = $false
+          if ($eventName -eq 'workflow_dispatch') {
+            $versionChanged = $true
+          } elseif ($before -and $before -notmatch '^0+$') {
+            git diff --quiet $before $sha -- VERSION
+            if ($LASTEXITCODE -eq 1) {
+              $versionChanged = $true
+            } elseif ($LASTEXITCODE -gt 1) {
+              throw "无法判断 VERSION 是否发生变化"
+            }
+          }
+
+          git show-ref --verify --quiet "refs/tags/$tag"
+          $tagExists = ($LASTEXITCODE -eq 0)
+          $tagSha = ''
+          if ($tagExists) {
+            $tagSha = (git rev-list -n 1 $tag).Trim()
+          }
+
+          $shouldRelease = $false
+          if ($versionChanged) {
+            if ($tagExists -and $tagSha -ne $sha) {
+              throw "VERSION=$version 已变更，但 $tag 已存在且指向 $tagSha；禁止移动或复用已发布 tag"
+            }
+            $shouldRelease = $true
+          } elseif (-not $tagExists) {
+            # bootstrap/self-heal：VERSION 已在 main，但对应 tag 尚未发布。
+            $shouldRelease = $true
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "tag_exists=$($tagExists.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+          if ($shouldRelease) {
+            Write-Host "Release requested: VERSION=$version, tag=$tag, sha=$sha"
+          } else {
+            Write-Host "No release: VERSION unchanged and $tag already exists."
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.should_release == 'true'
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.should_release == 'true'
+
+      - name: 发布前测试（坏版本不出包）
+        if: steps.version.outputs.should_release == 'true'
         run: cargo test --workspace
 
       - name: 解析 wasm-bindgen 版本（随 Cargo.lock）
+        if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         id: wbgver
         run: |
@@ -38,8 +98,8 @@ jobs:
             ForEach-Object { $_.Context.PostContext } | Select-String 'version').ToString() -replace '.*"(.*)".*', '$1'
           "version=$v" >> $env:GITHUB_OUTPUT
 
-      # cargo install 每次约 5-10 分钟——按版本缓存二进制，命中即跳过安装
       - name: wasm-bindgen-cli 二进制缓存
+        if: steps.version.outputs.should_release == 'true'
         id: wbg-bin
         uses: actions/cache@v4
         with:
@@ -47,35 +107,51 @@ jobs:
           key: wasm-bindgen-cli-${{ steps.wbgver.outputs.version }}-windows
 
       - name: 安装 wasm-bindgen-cli（未命中缓存时）
-        if: steps.wbg-bin.outputs.cache-hit != 'true'
+        if: steps.version.outputs.should_release == 'true' && steps.wbg-bin.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version ${{ steps.wbgver.outputs.version }} --locked
 
-      # 仅构建 WASM 产物：本仓已不再发布桌面 exe（2026-10 移除打包链），前端
-      # （frontend/）冻结且不参与发布——发布链只依赖 Rust 核心，避免冻结前端
-      # 的构建失败挡住 WoTBTools 依赖的发行产物。
       - name: WASM 产物构建
+        if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         run: |
           cargo build -p wotb-replay-wasm --release --target wasm32-unknown-unknown
           wasm-bindgen target\wasm32-unknown-unknown\release\wotb_replay_wasm.wasm `
             --out-dir frontend\public\wasm --target web --out-name wotb_replay_wasm
 
-      - name: WASM 消费产物打包（供 WotBTools 直接取用，免自建）
+      - name: WASM 消费产物打包
+        if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         run: |
+          $tag = '${{ steps.version.outputs.tag }}'
           New-Item -ItemType Directory -Force -Path release/wasm | Out-Null
           Copy-Item frontend/public/wasm/wotb_replay_wasm.js release/wasm/
           Copy-Item frontend/public/wasm/wotb_replay_wasm_bg.wasm release/wasm/
-          $sha = (git rev-parse HEAD).Trim()
-          @{ upstream_commit = $sha
-             tag = '${{ github.ref_name }}'
+          @{ upstream_commit = $env:GITHUB_SHA
+             tag = $tag
              bindgen = (wasm-bindgen --version) } | ConvertTo-Json |
             Set-Content release/wasm/fingerprint.json
           Compress-Archive -Path release/wasm/* `
-            -DestinationPath "wotb-replay-wasm-${{ github.ref_name }}.zip" -Force
+            -DestinationPath "wotb-replay-wasm-$tag.zip" -Force
 
-      - name: 发布
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            wotb-replay-wasm-*.zip
+      - name: 创建 release tag
+        if: steps.version.outputs.should_release == 'true' && steps.version.outputs.tag_exists != 'true'
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          git tag $tag $env:GITHUB_SHA
+          git push origin "refs/tags/$tag"
+
+      - name: 发布 GitHub Release
+        if: steps.version.outputs.should_release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $asset = "wotb-replay-wasm-$tag.zip"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $asset --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag $asset --verify-tag --title $tag --generate-notes --repo $env:GITHUB_REPOSITORY
+          }

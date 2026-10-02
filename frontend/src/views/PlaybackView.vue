@@ -7,6 +7,7 @@ import { useRoute } from 'vue-router'
 import { initPlayback, QUALITY_PRESETS } from '../scene/playbackScene.js'
 import { createPlaybackStore } from '../scene/playbackStore.js'
 import PlaybackTimeline from '../components/PlaybackTimeline.vue'
+import BaseStatusBar from '../components/BaseStatusBar.vue'
 import { PLAYBACK_SPEEDS, usePlaybackTransport } from '../composables/usePlaybackTransport.js'
 import { formatPlaybackClock } from '../utils/playbackClock.js'
 
@@ -30,9 +31,6 @@ const transport = usePlaybackTransport({
 const elapsedText = computed(() => formatPlaybackClock(store.time - store.startTime))
 const totalText = computed(() => formatPlaybackClock(store.duration - store.startTime))
 
-// 争霸点数上限（满值即胜利分）
-const POINTS_MAX = 1000
-const pointsPct = (v) => (v == null ? 0 : Math.max(0, Math.min(100, (v / POINTS_MAX) * 100)))
 // 紧凑血量数值（万位以上折算 k，避免顶栏被长数字撑开）
 function fmtHp(n) {
   const v = Math.max(0, Math.round(n || 0))
@@ -88,31 +86,17 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
           <em class="hpnum hpnum-e">{{ fmtHp(store.hpEnemy) }} / {{ fmtHp(store.hpEnemyMax) }}</em>
         </span>
       </div>
-      <!-- 行 3：争霸实时点数（上限 1000）。数值在外侧、两条紧贴中线——
-           两条均自中线向外增长，左右完全对称；整行 flex 居中，宽度变化不漂移。 -->
-      <div v-if="store.pointsFriend != null || store.pointsEnemy != null" class="tb-row tb-points">
-        <b class="pdv pdv-f" :title="'己方点数 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">{{ store.pointsFriend ?? '—' }}</b>
-        <span class="pointsbar pb-f" :title="'己方 ' + (store.pointsFriend ?? 0) + ' / ' + POINTS_MAX">
-          <i :style="{ width: pointsPct(store.pointsFriend) + '%' }"></i>
-        </span>
-        <span class="pdiv"></span>
-        <span class="pointsbar pb-e" :title="'敌方 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">
-          <i :style="{ width: pointsPct(store.pointsEnemy) + '%' }"></i>
-        </span>
-        <b class="pdv pdv-e" :title="'敌方点数 ' + (store.pointsEnemy ?? 0) + ' / ' + POINTS_MAX">{{ store.pointsEnemy ?? '—' }}</b>
-      </div>
-      <!-- 行 4：攻防战 / 遭遇战单基地（目标存在性独立于占领活动）。单目标无双侧之分，
-           数值在外、条居中，整行 flex 居中——与上面两行同一视觉系。 -->
-      <div v-if="store.assaultObjective" class="tb-row tb-assault">
-        <template v-if="store.assaultProgress != null">
-          <b class="objv" :title="'基地占领进度 ' + store.assaultProgress + ' / 100'">{{ store.assaultProgress }}%</b>
-          <span class="objbar" :title="'基地占领进度 ' + store.assaultProgress + ' / 100'">
-            <i :style="{ width: store.assaultProgress + '%' }"></i>
-          </span>
-        </template>
-        <em v-else class="objv objv-none" title="目标存在，但当前无占领进度广播——0 与未发生不同">无占领</em>
-        <em class="objtag">基地</em>
-      </div>
+      <!-- 行 3：争霸实时点数与单基地占领进度已移到「基地状态条」（见下），
+           与 3D 贴地标记共用 scene/baseStatus.js 的同一口径 -->
+    </div>
+
+    <!-- 基地状态条：每基地一枚徽章（底色 = 归属，外环 = 占领进度），两端为争霸积分 -->
+    <div v-if="store.hasData && store.baseViews.length" id="base-status">
+      <BaseStatusBar
+        :bases="store.baseViews"
+        :friendly-points="store.pointsFriend"
+        :enemy-points="store.pointsEnemy"
+      />
     </div>
 
     <div id="team1" class="team panel">
@@ -249,32 +233,9 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 #topbar { top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 18px;
           display: flex; flex-direction: column; gap: 4px; align-items: center; white-space: nowrap; }
 #topbar .tb-row { display: flex; gap: 14px; align-items: center; justify-content: center; }
-#topbar .tb-points { font-size: 13px; color: var(--dim); gap: 4px; }   /* 收紧：两条贴近中线 */
-/* 点数条：左条己方（自右向左填充）、右条敌方；中间数值固定列宽使整行居中 */
-#topbar .pointsbar { display: inline-block; width: 92px; height: 7px;
-                    background: rgba(255,255,255,.13); overflow: hidden; }
-/* 两条紧贴中线：左条圆角在左端、右条在右端，中线处相接 */
-#topbar .pb-f { border-radius: 4px 0 0 4px; }
-#topbar .pb-e { border-radius: 0 4px 4px 0; }
-#topbar .pointsbar > i { display: block; height: 100%; transition: width .18s linear; }
-/* 自中线向外增长：左条填充贴右端（靠中线），右条填充贴左端（靠中线） */
-#topbar .pb-f > i { background: var(--ally); float: right; }
-#topbar .pb-e > i { background: var(--enemy); float: left; }
-#topbar .pdiv { width: 1px; height: 13px; background: var(--line); }
-#topbar .pdv { min-width: 44px; font-variant-numeric: tabular-nums; font-size: 13px; }
-#topbar .pdv-f { color: var(--ally); text-align: right; }
-#topbar .pdv-e { color: var(--enemy); text-align: left; }
-/* 行 4：单基地占领进度。目标无阵营归属（协议侧 owner/capturing 恒 null），故用中性强调色，
-   不借 --ally/--enemy —— 避免让呈现暗示"谁在占领"。 */
-#topbar .tb-assault { font-size: 13px; color: var(--dim); gap: 8px; }
-#topbar .objv { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 13px;
-  color: var(--objective); text-align: right; }
-#topbar .objv-none { color: var(--dim); font-style: normal; }
-#topbar .objbar { display: inline-block; width: 214px; height: 7px; border-radius: 4px;
-  background: var(--line); overflow: hidden; }
-#topbar .objbar > i { display: block; height: 100%; background: var(--objective);
-  transition: width .18s linear; }
-#topbar .objtag { font-style: normal; }
+/* 基地状态条：顶栏正下方居中，不拦截场景操作（徽章本身可悬停看说明） */
+#base-status { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 5;
+               pointer-events: none; }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 #topbar .score { font-size: 16px; font-weight: 600; }
 #topbar .score .t1 { color: var(--ally); }

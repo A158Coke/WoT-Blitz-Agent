@@ -22,6 +22,8 @@
     --color-team-ally:#3fa66a;
     --color-team-enemy:#c05046;
     --color-team-neutral:#f5f5f5;
+    /* 画在中立（白）徽章底色之上的前景色：白底白字不可读，字母与旗帜用近黑 */
+    --color-on-team-neutral:#1c1f1d;
     --color-objective:#ffc24b;
 
     /* 触屏命中区域下限：粗指针（触屏）下只允许放大，不允许被任何"缩到刚好塞下"的

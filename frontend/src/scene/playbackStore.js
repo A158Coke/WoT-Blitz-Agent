@@ -32,8 +32,9 @@ export function createPlaybackStore() {
     hpFriendPct: 100, hpEnemyPct: 100,
     hpFriend: 0, hpFriendMax: 0, hpEnemy: 0, hpEnemyMax: 0,
     pointsFriend: null, pointsEnemy: null,   // null = 该场无点数广播（非争霸）
-    assaultObjective: false,                 // 单基地目标是否存在（独立于是否有占领进度）
-    assaultProgress: null,                   // null = 目标在但当前无占领进度广播；非单基地场次整行不显示
+    // 基地视图模型（争霸 A–D / 单基地）：scene 每 tick 折叠写入，顶部基地状态条只读渲染。
+    // 元素形状见 scene/baseStatus.js 的 baseView：{ baseId, kind, owner, capturing, progress }
+    baseViews: [],
     // 覆盖层
     banner: null, // { text, color }
     killfeed: [], // { id, text }

@@ -138,7 +138,7 @@ pub fn ai_review_json(bytes: &[u8]) -> anyhow::Result<String> {
         author_account_id: summary.author_account_id,
         pitch_limits: &limits,
     })?;
-    let facet = wotb_replay_core::facets::ai_review::AiReviewFacet::from_model(&model, &summary);
+    let facet = wotb_replay_core::facets::ai_review::AiReviewFacet::from_model_with_packets(&model, &summary, &packets);
     Ok(serde_json::to_string(&facet)?)
 }
 

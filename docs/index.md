@@ -29,7 +29,7 @@
 
 本项目的回放能力由 WotbTools 以 WASM/静态资产面消费（上游契约与版本锁定见对方仓
 `contracts/agent/replay-facets-v2.md`、`deploy/agent/source.json`）。面向消费方的**最新一轮**
-版本记录（v0.3.4 起；发行版本以仓库根目录 `VERSION` 为准，tag 必须为 `v${VERSION}`）：
+版本记录（v0.3.4 起；仓库根目录 `VERSION` 是唯一发行版本源。版本号变更合并到 `main` 后，Release workflow 自动测试、构建、创建 `v${VERSION}` tag 并发布 WASM Release）：
 
 | 版本 | 内容 |
 |---|---|

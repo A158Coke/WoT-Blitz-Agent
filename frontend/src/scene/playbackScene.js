@@ -22,7 +22,7 @@ import {
   foldAssaultProgress, foldSupremacyTransitions,
 } from './baseStatus.js'
 import { orientDiscUv } from './baseDecal.js'
-import { groupByVehicle, inferMagazineSize, reloadViewAt } from './reloadBar.js'
+import { fillOf, groupByVehicle, inferMagazineSize, shellStatesAt } from './reloadBar.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
 import { battleEndTime } from './battleEnd.js'
@@ -1443,11 +1443,11 @@ export function initPlayback(container, store) {
       // 软遮挡：被地形/静态场景挡住时弱化（永不隐藏，下限 LABEL_BLOCKED_OPACITY）
       const target = v.labelOccluded ? LABEL_BLOCKED_OPACITY : LABEL_OPACITY;
       if (v.label.material.opacity !== target) v.label.material.opacity = target;
-      // 装填条：按 T 二分求值（不累加计时器）。重绘门控——进度量化成 1% 桶才重绘整张
-      // canvas 并传纹理，否则 14 车会每帧重绘（装填中每车最多 ~100 次/发）。
-      const rv = reloadViewAt(v.reloadEvents, T, v.reloadSize);
-      v.reloadFill = rv.fill;
-      const bucket = Math.round(rv.fill * 100);
+      // 装填条：按 T 时间归并求值（不累加计时器）→ **逐发状态**（客户端 Full/Active/Inactive）。
+      // 重绘门控：聚合比量化成 1% 桶才重绘整张 canvas 并传纹理，否则 14 车会每帧重绘。
+      const shells = shellStatesAt(v.reloadEvents, v.reloadFires, T, v.reloadSize);
+      v.reloadShells = shells;
+      const bucket = Math.round(fillOf(shells) * 100);
       if (bucket !== v.reloadBucket) { v.reloadBucket = bucket; v.labelDirty = true; drawLabel(v); }
     }
   }
@@ -1581,18 +1581,25 @@ export function initPlayback(container, store) {
     // —— 实时装填条（血量条下方，细长白条）：单发车整条 = 一发；弹夹/弹鼓车 1/N 条 = 一发
     // （N 由相位数据推导，见 scene/reloadBar.js）。相位流只覆盖**本方全队**：无相位流的车
     // 保持满条（= 已装填），不猜。
+    // —— 装填条：**逐发**绘制，对齐客户端托盘（TrayShellBar + TrayShellSector）——
+    // 每发一枚独立带框小条：full = 整条白 / loading = 按进度填 / empty = 仅暗槽
+    //（即客户端的 Full / Active / Inactive 三态）；单发车即一整条。
+    // 每枚宽度有上限（客户端托盘也是等距固定尺寸，不是按总数摊薄），发数多时不至于压成细丝。
     const sx = 56, sy = 112, sw = 400, sh = 16;
-    const rfill = Number.isFinite(v.reloadFill) ? v.reloadFill : 1;
-    // N 段：段间留可见空隙（弹夹车一眼能数出几发）；单发车为整条
-    const rn = Math.max(1, Math.round(v.reloadSize) || 1);
-    const gap = rn > 1 ? 14 : 0;                     // 设计 px；≈2 屏幕 px
-    const segW = (sw - gap * (rn - 1)) / rn;
+    const shells = (v.reloadShells && v.reloadShells.length) ? v.reloadShells : [{ state: 'full', progress: 1 }];
+    const rn = shells.length;
+    const gap = rn > 1 ? 12 : 0;                                  // 设计 px ≈ 1.7 屏幕 px
+    const segW = Math.min(200, (sw - gap * (rn - 1)) / rn);       // 每发一枚的宽度（上限 200）
+    const total = segW * rn + gap * (rn - 1);
+    const x0 = sx + (sw - total) / 2;                             // 居中
     for (let k = 0; k < rn; k++) {
-      const x = sx + k * (segW + gap);
+      const st = shells[k] || { state: 'empty', progress: 0 };
+      const x = x0 + k * (segW + gap);
       rrPath(ctx, x, sy, segW, sh, 7);
       ctx.fillStyle = 'rgba(0, 0, 0, .45)'; ctx.fill();
       ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.32)'; ctx.stroke();
-      const f = Math.max(0, Math.min(1, rfill * rn - k));   // 本段已填充比例
+      const f = st.state === 'full' ? 1
+        : st.state === 'loading' ? Math.max(0, Math.min(1, st.progress)) : 0;
       if (f > 0) {
         rrPath(ctx, x + 2, sy + 2, Math.max(2, (segW - 4) * f), sh - 4, 5);
         ctx.fillStyle = '#f4f8fc'; ctx.fill();
@@ -2492,14 +2499,25 @@ export function initPlayback(container, store) {
     buildVehicles();
     buildRoster();
     // 实时装填相位（`DATA.reloads`，arena subtype 15/17；**仅本方全队**）→ 按 eid 归到车。
-    // 求值是纯函数（时间二分），seek/拖动天然正确；无相位流的车 → 满条，不猜。
+    // 采用**逐发状态**模型（对齐客户端托盘）：开火消耗一发、弹夹内间隔补一发、整夹重装重填
+    // 整个弹夹，故还需要本车开火时刻；求值是纯函数（时间归并/二分），seek 与拖动天然正确。
     {
       const reloadByEid = groupByVehicle(DATA.reloads);
+      const firesByEid = new Map();
+      for (const s of DATA.shots || []) {
+        const eid = s.shooter_eid != null ? s.shooter_eid : s.shooter;
+        if (eid == null || !Number.isFinite(s.t_fire)) continue;
+        let a = firesByEid.get(eid);
+        if (!a) { a = []; firesByEid.set(eid, a); }
+        a.push(s.t_fire);
+      }
+      for (const a of firesByEid.values()) a.sort((x, y) => x - y);
       for (const v of V) {
         v.reloadEvents = reloadByEid.get(v.def.eid) || [];
+        v.reloadFires = firesByEid.get(v.def.eid) || [];
         v.reloadSize = inferMagazineSize(v.reloadEvents);
-        v.reloadFill = 1;
-        v.reloadBucket = 100;   // 与初值（满条）一致，避免首帧无谓重绘
+        v.reloadShells = null;
+        v.reloadBucket = 100;   // 与初值（满夹）一致，避免首帧无谓重绘
       }
     }
     buildTransientSources();   // 战斗反馈事件源（伤害/击毁）

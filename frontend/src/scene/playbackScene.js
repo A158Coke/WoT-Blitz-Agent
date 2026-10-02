@@ -1804,17 +1804,24 @@ export function initPlayback(container, store) {
   // ---------- 弹道 ----------
   const TRACER_LEN = 9;
   // 全弹道轨迹线：细 + 半透明、正常 depth test（会被地形/建筑遮挡，不穿山），
-  // 按 replay clock 与飞行段同步（t1+2.2s 移除、最后 1.2s 淡出）；
+  // 按 replay clock 与飞行段同步（基准 t1+2.2s 移除、最后 1.2s 淡出，二者同乘 FX_SCALE）；
   // impact 单独使用 wall-clock transient（见 updateImpacts）
   const TRAJ_OPACITY = 0.35;
   const TRAJ_RADIUS = 0.11;
   const TRACER_RADIUS = 0.22;
+  // 战斗反馈显示时长倍率（**只作用于 3D 场景**）：炮线（全弹道轨迹线）、命中特效、
+  // 掉血飘字、HP 条幽灵/受击闪、击毁爆散统一乘这个系数——回放里这些反馈需要更长的可读
+  // 时间，否则 1x 下弹道/数字一闪即逝。乘在下面 transient 段的基准常量之上，与 WotbTools
+  // 侧（那边乘在 2D SSOT 常量之上）逐值一致；1 = 与 2D 逐值一致。
+  // 不作用于飞行段（tracers：位置由 t_fire/flight_secs 决定，拉长会让炮弹看起来变慢）。
+  const FX_SCALE = 2;
   let trajLines = [];
 
   // ---------- 战斗反馈 transient（语义与 WotBTools 2D 对齐）----------
   // 关键语义：**壁钟（真实 ms）寿命**，而非回放时钟——任意倍速下可读时长相近
   // （2D battlePlayback.js 同款常量与注释）。因用壁钟，暂停时 transient 自然走完，
   // 无需特殊处理；seek 则清空并重置事件游标（不补播历史动画）。
+  // 下面四条是**基准值**（与 2D 同值），3D 侧在各使用点乘 FX_SCALE 放大显示时长。
   const FLOAT_DMG_MS = 1000;   // 伤害飘字
   const GHOST_MS = 600;        // HP 条 lost-HP 幽灵段（2D 同值）
   const FLASH_MS = 280;        // HP 条受击闪（2D 同值）
@@ -1846,7 +1853,7 @@ export function initPlayback(container, store) {
 
   function vehicleByEid(eid) { return V.find((x) => x.def.eid === eid); }
 
-  // 伤害飘字：受击车上方浮出 "-<lost>"，上浮 + 淡出（1s）
+  // 伤害飘字：受击车上方浮出 "-<lost>"，上浮 + 淡出（基准 1s × FX_SCALE）
   function spawnFloatDmg(eid, hpLoss) {
     const v = vehicleByEid(eid);
     if (!v || !v.group.visible) return;
@@ -1878,16 +1885,16 @@ export function initPlayback(container, store) {
       const curHp = Math.max(0, hpAtRaw(v));
       const fromFrac = Math.max(0, Math.min(1, curHp / maxHp));
       const toFrac = Math.max(0, fromFrac + hpLoss / maxHp);   // 损失前比例（幽灵显示刚丢的量）
-      ghostByEid.set(eid, { fromFrac, toFrac, untilMs: nowMs + GHOST_MS });
+      ghostByEid.set(eid, { fromFrac, toFrac, untilMs: nowMs + GHOST_MS * FX_SCALE });
     }
-    flashByEid.set(eid, nowMs + FLASH_MS);
+    flashByEid.set(eid, nowMs + FLASH_MS * FX_SCALE);
     v.labelDirty = true;   // 标签重绘由反馈触发（否则只在 HP 整数变化时重绘）
   }
 
   // 供反馈使用的原始 HP（不依赖标签缓存）
   function hpAtRaw(v) { return hpAt(v, T); }
 
-  // 击毁爆散：双层扩散环 + 中心球，700ms 内扩张并淡出
+  // 击毁爆散：双层扩散环 + 中心球，基准 700ms × FX_SCALE 内扩张并淡出
   function spawnBurst(eid) {
     const v = vehicleByEid(eid);
     if (!v || !v.group.visible) return;
@@ -1925,7 +1932,7 @@ export function initPlayback(container, store) {
     }
     for (let i = floatDmgs.length - 1; i >= 0; i--) {
       const f = floatDmgs[i];
-      const k = (now - f.born) / FLOAT_DMG_MS;
+      const k = (now - f.born) / (FLOAT_DMG_MS * FX_SCALE);
       if (k >= 1) {
         scene.remove(f.sp); f.sp.material.dispose(); f.tex.dispose(); f.sp.material.map = null;
         floatDmgs.splice(i, 1);
@@ -1939,7 +1946,7 @@ export function initPlayback(container, store) {
     }
     for (let i = burstFx.length - 1; i >= 0; i--) {
       const b = burstFx[i];
-      const k = (now - b.born) / BURST_MS;
+      const k = (now - b.born) / (BURST_MS * FX_SCALE);
       if (k >= 1) {
         scene.remove(b.g);
         for (const rr of b.rings) { rr.geometry.dispose(); rr.material.dispose(); }
@@ -1999,7 +2006,7 @@ export function initPlayback(container, store) {
     traj.position.copy(from.clone().add(to).multiplyScalar(0.5));
     traj.lookAt(to);
     scene.add(traj);
-    trajLines.push({ mesh: traj, until: t1 + 1.0, fadeEnd: t1 + 2.2, base: TRAJ_OPACITY });
+    trajLines.push({ mesh: traj, until: t1 + 1.0 * FX_SCALE, fadeEnd: t1 + 2.2 * FX_SCALE, base: TRAJ_OPACITY });
   }
   // 炮线阵营色 = 射手阵营（唯一规则，评审批准）：green / red / white，
   // 调色常量见文件顶部（唯一事实源）。team 必须显式 ∈ {1,2} 才参与判定——
@@ -2048,7 +2055,7 @@ export function initPlayback(container, store) {
     scene.add(g);
     // impact 属于 UI feedback transient：寿命按真实壁钟计，而不是 replay clock。
     // 这样 0.5x / 16x 下可读时长一致；暂停时自然淡出；seek 由 clearEffects 直接清空。
-    const durationMs = kind === 'nonpen' ? 650 : kind === 'ricochet' ? 550 : 450;
+    const durationMs = (kind === 'nonpen' ? 650 : kind === 'ricochet' ? 550 : 450) * FX_SCALE;
     impacts.push({ g, bornMs: performance.now(), durationMs, ball, ring, sparks, kind });
   }
 

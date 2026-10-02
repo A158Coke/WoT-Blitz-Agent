@@ -973,7 +973,7 @@ pub(crate) fn extract_shot_replays_from_shared(
             // 一次 Shot 可以在同一 victim/同钟产生多个装甲交互；只按 victim+time 会把
             // 合法的不同 type=32 segment 误判为歧义。作者路径与他人路径统一优先使用
             // method8.hash6 ↔ type32.hash6 的确定性事件令牌；证据不足时仍 fail-fast。
-            match select_author_warning32(warnings32, direct_hits8, author_player_eid, teid, end_time) {
+            match select_author_warning32(&warnings32, direct_hits8, author_player_eid, teid, end_time) {
                 Ok(Some(first)) => {
                     segment = first.segment;
                     game_hit_result = first.result;
@@ -1773,13 +1773,13 @@ mod author_warning32_pairing_tests {
             warning(20.0, 42, b, 0x20),
         ];
 
-        assert_eq!(select_author_warning32(&warnings, &[], 7, 42, 20.0), Err(2));
+        assert!(matches!(select_author_warning32(&warnings, &[], 7, 42, 20.0), Err(2)));
 
         let hits = vec![
             direct(20.0, 7, 42, a, 0),
             direct(20.0, 7, 42, b, 1),
         ];
-        assert_eq!(select_author_warning32(&warnings, &hits, 7, 42, 20.0), Err(2));
+        assert!(matches!(select_author_warning32(&warnings, &hits, 7, 42, 20.0), Err(2)));
     }
 
     #[test]

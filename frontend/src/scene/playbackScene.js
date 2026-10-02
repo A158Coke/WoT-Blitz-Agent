@@ -1385,7 +1385,7 @@ export function initPlayback(container, store) {
 
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
-  const LABEL_FRAC = 0.05;      // 标签高 ≈ 视口高度的 5%（653px 视口 → 32.6px 卡片）
+  const LABEL_FRAC = 0.0275;    // 标签高 ≈ 视口高度的 2.75%（卡片 ~18px，不再放大）
   const LABEL_ASPECT = 4;       // 画布 4:1（布局按 512×128 设计坐标系写）
   const LABEL_TEX_BASE_H = 128; // 设计高度：drawLabel 里的绝对像素都以此为准
   const LABEL_TEX_SS = 1.5;     // 贴图超采样：略高于 1:1，兼顾清晰与显存
@@ -1421,10 +1421,9 @@ export function initPlayback(container, store) {
       // 是尺寸不一致的来源）；下限仅防 d→0 退化
       const s = Math.max(0.05, d * k);
       v.label.scale.set(s * LABEL_ASPECT, s, 1);
-      // 悬浮高度随距离缩放；上限与标签尺寸同比例（0.055 时代是 12m，0.05 取 11m），
-      // 否则大标签会贴到车顶上
+      // 悬浮高度随距离缩放（近处贴车顶、远处上限 6m）
       v.label.position.copy(v.group.position);
-      v.label.position.y += Math.min(11, Math.max(3.25, d * 0.045));
+      v.label.position.y += Math.min(6, Math.max(3.25, d * 0.045));
       // 车辆不可见时标签同步隐藏（原先经父子关系继承，现根级需显式管理）
       v.label.visible = v.group.visible && store.labelsOn;
       // 软遮挡：被地形/静态场景挡住时弱化（永不隐藏，下限 LABEL_BLOCKED_OPACITY）

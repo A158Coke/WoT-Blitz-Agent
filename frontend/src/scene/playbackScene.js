@@ -1395,16 +1395,17 @@ export function initPlayback(container, store) {
 
   // ---------- 标签：两块**独立**的屏幕占比恒定覆盖元素 ----------
   // ① 名牌：**一行**文字「车型名 · 玩家昵称」（不含血条），设计 512×96（16:3）；
-  // ② 血量块：数字 + 细血条（样式对齐 WotbTools 2D 的 .pb-hp-hud），设计 256×80。
+  // ② 血量块：**单独一根血条，血量数字画在条内**（与改版前的卡内血条同构；不采用 2D 的
+  //    「数字在条上方」排布），设计 256×56；条本身取 2D 的 .pb-hp-bar 样式（深槽 + 淡白边 + 阵营色填充）。
   // 分离原因：血条是每帧变动量，与名字分开后各自贴合 2D 版式（名牌 = .pb-labels，
   // 血量块 = .pb-hp-hud），也不必再让名牌为了塞下血条而变高。
   // 两块都以「车体上方悬浮锚点」为中心上下堆叠：名牌在上、血量块在下。
   const LABEL_FRAC = 0.0207;        // 名牌高 ≈ 视口高的 2.07%（653px 视口 → 13.5 CSS px）
   const LABEL_ASPECT = 512 / 96;    // 16:3
   const LABEL_TEX_BASE_H = 96;      // 设计高度：drawNameplate 里的绝对像素都以此为准
-  const HP_FRAC = 0.03;             // 血量块高 ≈ 视口高的 3%（653px → 19.6 CSS px）
-  const HP_ASPECT = 256 / 80;       // 3.2:1
-  const HP_TEX_BASE_H = 80;         // 设计高度：drawHp 里的绝对像素都以此为准
+  const HP_FRAC = 0.022;            // 血量块高 ≈ 视口高的 2.2%（653px → 14.4 CSS px）
+  const HP_ASPECT = 256 / 56;       // 4.57:1（整块就是那根血条）
+  const HP_TEX_BASE_H = 56;         // 设计高度：drawHp 里的绝对像素都以此为准
   const STACK_GAP_FRAC = 0.004;     // 名牌与血量块之间的间隙（视口高占比）
   const TEX_SS = 1.5;               // 贴图超采样：略高于 1:1，兼顾清晰与显存
 
@@ -1579,43 +1580,44 @@ export function initPlayback(container, store) {
     v.label.material.map.needsUpdate = true;
   }
 
-  // 血量块：数字（白色 + 黑色柔光）+ 细血条（深槽 + 淡白边 + 纯阵营色填充 + 同色 ghost）
+  // 血量块：单独一根血条，血量数字画在**条内**（与改版前的卡内血条同构）；
+  // 条样式取 2D 的 .pb-hp-bar：深槽 + 极淡白边 + 纯阵营色填充（无渐变）+ 同色 ghost
   function drawHp(v, hp = hpAt(v, T), dead = deathAt(v, T)) {
     const cv = v.hpCanvas;
     if (!cv) return;
     const ctx = cv.getContext('2d');
-    const ls = cv.height / HP_TEX_BASE_H;      // 设计坐标系 256×80
+    const ls = cv.height / HP_TEX_BASE_H;      // 设计坐标系 256×56
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(ls, 0, 0, ls, 0, 0);
     const teamText = LABEL_TEAM_TEXT[labelSide(v)];
-    // 数字（2D 的 .pb-hp-num：白色 + 黑色柔光）；上限缺失时显示 —
-    const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
-    ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
-    ctx.font = '700 46px "Segoe UI", sans-serif';
-    ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 10 * ls;
-    ctx.fillStyle = '#fff';
-    ctx.fillText(txt, 128, 24);
-    ctx.shadowBlur = 0;
-    // 血条（2D 的 .pb-hp-bar：深色细槽 + 极淡白边 + 纯阵营色填充，无渐变）
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;
-    const bx = 24, by = 50, bw = 208, bh = 22;
-    rrPath(ctx, bx, by, bw, bh, 11);
+    // 条：深色槽 + 极淡白边（整块画布就是这一根条）
+    rrPath(ctx, 2, 2, 252, 52, 26);
     ctx.fillStyle = 'rgba(0, 0, 0, .55)'; ctx.fill();
     ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.stroke();
+    // 填充：纯阵营色（无渐变）
     if (frac > 0 && !dead) {
-      rrPath(ctx, bx + 2, by + 2, Math.max(10, (bw - 4) * frac), bh - 4, 9);
+      rrPath(ctx, 5, 5, Math.max(10, 246 * frac), 46, 23);
       ctx.fillStyle = teamText; ctx.fill();
     }
     // lost-HP 幽灵段（GHOST_MS）：同阵营色浅版（2D 的 .pb-hp-ghost 起始 opacity .55）
     const ghost = ghostByEid.get(v.def.eid);
     if (ghost && !dead && ghost.toFrac > ghost.fromFrac) {
-      const gw = (bw - 4) * (ghost.toFrac - ghost.fromFrac);
+      const gw = 246 * (ghost.toFrac - ghost.fromFrac);
       if (gw > 1) {
-        rrPath(ctx, bx + 2 + (bw - 4) * ghost.fromFrac, by + 2, gw, bh - 4, 9);
+        rrPath(ctx, 5 + 246 * ghost.fromFrac, 5, gw, 46, 23);
         ctx.globalAlpha = 0.55; ctx.fillStyle = teamText; ctx.fill(); ctx.globalAlpha = 1;
       }
     }
+    // 血量数字：**条内居中**（白色 + 黑色柔光；上限缺失显示 —）
+    const txt = v.def.max_hp > 0 ? `${hp} / ${v.def.max_hp}` : '—';
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+    ctx.font = '700 38px "Segoe UI", sans-serif';
+    ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 10 * ls;
+    ctx.fillStyle = '#fff';
+    ctx.fillText(txt, 128, 29);
+    ctx.shadowBlur = 0;
     v.hp.material.map.needsUpdate = true;
   }
 

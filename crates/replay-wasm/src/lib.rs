@@ -30,21 +30,10 @@ use wotb_replay_core::replay::model::{ReplayModel, ScanInput};
 use wotb_replay_core::replay::parser::ReplayParser;
 use wotb_replay_core::replay::playback::{PlaybackPlayer, PlaybackRenderInput};
 
-/// 包流解码（三能力共用的类型映射步）：payload → (type, clock, raw)。
-fn decode_packets<R: std::io::Read + std::io::Seek>(
-    replay: &mut wotbreplay_parser::replay::Replay<R>,
-) -> anyhow::Result<Vec<(u32, f32, Vec<u8>)>> {
-    let data = replay.read_data()?;
-    Ok(data.packets.iter()
-        .map(|pkt| {
-            let t = match &pkt.payload {
-                wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
-                wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
-                wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
-            };
-            (t, pkt.clock_secs, pkt.raw_payload.to_vec())
-        })
-        .collect())
+/// 包流分帧（三能力共用）：只切出 (type, clock, payload)，不反序列化 payload——
+/// 单个包的 pickle 形状偏差（如 type 0 的 bool 字段为整数）不再让整场回放失败。
+fn decode_packets(bytes: &[u8]) -> anyhow::Result<Vec<wotb_replay_core::replay::packets::RawPacket>> {
+    wotb_replay_core::replay::packets::read_raw_packets(bytes)
 }
 
 fn roster_of(summary: &wotb_replay_core::models::battle::BattleSummary) -> Vec<PlaybackPlayer> {
@@ -103,9 +92,9 @@ pub fn result_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Resul
 pub fn playback_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
-    let packets = decode_packets(&mut replay)?;
+    let packets = decode_packets(bytes)?;
     let packets: Vec<(u32, f32, &[u8])> = packets.iter()
-        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
+        .map(|p| (p.packet_type, p.clock_secs, p.payload.as_slice()))
         .collect();
 
     let limits = GunPitchLimits::new();
@@ -137,9 +126,9 @@ pub fn playback_json(bytes: &[u8], tank_names_json: Option<&str>) -> anyhow::Res
 pub fn ai_review_json(bytes: &[u8]) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
-    let packets = decode_packets(&mut replay)?;
+    let packets = decode_packets(bytes)?;
     let packets: Vec<(u32, f32, &[u8])> = packets.iter()
-        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
+        .map(|p| (p.packet_type, p.clock_secs, p.payload.as_slice()))
         .collect();
 
     let limits = GunPitchLimits::new();
@@ -179,9 +168,9 @@ pub fn ai_review_json(bytes: &[u8]) -> anyhow::Result<String> {
 pub fn shot_replays_json(bytes: &[u8], limits_json: Option<&str>, shells_json: Option<&str>) -> anyhow::Result<String> {
     let mut replay = wotbreplay_parser::replay::Replay::open(Cursor::new(bytes))?;
     let summary = ReplayParser::new().parse_replay(&mut replay, "client.wotbreplay")?;
-    let packets = decode_packets(&mut replay)?;
+    let packets = decode_packets(bytes)?;
     let packets: Vec<(u32, f32, &[u8])> = packets.iter()
-        .map(|(t, c, raw)| (*t, *c, raw.as_slice()))
+        .map(|p| (p.packet_type, p.clock_secs, p.payload.as_slice()))
         .collect();
 
     let author_nick = summary.players.iter()

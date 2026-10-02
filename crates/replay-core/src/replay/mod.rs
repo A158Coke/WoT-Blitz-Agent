@@ -3,6 +3,7 @@
 // 全场实时回放时间线（playback，0.1s 网格位姿/炮塔/弹道/血量）、
 // 内部领域模型（model，一次包扫描的权威产物，切面从这里投影）。
 pub mod parser;
+pub mod packets;
 pub mod scanner;
 pub mod combat;
 pub mod filter;

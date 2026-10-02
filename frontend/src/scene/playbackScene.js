@@ -1385,7 +1385,7 @@ export function initPlayback(container, store) {
 
   // 标签恒定屏幕占比：世界尺寸按相机距离逐帧反算（透视投影 h = f·2d·tan(θ/2)），
   // 远处血量数字同样大、近处不再撑满屏幕；悬浮高度随距离收缩贴住车顶
-  const LABEL_FRAC = 0.0275;    // 标签高 ≈ 视口高度的 2.75%（当前尺寸）
+  const LABEL_FRAC = 0.05;      // 标签高 ≈ 视口高度的 5%（653px 视口 → 32.6px 卡片）
   const LABEL_ASPECT = 4;       // 画布 4:1（布局按 512×128 设计坐标系写）
   const LABEL_TEX_BASE_H = 128; // 设计高度：drawLabel 里的绝对像素都以此为准
   const LABEL_TEX_SS = 1.5;     // 贴图超采样：略高于 1:1，兼顾清晰与显存
@@ -1421,9 +1421,10 @@ export function initPlayback(container, store) {
       // 是尺寸不一致的来源）；下限仅防 d→0 退化
       const s = Math.max(0.05, d * k);
       v.label.scale.set(s * LABEL_ASPECT, s, 1);
-      // 悬浮高度随距离缩放（较此前整体减半），远处上限同步降半
+      // 悬浮高度随距离缩放；上限与标签尺寸同比例（0.055 时代是 12m，0.05 取 11m），
+      // 否则大标签会贴到车顶上
       v.label.position.copy(v.group.position);
-      v.label.position.y += Math.min(6, Math.max(3.25, d * 0.045));   // 上限随标签减半等比收紧
+      v.label.position.y += Math.min(11, Math.max(3.25, d * 0.045));
       // 车辆不可见时标签同步隐藏（原先经父子关系继承，现根级需显式管理）
       v.label.visible = v.group.visible && store.labelsOn;
       // 软遮挡：被地形/静态场景挡住时弱化（永不隐藏，下限 LABEL_BLOCKED_OPACITY）
@@ -1516,12 +1517,17 @@ export function initPlayback(container, store) {
     const tank = v.def.tank_name || (v.def.tank_id ? 'tank_' + v.def.tank_id : '');
     const starW = (v.def.is_author && !dead) ? 42 : 0;
     const tankFont = (px) => `700 ${px}px "Segoe UI", "Microsoft YaHei", sans-serif`;
-    const nickFont = '500 26px "Segoe UI", "Microsoft YaHei", sans-serif';
+    const nickFont = '700 30px "Segoe UI", "Microsoft YaHei", sans-serif';
+    // 昵称胶囊：**亮底 + 深字 + 深色描边**——小尺寸下"深字亮底"比"亮字黑描边"可读性高得多；
+    // 底色取应用强调色（非阵营语义，不与友绿/敌红/目标黄混淆），阵亡后转灰底。
+    const NICK_PAD_X = 11, NICK_GAP = 12, NICK_H = 36;
+    const NICK_BG = '#ff8a3d', NICK_BG_DEAD = '#6a727c', NICK_INK = '#141a08';
     let tfs = 42;                                   // 车型名为主字号
+    const nickW = () => { ctx.font = nickFont; return ctx.measureText(name).width + NICK_PAD_X * 2; };
     const rowWidth = () => {
       ctx.font = tankFont(tfs);
       let w = starW + ctx.measureText(tank).width;
-      if (name) { ctx.font = nickFont; w += 14 + ctx.measureText(name).width; }
+      if (name && tank) w += NICK_GAP + nickW();
       return w;
     };
     while (tfs > 28 && rowWidth() > 430) tfs -= 2;
@@ -1539,14 +1545,20 @@ export function initPlayback(container, store) {
     ctx.fillStyle = dead ? '#a4acb6' : '#eef3f9';
     ctx.fillText(primaryText, tx, 34);
     tx += ctx.measureText(primaryText).width;
-    // 辅：昵称（小字置灰；tank 缺失时已顶位，不重复绘制）
+    // 辅：昵称胶囊（亮底 + 深字 + 描边；tank 缺失时昵称已顶位为主，不重复绘制）
     if (tank && name) {
-      tx += 14;
+      tx += NICK_GAP;
+      const nw = nickW();
+      const chipY = 35 - NICK_H / 2;          // 与车型名同一行居中（行心 y = 35）
+      rrPath(ctx, tx, chipY, nw, NICK_H, NICK_H / 2);
+      ctx.fillStyle = dead ? NICK_BG_DEAD : NICK_BG;
+      ctx.fill();
+      // 刻画边框：亮底在浅色贴图上也要立得住（纯靠文字描边在 6~8px 字号下会糊成一团）
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)';
+      ctx.stroke();
       ctx.font = nickFont;
-      ctx.lineWidth = 5;
-      ctx.strokeText(name, tx, 36);
-      ctx.fillStyle = dead ? '#8b939d' : '#b9c4cf';
-      ctx.fillText(name, tx, 36);
+      ctx.fillStyle = NICK_INK;
+      ctx.fillText(name, tx + NICK_PAD_X, 36);
     }
     // 血量条：暗槽 + 队伍色纵向渐变填充
     const frac = v.def.max_hp > 0 ? Math.max(0, Math.min(1, hp / v.def.max_hp)) : 0;

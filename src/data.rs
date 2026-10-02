@@ -3,8 +3,8 @@
 // 运行时直接解析）、tank_cache.json / models.pb / game_data/（便携装甲模型/碰撞盒）、
 // cache/（运行时缓存：坦克 GLB、地图资产、封面图、地形高度场、截图）。
 //
-// 运行根目录（base_dir）：桌面/CLI 不设置 = 当前目录（语义与历史版本完全一致）；
-// 移动端由 Tauri 入口在启动最早期 set_base_dir(应用私有目录)，此后所有相对路径
+// 运行根目录（base_dir）：不设置 = 当前目录（CLI/Web 的默认语义）；
+// 宿主可在启动最早期 set_base_dir(应用私有目录)，此后所有相对路径
 // （data/ 下的静态库/缓存/会话）自动落到私有目录。
 
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ pub const DATA_DIR: &str = "data";
 static BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// 设置运行根目录（仅首次生效，重复调用返回 false）。
-/// 必须在任何文件访问发生前调用（Tauri setup 最早期）。
+/// 必须在任何文件访问发生前调用。
 pub fn set_base_dir(dir: PathBuf) -> bool {
     BASE_DIR.set(dir).is_ok()
 }
@@ -50,8 +50,8 @@ pub fn cache_path(rel: &str) -> PathBuf {
     data_path(CACHE_DIR).join(rel)
 }
 
-/// APK 内置资产读取钩子（移动端全量版由 Tauri 入口注入，经 JNI AssetManager 直读
-/// APK 内资产；桌面/CLI 不注入恒为 None）。大资产（GLB/地形）不落盘、按需直读。
+/// 外部内置资产读取钩子（由宿主入口注入，用于直读打包内资产；不注入恒为 None）。
+/// 大资产（GLB/地形）不落盘、按需直读。
 type EmbeddedAssetReader = fn(&str) -> Option<Vec<u8>>;
 static EMBEDDED_ASSET_READER: OnceLock<EmbeddedAssetReader> = OnceLock::new();
 

@@ -6,7 +6,7 @@
 
 | 文档 | 定位 |
 |---|---|
-| [README.md](../README.md) | 项目总入口：功能总览、快速开始、Web UI/CLI/打包/移动端、仓库结构 |
+| [README.md](../README.md) | 项目总入口：功能总览、快速开始、Web UI/CLI/分发形态、仓库结构 |
 | [回放射击事件逆向分析.md](../回放射击事件逆向分析.md) | 回放数据段**权威参考**：每个数据段的字节布局、已破解语义、本项目使用状态（使用中/辅助/未使用） |
 | [回放未解析数据清单.md](../回放未解析数据清单.md) | 主文档配套速查表：全部数据段使用状态一页总览 + 回退链/质量标记 + 死路清单（2026-10-02 已按主文档校正 method8 hash6 与 method0x1b 掩码两处） |
 | [docs/replay-contract-v2-supremacy-type39.md](replay-contract-v2-supremacy-type39.md) | **回放契约 v2**：争霸基地状态（sparse 重建）+ 实时点数 + type39 瞄准帧的字段语义、门禁与版本护栏 |
@@ -18,7 +18,12 @@
 | 文档 | 状态 |
 |---|---|
 | [docs/vue-migration-plan.md](vue-migration-plan.md) | ✅ 已完成（2026-09-28）：前端四页全部切流 Vue 3 SPA，嵌入 HTML 与 web/vendor 已退役 |
-| [docs/mobile_plan.md](mobile_plan.md) | ✅ 已完成（2026-09）：Android 双形态 APK 已分发；实际实现与方案的差异见文首注记 |
+
+> `docs/mobile_plan.md` 及移动端（`mobile/` Tauri 壳、`mobile_assets/` 随包资产）已于
+> **2026-10 随 Android 分发形态一同移除**（详见 [README §分发形态](../README.md)）；
+> 其文内提及的 `scripts/{asset_manifest,export_mobile_maps}.py` 同步删除。
+> [docs/vue-migration-plan.md](vue-migration-plan.md) 里提到的 `scripts/package.ps1` /
+> `build-all.ps1` 同样只作历史记录——桌面便携包打包链已删除，前端仅本机调试用。
 
 ## 对接消费方（WotbTools）的当前进度（2026-10-02）
 

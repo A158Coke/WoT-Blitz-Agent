@@ -14,7 +14,7 @@ use crate::models::config::Config;
 use crate::web::sessions::{ChatError, SessionManager};
 use rust_embed::RustEmbed;
 
-/// Vue 前端构建产物（frontend/dist/，构建入口 scripts/build-all.ps1）。
+/// Vue 前端构建产物（frontend/dist/，构建入口 `cd frontend && npm run build`）。
 /// 默认 debug 构建运行时读盘（npm run build 后刷新即生效）；release 构建编译期嵌入。
 /// 排除 release/：导出资产包曾以相对 `--out release/asset_pack` 落进 dist（1.3GB），
 /// 编译期嵌入会直接撑爆构建——dist 只认 npm 产物。
@@ -118,7 +118,7 @@ struct AppState {
     sessions: SessionManager,
 }
 
-/// 构建完整 Web GUI 路由（含共享 state）。桌面 `serve` 与移动端 Tauri 协议桥共用；
+/// 构建完整 Web GUI 路由（含共享 state）；可被任何宿主（CLI `serve`、自定义协议桥）复用。
 /// 调用前须已完成 `data::set_base_dir`（若需要重定向运行目录）。
 pub fn build_router(config_path: std::path::PathBuf, sessions_dir: std::path::PathBuf) -> Router {
     let state = AppState {
@@ -236,8 +236,7 @@ pub fn spa_index_response() -> Response {
             .into_response(),
         None => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "frontend/dist/index.html 缺失：请先构建前端（cd frontend && npm ci && npm run build，\
-             或 scripts\\build-all.ps1）",
+            "frontend/dist/index.html 缺失：请先构建前端（cd frontend && npm ci && npm run build）",
         )
             .into_response(),
     }
@@ -1123,7 +1122,7 @@ async fn models_download_all_handler() -> Response {
 }
 
 /// 浏览器端文件导入：接收 .wotbreplay 原始字节（?name=文件名），保存到配置的回放目录，
-/// 返回落盘路径。Tauri 移动端走 dialog + import_replay 命令，不经过此端点。
+/// 返回落盘路径。
 async fn replay_upload_handler(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,

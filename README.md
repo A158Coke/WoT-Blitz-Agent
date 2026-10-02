@@ -187,92 +187,35 @@ B=金属度，原样返回会把金属度当粗糙度）——搬通道后 G 与
 `data/replay_samples/` 提供 3 个示例 `.wotbreplay` 文件（无游戏也可测试）。
 把 `config.toml` 的 `replay_dir` 设为 `data/replay_samples` 即可。
 
-## 打包分发（Windows）
+## 分发形态
 
-项目可打包成免安装的桌面端应用，**轻量版与全量版两种压缩包**（脚本：`scripts/package.ps1`，产物在 `dist/`）。
-有代码改动后重新打包，一条命令产出全部产物：
+本仓库的产物面已收敛为**回放解析核心**：Rust 库（`cargo test --workspace`）＋
+`v*` tag 触发的 `.github/workflows/release.yml` 构建出的 **WASM 发行产物**
+（`wotb-replay-wasm-<tag>.zip`）。该产物由
+[WoTBTools](https://github.com/A158Coke/WotbTools) 按 `deploy/agent/source.json`
+锁定的 release + sha256 直取，**前端开发在 WoTBTools 仓库进行**；本仓库
+`frontend/` 保留但不再维护（本机调试 Web GUI 仍可 `cargo run --release -- web`）。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -All
-```
+**已移除（2026-10，不再维护）**：
 
-也可以只产出一种：
+| 曾有的分发形态 | 涉及文件 |
+|------|------|
+| Windows 免安装便携包（轻量/全量 zip，产物落 `dist/`） | `scripts/package.ps1`、`scripts/build-all.ps1`、`scripts/zipdir.py`、`scripts/asset_manifest.py` |
+| Android App（Tauri 2 壳，轻量/离线双 APK） | `mobile/`、`mobile_assets/`、`scripts/export_mobile_maps.py`、`docs/mobile_plan.md` |
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1        # 仅轻量便携 zip（~18MB），模型首次查看自动联网下载
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Full  # 仅全量：zip（~1.9GB）+ 同名目录，完全离线
-```
+仍保留的构建/导出脚本：
 
-| 产物 | 大小 | 说明 |
-|------|------|------|
-| `wotb-agent-portable-win64.zip` | ~18MB | 轻量便携包，解压后双击 `start-web.bat` 启动 |
-| `wotb-agent-portable-win64-full.zip` | ~1.9GB | 全量离线包，内置全部坦克模型/封面图，无网环境可用 |
-| `wotb-agent-portable-win64\` | ~1.9GB | 全量包的解压版目录，可直接使用 |
+| 脚本 | 用途 |
+|------|------|
+| `scripts/build-wasm.ps1` | 本机构建 WASM 产物到 `frontend/public/wasm/`（release.yml 走同一套 cargo + wasm-bindgen 步骤） |
+| `scripts/export_asset_pack.py` | 导出静态资产包到 `release/asset_pack/`（对象存储整目录直传，供前端 `?assets=` 取用） |
 
-说明：
-
-- 两种包都只带 `config.toml.example` 模板，**绝不含真实密钥**；首次运行自动生成
-  `config.toml`，LLM key 可在网页 Settings 页在线填写。
-- 全量 zip 由 `scripts/zipdir.py`（Python zipfile）压缩：ZIP64 无 2GB 上限、GLB/图片
-  直接存储不二次压缩（约 10 秒完成）；无 Python 时自动回退 `Compress-Archive`。
-- 打包前需关闭正在运行的 wotb-agent（含从 `dist\` 启动的实例），否则无法重建目录，
-  脚本会给出明确提示。
-- `-SkipBuild` 可跳过 cargo 编译（只改了数据/文档时用；改了 Rust 代码不要加）。
-- 未签名 exe 首次运行会触发 SmartScreen 提示，属正常现象（「仍要运行」即可）。
-- 另有实验性的单文件自包含构建（`src/bundle.rs`，`cargo build --release --features
-  bundle`），不在此脚本流程内，需要时可手动构建。
-
-## 移动端 App（Android）
-
-基于 Tauri 2 的 Android 版本（`mobile/` 目录）：Rust 后端原样复用，WebView 经自定义协议
-桥接到同一套 Web GUI——回放分析/全场回放/3D 装甲检视/模型库与桌面版完全一致。
-提供两种分发形态，同一工程产出：
-
-| 形态 | 产物 | 说明 |
-|------|------|------|
-| 在线轻量版 | `WOTB-Agent-Lite-v*.apk`（~58MB） | 内置全部数据/图标/地图底图；GLB 车模按需联网下载（点开 GLB 或仪表盘左下角「模型库」一键全量补齐，支持断点续跑） |
-| 离线全量版 | `WOTB-Agent-Full-v*.apk`（~2GB） | 全部 735 辆 GLB + 29 图地形/场景 GLB 内置 APK assets，**完全离线**；模型按需直读不落盘，不占额外存储 |
-
-### 移动端使用
-
-- 安装启动即进入仪表盘；回放文件点「📥 导入回放」（系统文件选择器）导入后 Scan 即可，
-  点击某场战斗用「全场回放」打开——与桌面浏览器操作一致。
-- 首次启动自动解包数据到应用私有目录，并生成移动端默认 `config.toml`
-  （WG API key 已内置；LLM key 可在 Settings 页填写，不填则 AI 对话不可用）。
-
-### 从源码构建 APK（Windows）
-
-环境准备（一次性；参考 `mobile/setup-toolchain.sh`，JDK 17 + Android SDK/NDK + rustup android targets），
-然后：
+静态资产包的导出流程（消费方为 WoTBTools 前端）：
 
 ```bash
-cd mobile
-source android-env.sh                                # 导出 JAVA_HOME/ANDROID_HOME/NDK
-
-cd src-tauri
-python prepare-assets.py                             # 生成小资产树 + 解包清单
-tauri android init                                   # 仅首次：生成 gen/android 工程
-bash ../sync-android-assets.sh                       # 资产同步进 app/src/main/assets/
-                                                     # （离线全量版加 --full：额外拷入全部 GLB）
-
-# 构建（arm64）：签名密钥见 mobile/wotb-release.keystore
-export TAURI_ANDROID_KEYSTORE_PATH=... TAURI_ANDROID_KEYSTORE_PASSWORD=...        TAURI_ANDROID_KEY_ALIAS=... TAURI_ANDROID_KEY_PRIVATE_PASSWORD=...
-tauri android build --apk --target aarch64           # 全量版追加 --config tauri.full.conf.json
-
-# 产物在 gen/android/app/build/outputs/apk/universal/release/*.apk
-# 用 build-tools 的 zipalign + apksigner 签名后分发（本仓库产物已签名，密钥单独保管）
+cargo run --release -- dump-map-index > map_index.json
+python scripts/export_asset_pack.py --map-index map_index.json
 ```
-
-实现要点（`mobile/src-tauri/src/lib.rs`）：
-
-- **协议桥接**：WebView 所有请求经 `register_asynchronous_uri_scheme_protocol` 转发进
-  axum `Router`（`web::build_router`），无真实端口，桌面/移动同一套路由与前端。
-- **路径层**：`data::set_base_dir()` 把 `data/`（含 `data/cache/`）
-  等运行时路径整体重定向到应用私有目录（桌面不设置，语义不变）。
-- **资产供给**：小资产首启经 JNI AssetManager 解包（清单 `resources-manifest.txt`）；
-  全量版 GLB 走 `data::set_embedded_asset_reader` 按需直读 APK assets，不落盘。
-- gen/android 工程有两处一次性本地改动（Gradle 走腾讯镜像、BuildTask 直呼 npm CLI 的
-  main.js），`tauri android init` 重新生成后需按 README 恢复。
 
 ## Web UI 使用
 
@@ -392,16 +335,15 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 
 | 路径 | 说明 |
 |------|------|
-| `src/main.rs` / `src/lib.rs` | 入口：桌面 CLI 与库形态（移动端壳路径依赖本 crate，共用全部业务模块） |
+| `src/main.rs` / `src/lib.rs` | 入口：CLI（`main.rs`）与库形态（`lib.rs`，业务模块全集） |
 | `src/agent/` | LLM Agent：工具编排与自然语言对话 |
 | `crates/replay-core/` | **回放解析核心库**（零网络依赖，原生/WASM 双目标）：内部领域模型、事件解码、实时回放时间线、数据投影（结果/回放/评审，架构契约 v2：名人堂是消费方投影，非 Agent 能力）。消费方切面（`crates/replay-core/src/facets/`）**只做投影与互验、不下判断**——AI 切面附带原始未滤波证据（type=10 原始位姿与 prop2 炮塔、prop3 血量广播、method8 原始命中通知全变体、未钳制 HP）供消费方自建口径 |
 | `crates/replay-wasm/` | **浏览器通道入口**（契约第 6 节纯客户端回放）：.wotbreplay 字节 → 核心库 → 独立能力 JSON（`parseResult`/`parsePlayback`/`parseShotReplays`/`parseAiReview`）；前两者可选注入 `tankNamesJson`（车型名表），射击复现可选注入俯仰锚定表与弹种反解表；`scripts/build-wasm.ps1` 构建到 `frontend/public/wasm/` |
 | `src/replay/` | 兼容垫片（re-export 核心库）+ 服务端增值标注（loadout 弹种表，依赖 BlitzKit 坦克表 IO） |
 | `src/wargaming/` | WG API、坦克/模型/地图资产、3D 装甲查看器与实时回放前端 |
 | `src/web/` | Web GUI（axum 路由 + 内嵌前端 + 离线 Three.js vendor） |
-| `src/models/`、`src/data.rs` | 服务端数据模型（report/config）；运行时路径层（桌面/移动私有目录重定向） |
-| `mobile/` | Tauri 2 Android 壳（源码入库；target/gen/apk 等构建产物已 gitignore） |
-| `docs/` | 项目文档：[索引](docs/index.md)、解耦进度总览（[decoupling-status](docs/decoupling-status.md)）、本地模型自产（[local-model-export](docs/local-model-export.md)）、回放契约 v2（[replay-contract-v2](docs/replay-contract-v2-supremacy-type39.md)）、移动端/Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
+| `src/models/`、`src/data.rs` | 服务端数据模型（report/config）；运行时路径层（数据目录可重定向） |
+| `docs/` | 项目文档：[索引](docs/index.md)、解耦进度总览（[decoupling-status](docs/decoupling-status.md)）、本地模型自产（[local-model-export](docs/local-model-export.md)）、回放契约 v2（[replay-contract-v2](docs/replay-contract-v2-supremacy-type39.md)）、Vue 迁移方案（已完成留档）、WotbTools 交叉引用裁决 |
 | `tools/export_map_glb.py` | 回放 3D 场景/地表离线导出器（DAVA 解析库在 `tools/wotbtools/`） |
 | `tools/export_tank_glb.py` | 坦克 GLB 的**本机客户端**自产管线（并行于 BlitzKit 缓存，见上） |
 | `tools/compare_tank_glb.py` | 两来源坦克模型的对照器：数值等价回归 + 并排渲染差异图 |
@@ -409,7 +351,7 @@ dump-entity    # 逆向工具：转储指定实体时间窗口内全部包
 | `data/` | 内置数据（tanks.pb / models.pb / tank_cache / game_data / 版本清单） |
 | `data/cache/` | 运行时缓存（gitignore）：`models/` 坦克 GLB、`maps/` 地图资产、`tank_images/` 封面、`terrain/` 地形高度场、`screenshots/` 截图 |
 | `data/replay_samples/` | 示例回放（仓库内置 3 个） |
-| `scripts/` | 构建/打包脚本（`package.ps1` / `build-all.ps1` / `build-wasm.ps1` / `asset_manifest.py --hashes`；另有移动端底图导出等辅助脚本） |
+| `scripts/` | 构建脚本：`build-wasm.ps1`（WASM 产物到 `frontend/public/wasm/`）、`export_asset_pack.py`（静态资产包到 `release/asset_pack/`） |
 
 ## 环境要求
 

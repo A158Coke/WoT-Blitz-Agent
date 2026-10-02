@@ -83,7 +83,7 @@ pub(crate) async fn ensure_glb_bytes(tank_id: u32, filename: &str) -> Result<Vec
         }
         eprintln!("[glb-cache] 缓存文件损坏（缺 glTF magic），重新下载: {}", cache_path.display());
     }
-    // APK 内置资产兜底（移动端离线全量版）：直读不落盘，避免 1.9GB 复制
+    // 宿主内置资产兜底（宿主注入 reader 时生效）：直读不落盘，免大文件复制
     if let Some(bytes) = crate::data::read_embedded(&format!("data/cache/models/{tank_id}/{filename}")) {
         if bytes.starts_with(b"glTF") {
             return Ok(bytes);

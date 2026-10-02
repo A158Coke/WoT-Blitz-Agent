@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "移动端默认能力：核心 IPC + 系统文件选择器（导入回放）",
-  "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
-}

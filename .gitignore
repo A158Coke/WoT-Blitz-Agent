@@ -62,26 +62,8 @@ examples/
 # Python 字节码缓存
 tools/**/__pycache__/
 
-# 打包产物
+# 打包产物（桌面便携包；打包链已于 2026-10 移除，保留忽略防误入库）
 dist/
-
-# ---- 移动端（mobile/）构建产物 ----
-mobile/src-tauri/target/
-mobile/src-tauri/gen/
-mobile/src-tauri/resources/
-mobile/src-tauri/resources-glb/
-mobile/dl/
-mobile/jdk17/
-# 签名密钥与密码不入仓库；交付时单独保管
-mobile/wotb-release.keystore
-mobile/*.apk
-mobile/app-icon.png
-
-# 移动端打包中间产物（补漏：.idsig 签名、构建日志、验证截图、运行时资产）
-mobile/*.idsig
-mobile/**/*.log
-mobile/*.png
-mobile/maps/
 
 # 本地烘焙/对比试验产物与缓存压缩包
 tmp_*.png

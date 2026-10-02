@@ -16,18 +16,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: 发布前测试（坏 tag 不出包）
         run: cargo test --workspace
-
-      - name: 前端依赖
-        working-directory: frontend
-        run: npm ci
 
       - name: 解析 wasm-bindgen 版本（随 Cargo.lock）
         shell: pwsh
@@ -49,14 +40,15 @@ jobs:
         if: steps.wbg-bin.outputs.cache-hit != 'true'
         run: cargo install wasm-bindgen-cli --version ${{ steps.wbgver.outputs.version }} --locked
 
+      # 仅构建 WASM 产物：本仓已不再发布桌面 exe（2026-10 移除打包链），前端
+      # （frontend/）冻结且不参与发布——发布链只依赖 Rust 核心，避免冻结前端
+      # 的构建失败挡住 WoTBTools 依赖的发行产物。
       - name: WASM 产物构建
         shell: pwsh
         run: |
           cargo build -p wotb-replay-wasm --release --target wasm32-unknown-unknown
           wasm-bindgen target\wasm32-unknown-unknown\release\wotb_replay_wasm.wasm `
             --out-dir frontend\public\wasm --target web --out-name wotb_replay_wasm
-          # 前端构建放最后：dist 拷入 public/wasm 产物，rust-embed 随 exe 嵌入
-          npm --prefix frontend run build
 
       - name: WASM 消费产物打包（供 WotBTools 直接取用，免自建）
         shell: pwsh

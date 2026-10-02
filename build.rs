@@ -1,5 +1,5 @@
 // Vue 前端构建产物前置检查：rust-embed 在 release 构建编译期需要 frontend/dist 存在。
-// 标准构建入口是 scripts/build-all.ps1（npm build → cargo build）。
+// 标准构建入口：cd frontend && npm ci && npm run build（前端已冻结，仅本机调试 Web GUI 用）。
 //
 // 仅对真正消费产物的构建（release 嵌入 / bundle 特性）硬性要求；debug 测试构建
 // （cargo test，rust-embed 运行时读盘）不要求——否则 CI 的纯 Rust 作业必须先装
@@ -18,8 +18,7 @@ fn main() {
     let is_release = std::env::var("PROFILE").map(|p| p == "release").unwrap_or(false);
     let bundling = std::env::var("CARGO_FEATURE_BUNDLE").is_ok();
     let panic_hint = "\n\nfrontend/dist/index.html 不存在或为占位页 —— Vue 前端尚未构建。\n  \
-         先运行: cd frontend && npm ci && npm run build\n  \
-         或一键: powershell -ExecutionPolicy Bypass -File scripts\\build-all.ps1\n";
+         先运行: cd frontend && npm ci && npm run build\n";
 
     if !index.exists() {
         if is_release || bundling {

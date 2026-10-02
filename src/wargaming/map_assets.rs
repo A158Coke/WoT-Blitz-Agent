@@ -313,7 +313,8 @@ pub fn map_image_response(map_param: &str) -> Response {
 /// 小地图 DVPL 候选（优先 @2x 高清版，退普通版）。
 const MINIMAP_DVPL: [&str; 2] = ["MiniMapSmall@2x.packed.webp.dvpl", "MiniMapSmall.packed.webp.dvpl"];
 
-/// 低画质档小地图底图：提取缓存 → 客户端随取随解 → 仓库随包图 → 高清底图兜底。
+/// 低画质档小地图底图：提取缓存 → 客户端随取随解 → 高清底图兜底。
+/// （此前的「仓库随包图 `mobile_assets/maps/`」一档随移动端一同移除，2026-10。）
 pub fn map_minimap_response(map_param: &str) -> Response {
     let name = map_param.trim();
     if name.is_empty() {
@@ -342,14 +343,7 @@ pub fn map_minimap_response(map_param: &str) -> Response {
         }
     }
 
-    // 3) 仓库随包小地图（mobile_assets/maps/，客户端不在场时的离线兜底）
-    if let Some(entry) = entry {
-        if let Some(bytes) = bundled_minimap(entry) {
-            return map_response(bytes, "image/webp", Some(entry));
-        }
-    }
-
-    // 4) 兜底：高清烘焙底图（离线导出覆盖图）
+    // 3) 兜底：高清烘焙底图（离线导出覆盖图）
     map_image_response(name)
 }
 
@@ -377,28 +371,6 @@ fn extract_minimap(entry: &MapEntry) -> Option<Vec<u8>> {
                 if !dv.data.is_empty() {
                     return Some(dv.data);
                 }
-            }
-        }
-    }
-    None
-}
-
-/// mobile_assets/maps/<名>.webp：文件名为 MapId Debug 名（如 WinterMalinovka），
-/// 与显示名/键名按“去非字母数字 + 小写”归一匹配。
-fn bundled_minimap(entry: &MapEntry) -> Option<Vec<u8>> {
-    let norm = |x: &str| -> String {
-        x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
-    };
-    let want = [norm(&entry.display), norm(&entry.key)];
-    if want.iter().all(|w| w.is_empty()) {
-        return None;
-    }
-    for e in std::fs::read_dir(std::path::Path::new("mobile_assets/maps")).ok()?.flatten() {
-        let Some(stem) = e.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
-        let n = norm(&stem);
-        if want.contains(&n) {
-            if let Ok(bytes) = std::fs::read(e.path()) {
-                return Some(bytes);
             }
         }
     }

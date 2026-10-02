@@ -84,8 +84,11 @@ pub enum AiEvent {
         #[serde(skip_serializing_if = "String::is_empty")]
         shell_kind: String,
     },
-    /// 血量变化事件（method1；hp = 事件后绝对血量，overkill 钳 0）
-    Damage { t: f32, victim_eid: u32, hp: u16, source_eid: u32, cause: u8 },
+    /// 血量变化事件（method1；hp = 事件后绝对血量，overkill/哨兵钳 0）。
+    /// `hp_raw` = 未钳制的原始 u16（0x0000 / 0xFFFD / 0xFFFF / 0xFFFE 等终态哨兵族原样保留），
+    /// 供消费方按自己的口径区分「确知 HP=0」与「终态哨兵（血量未知）」——`hp` 的钳 0
+    /// 只是显示便利，不是血量事实。
+    Damage { t: f32, victim_eid: u32, hp: u16, hp_raw: u16, source_eid: u32, cause: u8 },
     /// 击毁（击杀播报归属增强：击杀者/死因/≥50% 助攻）
     Kill {
         t: f32,
@@ -95,8 +98,16 @@ pub enum AiEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         assister_eid: Option<u32>,
     },
-    /// 可见性窗口（AoI 生命周期，本队视角；t_out = None 表示战斗结束仍在场）
-    Visibility { t_in: f32, eid: u32, #[serde(skip_serializing_if = "Option::is_none")] t_out: Option<f32> },
+    /// 可见性窗口（AoI 生命周期，本队视角；t_out = None 表示战斗结束仍在场）。
+    /// `hp_raw` = 开段 Type5 物化快照的原始 HP u16（战斗车辆；每次重入都有，见 `AoiPresence`）
+    Visibility {
+        t_in: f32,
+        eid: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        t_out: Option<f32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hp_raw: Option<u16>,
+    },
     /// 作者战斗反馈计数（0x0c；code 语义见 combat::feedback_code）
     Counter { t: f32, code: u8, count: u16, value: u16 },
     /// 累计伤害进度（prop10；相邻差 = 区段内伤害）
@@ -155,6 +166,7 @@ impl AiReviewFacet {
                 t: e.clock,
                 victim_eid: e.victim,
                 hp: hp_v,
+                hp_raw: e.hp,
                 source_eid: e.source,
                 cause: e.cause,
             });
@@ -170,7 +182,7 @@ impl AiReviewFacet {
         }
         for p in &model.timeline.presence {
             if roster_eids.contains(&p.eid) {
-                events.push(AiEvent::Visibility { t_in: p.t_in, eid: p.eid, t_out: p.t_out });
+                events.push(AiEvent::Visibility { t_in: p.t_in, eid: p.eid, t_out: p.t_out, hp_raw: p.hp_raw });
             }
         }
         for c in &model.timeline.counters {
@@ -303,5 +315,69 @@ mod tests {
         // 未知时长 → null（绝不写 0/0.0）
         assert_eq!(facet2.battle.duration_secs, None);
         assert_eq!(facet2.battle.meta_duration_secs, None);
+    }
+
+    /// 原始 HP 透传：method1 终态哨兵（0xFFFD）在 `hp` 钳 0、`hp_raw` 原样；
+    /// AoI 开段 Type5（战斗车辆 entityTypeId=2）的物化 HP 随 Visibility 透出，重入各段各自携带。
+    #[test]
+    fn raw_hp_provenance_is_preserved() {
+        let summary = BattleSummary::from_naive(1);
+        let limits = crate::replay::combat::GunPitchLimits::new();
+        let victim = 0x44u32;
+        // Type5 战斗车辆物化：entityTypeId=2 @4..6、HP @51..53、昵称 "abc" @57
+        let type5 = |hp: u16| {
+            let mut p = vec![0u8; 64];
+            p[0..4].copy_from_slice(&victim.to_le_bytes());
+            p[4..6].copy_from_slice(&2u16.to_le_bytes());
+            p[51..53].copy_from_slice(&hp.to_le_bytes());
+            p[57] = 3;
+            p[58..61].copy_from_slice(b"abc");
+            p
+        };
+        let mut p33 = vec![0u8; 4];
+        p33[0..4].copy_from_slice(&victim.to_le_bytes());
+        let mut p4 = vec![0u8; 4];
+        p4[0..4].copy_from_slice(&victim.to_le_bytes());
+        // method1：[eid][mid=1][alen=7][hp u16][source u32][cause]
+        let method1 = |hp: u16| {
+            let mut p = vec![0u8; 12 + 7];
+            p[0..4].copy_from_slice(&victim.to_le_bytes());
+            p[4..8].copy_from_slice(&1u32.to_le_bytes());
+            p[8..12].copy_from_slice(&7u32.to_le_bytes());
+            p[12..14].copy_from_slice(&hp.to_le_bytes());
+            p[14..18].copy_from_slice(&0x55u32.to_le_bytes());
+            p[18] = 0;
+            p
+        };
+        let (e1, e2, m1, m2) = (type5(2000), type5(1500), method1(1700), method1(0xFFFD));
+        let packets: Vec<(u32, f32, &[u8])> = vec![
+            (33, 1.0, &p33), (5, 1.4, &e1), (8, 2.0, &m1), (4, 3.0, &p4),
+            (33, 9.0, &p33), (5, 9.4, &e2), (8, 10.0, &m2),
+        ];
+        let roster: Vec<crate::replay::playback::PlaybackPlayer> = Vec::new();
+        let model = ReplayModel::scan(&crate::replay::model::ScanInput {
+            packets: &packets, roster: &roster, author_account_id: 0, pitch_limits: &limits,
+        }).unwrap();
+        let facet = AiReviewFacet::from_model(&model, &summary);
+
+        let vis: Vec<(f32, Option<f32>, Option<u16>)> = facet.events.iter().filter_map(|e| match e {
+            AiEvent::Visibility { t_in, t_out, hp_raw, eid } if *eid == victim => Some((*t_in, *t_out, *hp_raw)),
+            _ => None,
+        }).collect();
+        assert_eq!(vis, vec![(1.4, Some(3.0), Some(2000)), (9.4, None, Some(1500))], "每次重入各自携带物化 HP");
+
+        let dmg: Vec<(u16, u16)> = facet.events.iter().filter_map(|e| match e {
+            AiEvent::Damage { victim_eid, hp, hp_raw, .. } if *victim_eid == victim => Some((*hp, *hp_raw)),
+            _ => None,
+        }).collect();
+        assert_eq!(dmg, vec![(1700, 1700), (0, 0xFFFD)], "hp 钳 0、hp_raw 保留哨兵原值");
+
+        // 非战斗车辆（entityTypeId≠2）的物化不透出 HP
+        let mut other = type5(2000);
+        other[4..6].copy_from_slice(&3u16.to_le_bytes());
+        let packets2: Vec<(u32, f32, &[u8])> = vec![(33, 1.0, &p33), (5, 1.4, &other)];
+        let presence = crate::replay::combat::collect_aoi_lifecycle(&packets2);
+        assert_eq!(presence.len(), 1);
+        assert_eq!(presence[0].hp_raw, None);
     }
 }

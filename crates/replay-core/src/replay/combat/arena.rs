@@ -115,6 +115,24 @@ pub struct AoiPresence {
     pub t_in: f32,
     /// 离开（Type4 时刻）；None = 战斗结束仍在场
     pub t_out: Option<f32>,
+    /// 开段 Type5 物化快照的原始 HP u16（偏移 51，仅 entityTypeId == 2 战斗车辆且载荷足长；
+    /// 否则缺省）。**每次重入都有**——与血量链 seed（`initial_hp`，仅首条 Type5）不同，
+    /// 这是重入时刻的当前血量证据（隐藏期间的掉血在此兑现）。原样透传不解释：
+    /// 0 / ≥0xFF00 哨兵族的语义由消费方按自己的口径分类（unknown ≠ 0）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hp_raw: Option<u16>,
+}
+
+/// Type5 物化包的战斗车辆 entityTypeId（payload[4..6) u16）
+const ENTITY_TYPE_COMBAT_VEHICLE: u16 = 2;
+/// Type5 战斗车辆物化快照的当前 HP 偏移（u16 LE；与 `collect_initial_hp` 同一偏移）
+const MATERIALIZATION_HP_OFFSET: usize = 51;
+
+/// Type5 物化快照的原始 HP（仅战斗车辆且载荷足长）
+fn materialization_hp_raw(p: &[u8]) -> Option<u16> {
+    if p.len() < MATERIALIZATION_HP_OFFSET + 2 { return None; }
+    if u16::from_le_bytes([p[4], p[5]]) != ENTITY_TYPE_COMBAT_VEHICLE { return None; }
+    Some(u16::from_le_bytes([p[MATERIALIZATION_HP_OFFSET], p[MATERIALIZATION_HP_OFFSET + 1]]))
 }
 
 /// 收集 AoI 在场区段：Type33 与 Type5 一一配对（3,869:3,869，间隔 0.046~1.207s）取 Type5
@@ -122,7 +140,7 @@ pub struct AoiPresence {
 pub fn collect_aoi_lifecycle(packets: &[(u32, f32, &[u8])]) -> Vec<AoiPresence> {
     // 文件序状态机：Type33 记 pending（按 eid，取首个）；Type5 消费 pending 开段；Type4 关段
     let mut pending33: std::collections::HashSet<u32> = Default::default();
-    let mut open: std::collections::HashMap<u32, f32> = Default::default();
+    let mut open: std::collections::HashMap<u32, (f32, Option<u16>)> = Default::default();
     let mut out: Vec<AoiPresence> = Vec::new();
     for (ptype, clock, p) in packets {
         if p.len() < 4 { continue; }   // Type17 等零长/短包无 eid 头（payloadLen==0 合法）
@@ -131,20 +149,20 @@ pub fn collect_aoi_lifecycle(packets: &[(u32, f32, &[u8])]) -> Vec<AoiPresence> 
             33 => { pending33.insert(eid); }
             5 => {
                 if pending33.remove(&eid) && !open.contains_key(&eid) {
-                    open.insert(eid, *clock);
+                    open.insert(eid, (*clock, materialization_hp_raw(p)));
                 }
             }
             4 => {
-                if let Some(t_in) = open.remove(&eid) {
-                    out.push(AoiPresence { eid, t_in, t_out: Some(*clock) });
+                if let Some((t_in, hp_raw)) = open.remove(&eid) {
+                    out.push(AoiPresence { eid, t_in, t_out: Some(*clock), hp_raw });
                 }
                 pending33.remove(&eid);
             }
             _ => {}
         }
     }
-    for (eid, t_in) in open {
-        out.push(AoiPresence { eid, t_in, t_out: None });
+    for (eid, (t_in, hp_raw)) in open {
+        out.push(AoiPresence { eid, t_in, t_out: None, hp_raw });
     }
     out.sort_by(|a, b| a.eid.cmp(&b.eid).then(a.t_in.partial_cmp(&b.t_in).unwrap()));
     out

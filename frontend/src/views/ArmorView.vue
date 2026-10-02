@@ -55,6 +55,8 @@ onBeforeUnmount(() => {
             <div id="view-toggle">
                 <button id="collision-btn">Show Collision</button>
                 <button id="penetration-btn">穿透热力图</button>
+                <!-- 触屏 / 无右键设备：打开后用单指拖动转炮塔与炮管（JS 绑定在 tankViewer.js） -->
+                <button id="aim-btn" aria-pressed="false" title="打开后用单指拖动转炮塔与炮管">炮塔</button>
             </div>
         </div>
         <div id="tank-picker">
@@ -79,6 +81,7 @@ onBeforeUnmount(() => {
             </div>
         <div id="corner-br">
             <div id="controls-hint">Drag to rotate · Scroll to zoom · Left-click: armor · Right-drag: turret/gun</div>
+            <div id="controls-hint-touch">拖动旋转视角 · 双指缩放 · 点击查装甲 · 打开「炮塔」后单指拖动转炮塔/炮管</div>
         </div>
         <div id="traj-info" style="display:none;position:fixed;z-index:200;pointer-events:none;"></div>
         <div id="turret-controls">
@@ -219,6 +222,36 @@ onBeforeUnmount(() => {
     .armor-view #view-toggle button { background: #35302c; color: var(--txt); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 12px; cursor: pointer; font-size: 0.85em; transition: all .12s ease; }
     .armor-view #view-toggle button:hover { border-color: var(--accent); }
     .armor-view #view-toggle button.active { background: linear-gradient(135deg,var(--accent),var(--accent-2)); color: #1a1208; border-color: transparent; }
+
+/* 触屏提示：默认隐藏，粗指针下替换掉鼠标版提示 */
+.armor-view #controls-hint-touch { display: none; }
+.armor-view #aim-btn { font-weight: 600; }
+
+/* 触屏命中区域只允许**放大**：粗指针下按钮抬到 --hit-min（44px）。
+   任何"缩到刚好塞下"的规则都不得压过它。 */
+@media (pointer: coarse) {
+    .armor-view #view-toggle button,
+    .armor-view #tank-selectors .tank-btn,
+    .armor-view #tp-close { min-height: var(--hit-min); }
+    .armor-view #controls-hint { display: none; }
+    .armor-view #controls-hint-touch { display: block; }
+}
+
+/* 手机：四角面板改为上下两条可滚动的窄带，场景留在中间；选车弹窗全屏。
+   #turret-controls 的隐藏必须 !important —— 它的 display 由 JS 写内联样式
+   （`style.display = 'block'`），而内联样式永远压过样式表。 */
+@media (width < 768px) {
+    .armor-view #corner-tl { top: 56px; left: 8px; right: 8px; flex-direction: column; gap: 6px; max-height: 34%; overflow-y: auto; }
+    .armor-view #info-panel { max-width: none; padding: 10px 12px; }
+    .armor-view #info-panel h1 { font-size: 1.1em; margin-bottom: 4px; }
+    .armor-view #tank-selectors { width: auto; padding: 8px 12px; }
+    .armor-view #corner-tr { top: auto; bottom: 8px; right: 8px; left: 8px; align-items: stretch; }
+    .armor-view #view-toggle { justify-content: center; }
+    .armor-view #corner-br { display: none; }
+    .armor-view #turret-controls { display: none !important; }
+    .armor-view #tank-picker { width: 100%; height: 100%; top: 0; left: 0; transform: none; border-radius: 0; }
+    .armor-view .tank-card { flex: 1 1 140px; max-width: none; }
+}
 
 .armor-view {
     position: relative;

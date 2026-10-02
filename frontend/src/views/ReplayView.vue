@@ -5,6 +5,7 @@ import { scanReplays, replayShots, playerSearch } from '../api/stats.js'
 import { fmtInt, wrCls, wrText, fmtDur } from '../utils/format.js'
 import { isTauri, tauriDialogOpen, tauriInvoke, uploadReplay } from '../utils/tauri.js'
 import { useToast } from '../composables/useToast.js'
+import { locationForView } from '../router/views.js'
 
 const { toast } = useToast()
 
@@ -241,21 +242,27 @@ function dmgColor(s) {
   return !d ? 'var(--muted)' : d >= 1000 ? 'var(--red)' : d >= 600 ? 'var(--accent-2)' : 'var(--txt)'
 }
 
-// 3D 查看器 URL：命中弹用目标车辆；脱靶弹（无 target_tank_id）用射手车辆兜底
+// 3D 查看器 URL：命中弹用目标车辆；脱靶弹（无 target_tank_id）用射手车辆兜底。
+// 路径与参数白名单由 router/views.js 统一构造，不再在此手写字符串。
 function srViewerUrl(s) {
   const shooterTank = s.shooter_tank_id || srAuthorTank.value || 0
   const tid = s.target_tank_id || shooterTank || 0
-  const sh = shooterTank ? '&shooter=' + shooterTank : ''
   // 弹种下标：服务端已按射手实际搭载配置解析（shooter_shell_cfg_idx 域）；
   // 槽位兜底已删（type=28 有切弹竞态，且槽位域只对作者有意义）
   const shIdx = s.shooter_shell_idx != null ? s.shooter_shell_idx : null
-  const ammo = shIdx != null ? '&shell=' + shIdx : ''
-  // 射手实际搭载配置：3D 下拉弹表按此选定（scfg），多炮坦克不再错挂 stock 炮弹表
-  const scfg = s.shooter_config_idx != null ? '&scfg=' + s.shooter_config_idx : ''
   // 实际搭载配置：命中弹用目标配置，脱靶弹用射手配置
   const cfgId = s.target_tank_id ? s.target_config_idx : (s.shooter_config_idx ?? s.target_config_idx)
-  const cfg = cfgId != null ? '&config=' + cfgId : ''
-  return `/armor_view/view/${tid}?heatmap=1&shot=${s.index}${sh}${ammo}${cfg}${scfg}&world=1`
+  return locationForView('armor-view', {
+    tankId: tid,
+    heatmap: 1,
+    shot: s.index,
+    // 射手实际搭载配置：3D 下拉弹表按此选定（scfg），多炮坦克不再错挂 stock 炮弹表
+    shooter: shooterTank || null,
+    shell: shIdx,
+    scfg: s.shooter_config_idx,
+    config: cfgId,
+    world: 1,
+  })
 }
 function openShotInViewer(no) {
   const shot = srData.value.find((s) => s.index === no)
@@ -297,7 +304,7 @@ async function onSrImportFile(e) {
 function openPlayback() {
   const f = srFile.value.trim()
   if (!f) { srError.value = 'Enter a .wotbreplay path.'; return }
-  window.open('/playback?file=' + encodeURIComponent(f) + '&q=' + srQuality.value, '_blank')
+  window.open(locationForView('playback', { file: f, q: srQuality.value }), '_blank')
 }
 
 onMounted(() => {

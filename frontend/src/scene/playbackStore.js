@@ -1,6 +1,7 @@
 // 实时回放的响应式 UI 状态：scene（playbackScene.js，命令式 three.js 内核）每 tick 写入，
 // Vue 面板组件只读渲染；控件事件回调 scene 方法。字段与旧版 DOM 触点一一对应。
 import { reactive } from 'vue'
+import { DEFAULT_PLAYBACK_SPEED } from '../composables/usePlaybackTransport.js'
 
 export function createPlaybackStore() {
   return reactive({
@@ -17,11 +18,12 @@ export function createPlaybackStore() {
     score2: 0,
     // 控制条
     playing: false,
-    speed: 2,
+    speed: DEFAULT_PLAYBACK_SPEED,
     time: 0,
+    // 时间轴：[startTime, duration] 绝对秒。duration 是比赛结束（非录像流结束），
+    // 进度条（PlaybackTimeline）直接读这三个值，不再有 seekFrac 份额与 seeking 抑制协议。
+    startTime: 0,
     duration: 0,
-    seekFrac: 0,
-    seeking: false, // 用户拖动进度条期间场景不回写
     cam: 'free',
     glbOn: false,
     glbAllowed: true,

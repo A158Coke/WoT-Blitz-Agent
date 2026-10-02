@@ -13,6 +13,24 @@
     --txt:#f3ede6; --muted:#9c8f7f;
     --shadow:0 10px 34px rgba(0,0,0,0.45);
     --radius:16px; --radius-sm:10px;
+
+    /* 阵营 / 目标语义色。JS 侧唯一事实源是 frontend/src/scene/teamColors.js
+       （3D 场景的基地环、旗帜、炮线用其中的 TEAM_COLORS 亮色口径）——改色必须两处同时改。
+       -ally / -enemy：深色半透明面板之上的文案与描边（对应 TEAM_COLORS_PANEL）
+       -neutral：中立与未知阵营一律白（unknown ≠ enemy）
+       -objective：单基地占领进度，非阵营语义，不暗示"谁在占领" */
+    --color-team-ally:#3fa66a;
+    --color-team-enemy:#c05046;
+    --color-team-neutral:#f5f5f5;
+    --color-objective:#ffc24b;
+
+    /* 触屏命中区域下限：粗指针（触屏）下只允许放大，不允许被任何"缩到刚好塞下"的
+       规则压小。控件用 min-width/min-height: var(--hit-min)。 */
+    --hit-min:24px;
+}
+
+@media (pointer: coarse) {
+    :root { --hit-min:44px; }
 }
 
 * { box-sizing: border-box; }

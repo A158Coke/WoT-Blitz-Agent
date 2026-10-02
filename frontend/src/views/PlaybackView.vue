@@ -2,18 +2,34 @@
 // 实时回放面板：Vue 只负责 loader/顶栏/名册/击杀流/控制条等 UI，
 // three.js 场景内核在 scene/playbackScene.js（命令式，逐行平移自旧版）。
 // 面板状态由 scene 每 tick 写入 store；控件事件回调 scene 方法。
-import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { initPlayback, QUALITY_PRESETS } from '../scene/playbackScene.js'
 import { createPlaybackStore } from '../scene/playbackStore.js'
+import PlaybackTimeline from '../components/PlaybackTimeline.vue'
+import { PLAYBACK_SPEEDS, usePlaybackTransport } from '../composables/usePlaybackTransport.js'
+import { formatPlaybackClock } from '../utils/playbackClock.js'
 
 const route = useRoute()
 const store = createPlaybackStore()
 const sceneEl = ref(null)
-const seekEl = ref(null)
 let scene = null
 
-const SPEEDS = [0.5, 1, 2, 4, 8, 16]
+// 全局键盘（空格播放/暂停、←/→ 跳 5s）在组件生命周期内单点注册，带输入框白名单——
+// 场景内核不再自己挂 window 监听，否则文件路径输入框里的空格会被吞掉并切了播放。
+// 拖动进度条：按下即暂停，松手时若原先在播放才继续。
+const transport = usePlaybackTransport({
+  isPlaying: () => store.playing,
+  play: () => scene && scene.setPlaying(true),
+  pause: () => scene && scene.setPlaying(false),
+  step: (delta) => scene && scene.seekBy(delta),
+  isReady: () => store.hasData,
+})
+
+// 时钟相对时间轴起点显示（00:00 起），而不是显示绝对秒（t_start 起算）
+const elapsedText = computed(() => formatPlaybackClock(store.time - store.startTime))
+const totalText = computed(() => formatPlaybackClock(store.duration - store.startTime))
+
 // 争霸点数上限（满值即胜利分）
 const POINTS_MAX = 1000
 const pointsPct = (v) => (v == null ? 0 : Math.max(0, Math.min(100, (v / POINTS_MAX) * 100)))
@@ -38,16 +54,6 @@ function onLocalFile(e) {
   }
   e.target.value = ''
 }
-function onSeekInput(e) {
-  scene.seekFraction(e.target.value / 1000)
-}
-
-// 进度条为非受控输入（旧版语义）：滑块值由场景 tick 直接写 DOM。
-// 不用 :value 绑定——Vue 每帧重渲染会把 value 强制写回 store.seekFrac（旧值），
-// 与用户拖拽打架导致滑块不跟手。seeking 期间（用户按住）场景不回写。
-watch(() => store.seekFrac, (v) => {
-  if (seekEl.value && !store.seeking) seekEl.value = String(v)
-})
 
 onMounted(() => {
   scene = initPlayback(sceneEl.value, store)
@@ -166,19 +172,23 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 
     <div id="controls" class="panel">
       <div class="row">
-        <button id="playBtn" @click="scene.togglePlay()">{{ store.playing ? '⏸ 暂停' : '▶ 播放' }}</button>
+        <button id="playBtn" @click="transport.togglePlay()">{{ store.playing ? '⏸ 暂停' : '▶ 播放' }}</button>
         <span id="speeds">
           <button
-            v-for="s in SPEEDS" :key="s" class="speed-btn"
+            v-for="s in PLAYBACK_SPEEDS" :key="s" class="speed-btn"
             :class="{ on: store.speed === s }" @click="scene.setSpeed(s)"
           >{{ s }}x</button>
         </span>
-        <input
-          type="range" id="seek" ref="seekEl" min="0" max="1000" value="0"
-          @pointerdown="store.seeking = true" @pointerup="store.seeking = false"
-          @blur="store.seeking = false" @input="onSeekInput"
-        >
-        <span class="time">{{ store.time.toFixed(1) }}s / {{ store.duration.toFixed(1) }}s</span>
+        <PlaybackTimeline
+          :current-time="store.time"
+          :start-time="store.startTime"
+          :duration="store.duration"
+          :disabled="!store.hasData"
+          @drag-start="transport.scrubStart()"
+          @drag-end="transport.scrubEnd()"
+          @seek="scene.seekTime($event)"
+        />
+        <span class="time">{{ elapsedText }} / {{ totalText }}</span>
       </div>
       <div class="row">
         <span style="color:var(--dim)">镜头</span>
@@ -221,11 +231,15 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
 </template>
 
 <style scoped>
-/* 面板配色体系自旧版 playback 页独立平移（与主应用 tokens 不同系） */
+/* 面板配色：面板自身的底/线/字仍独立（3D 场景之上需要更高对比），
+   但**阵营与目标色不再自带一套**——改读全局 token，与 3D 标记同源
+   （唯一 JS 事实源 scene/teamColors.js，见 styles/tokens.css 的 --color-team-*）。 */
 #pb-root {
   position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
   --panel: rgba(16, 20, 26, .82); --line: #2c3542; --fg: #d8dee7; --dim: #8a94a3;
-  --ally: #3fa66a; --enemy: #c05046; --unknown: #8a94a3; --accent: #e8b23c;
+  --ally: var(--color-team-ally); --enemy: var(--color-team-enemy);
+  --objective: var(--color-objective);
+  --accent: #e8b23c;
   background: #0d1117; color: var(--fg);
   font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
 }
@@ -254,11 +268,11 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
    不借 --ally/--enemy —— 避免让呈现暗示"谁在占领"。 */
 #topbar .tb-assault { font-size: 13px; color: var(--dim); gap: 8px; }
 #topbar .objv { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 13px;
-  color: var(--accent); text-align: right; }
+  color: var(--objective); text-align: right; }
 #topbar .objv-none { color: var(--dim); font-style: normal; }
 #topbar .objbar { display: inline-block; width: 214px; height: 7px; border-radius: 4px;
   background: var(--line); overflow: hidden; }
-#topbar .objbar > i { display: block; height: 100%; background: var(--accent);
+#topbar .objbar > i { display: block; height: 100%; background: var(--objective);
   transition: width .18s linear; }
 #topbar .objtag { font-style: normal; }
 #topbar .timer { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -308,8 +322,7 @@ onBeforeUnmount(() => { if (scene) scene.destroy() })
             padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; }
 #controls .row { display: flex; gap: 8px; align-items: center; }
 /* 全局 tokens.css 的 input{padding:9px 13px;border...;flex:1;min-width:120px} 会破坏
-   滑块的原生渲染与命中判定、撑大开关复选框——恢复各自自然形态 */
-#controls input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); padding: 0; border: none; background: transparent; border-radius: 0; }
+   开关复选框——恢复自然形态（range 的形态由 PlaybackTimeline 的 scoped 样式负责） */
 #pb-root input[type="checkbox"] { flex: none; min-width: 0; width: auto; margin: 0; }
 #controls .time { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 96px; text-align: center; }
 #pb-root button, #pb-root select { background: #1d242e; color: var(--fg); border: 1px solid var(--line);
@@ -332,4 +345,18 @@ label.toggle { display: flex; gap: 4px; align-items: center; color: var(--dim); 
 #loader .hint { color: var(--dim); max-width: 560px; text-align: center; }
 #err { color: #e07b7b; max-width: 640px; white-space: pre-wrap; }
 #qSel button { min-width: 44px; }
+
+/* ---------- 触屏适配（B-4）----------
+   两条规则来自 wotbtools 的实机教训：
+   1) 档位是**数据**不是布局常量——速度档从 4 增到 5/6 时，写死 repeat(4,1fr) 会换行。
+      用 grid-auto-flow: column 让列数跟随档位数自适应。
+   2) 命中区域只允许**放大**：任何“缩到刚好塞下”的规则都不得压过粗指针下的
+      --hit-min（44px）。手机控件不得低于 44×44。 */
+#speeds { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(0, auto); gap: 4px; }
+#controls .row { flex-wrap: wrap; }
+@media (pointer: coarse) {
+  #pb-root button { min-height: var(--hit-min); }
+  #playBtn { min-width: var(--hit-min); }
+  #speeds .speed-btn { min-width: var(--hit-min); }
+}
 </style>

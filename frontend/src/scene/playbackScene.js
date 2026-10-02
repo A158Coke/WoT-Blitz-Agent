@@ -19,6 +19,10 @@ import { impactKind } from './impactKind.js'
 import { pointsAt } from './supremacyPoints.js'
 import playableBoundsData from './playableBounds.json'
 import { assetUrl } from './assetBase.js'
+import { battleEndTime } from './battleEnd.js'
+import { advancePlaybackTime } from '../utils/playbackClock.js'
+import { isPlaybackSpeed } from '../composables/usePlaybackTransport.js'
+import { TEAM_COLORS, TEAM_COLORS_DEEP, TEAM_COLORS_PANEL, hexToInt } from './teamColors.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
@@ -37,6 +41,9 @@ export function initPlayback(container, store) {
   let DATA = null;                 // PlaybackData（当前会话）
   let V = [];                      // 车辆运行时 {def, group, turretG, gunPivot, label, meshHull, glb}
   let T = 0, PLAYING = false, SPEED = store.speed;
+  // 时间轴终点（绝对秒）：比赛结束，不是录像流结束（见 battleEnd.js）。
+  // 全部"是否播到头 / 进度条分母 / seek 上界"都读它，不再散落比较 meta.duration。
+  let END = 0;
   let CAM = 'free', FOLLOW_EID = 0;
   let shotPtr = 0, killPtr = 0;
   const tracers = [], impacts = [];
@@ -52,11 +59,12 @@ export function initPlayback(container, store) {
   let mapScenery = null;                              // 静态场景 GLB（建筑等）
   let groundMesh = null, gridHelper = null;           // buildWorld 的占位地面/网格（会话拥有）
   let boundaryGroup = null;                           // 地图边界红线（会话拥有）
-  // 阵营/中立调色（唯一事实源）：green / red / white——炮线、基地归属、标签、
+  // 阵营/中立调色：green / red / white——炮线、基地归属、标签、
   // 中立与未知阵营一律用 white（unknown ≠ enemy）。
-  const COLOR_FRIENDLY = 0x2ecc71;
-  const COLOR_ENEMY = 0xef4444;
-  const COLOR_UNKNOWN = 0xf5f5f5;
+  // 唯一事实源在 scene/teamColors.js，与 DOM 侧 token（--color-team-*）同源。
+  const COLOR_FRIENDLY = hexToInt(TEAM_COLORS.ally);
+  const COLOR_ENEMY = hexToInt(TEAM_COLORS.enemy);
+  const COLOR_UNKNOWN = hexToInt(TEAM_COLORS.neutral);
   let baseObjects = [];                               // 争霸基地 {baseId, bid, ring, sprite, canvas, ...}
   let destroyed = false;
   let kfId = 0;
@@ -1039,7 +1047,7 @@ export function initPlayback(container, store) {
   // 几何来自 mapBases.json（客户端 .sc2 提取，世界坐标；scene x = −游戏 x 镜像自洽）。
   // 状态来自 DATA.supremacy_bases（contract v2 wrapper12/root11 sparse 重建）——
   // seek 折叠：每基地取 clock≤t 的最后一条。渲染只做呈现，不推断协议。
-  const BASE_OWNER_FRIENDLY = 0x2ecc71, BASE_OWNER_ENEMY = 0xef4444, BASE_NEUTRAL = COLOR_UNKNOWN;
+  const BASE_OWNER_FRIENDLY = COLOR_FRIENDLY, BASE_OWNER_ENEMY = COLOR_ENEMY, BASE_NEUTRAL = COLOR_UNKNOWN;
   function baseSideColor(team) {
     const ft = DATA.meta.friendly_team;
     if ((team !== 1 && team !== 2) || (ft !== 1 && ft !== 2)) return BASE_NEUTRAL;
@@ -1193,7 +1201,7 @@ export function initPlayback(container, store) {
   // 静态 scene 的 `team` 字段语义 UNKNOWN —— 一律不据此上色/推断归属，环与 HUD 用中性色，
   // 进度条用呈现强调色（仅表示"有占领进度"，不代表阵营）。也不由车辆距离推算半径。
   const ASSAULT_RADIUS_FALLBACK = 20;      // 客户端 scene 常不声明 radius：20m 仅呈现兜底
-  const ASSAULT_PROGRESS_COLOR = 0xffc24b; // 呈现强调色（非阵营语义）
+  const ASSAULT_PROGRESS_COLOR = hexToInt(TEAM_COLORS.objective); // 呈现强调色（非阵营语义）
   let assaultMarker = null;
 
   function clearAssaultBase() {
@@ -1292,12 +1300,12 @@ export function initPlayback(container, store) {
     m.sprite.scale.set(s * 2, s, 1);
   }
 
-  // 队伍色：深绿 / 深红。原先 0x3fa66a / 0xc05046 偏亮，在明亮地表与浅色贴图上
+  // 队伍色：深绿 / 深红（teamColors.js 的深色口径）。原先亮色偏亮，在明亮地表与浅色贴图上
   // 对比不足。同源供标签卡片、花名册圆点、无 GLB 时的代理车体三处使用，保持同一调色。
   function teamColor(v) {
     const f = DATA.meta.friendly_team, t = v.def.team;
     if (t === 0 || f === 0) return COLOR_UNKNOWN;   // 中立＝白（green / red / white 口径）
-    return t === f ? 0x26794a : 0x98322a;
+    return t === f ? hexToInt(TEAM_COLORS_DEEP.ally) : hexToInt(TEAM_COLORS_DEEP.enemy);
   }
 
   // ---------- 标签软遮挡（fast-pass）----------
@@ -2157,8 +2165,9 @@ export function initPlayback(container, store) {
     if (!renderer) return;   // 渲染器惰性创建（首次 startPlayback）：数据加载完成前无场景可渲染
     const dt = Math.min(clock.getDelta(), 0.1);
     if (DATA && PLAYING) {
-      T += dt * SPEED;
-      if (T >= DATA.meta.duration) { T = DATA.meta.duration; setPlaying(false); }
+      // 推进 + 钳制合并到纯函数里（NaN/负增量不会污染时钟）；终点是比赛结束 END，不是录像流结束
+      T = advancePlaybackTime(T, END, dt * 1000, SPEED);
+      if (T >= END) setPlaying(false);
       tick();
     }
     // 相机
@@ -2241,15 +2250,15 @@ export function initPlayback(container, store) {
     store.assaultProgress = store.assaultObjective ? assaultProgressAt(T) : null;
     if (DEBUG) window.__T = T;   // 调试钩子：当前回放时钟
     store.time = T;
-    store.duration = DATA.meta.duration;
-    const f = (T - DATA.meta.t_start) / Math.max(0.001, DATA.meta.duration - DATA.meta.t_start);
-    if (!store.seeking) store.seekFrac = Math.round(f * 1000);
-    if (!winnerShown && T >= DATA.meta.duration - 1e-3 && DATA.meta.winner_team) {
+    store.startTime = DATA.meta.t_start;
+    // 进度条分母是比赛结束 END（非录像流结束），走满即比赛打完——不再等结算画面放完
+    store.duration = END;
+    if (!winnerShown && T >= END - 1e-3 && DATA.meta.winner_team) {
       winnerShown = true;
       const w = DATA.meta.winner_team, fr = DATA.meta.friendly_team;
       store.banner = {
         text: w === 0 ? '平局' : (w === fr ? '胜利' : '失败'),
-        color: w === fr ? '#3fa66a' : '#c05046',
+        color: w === fr ? TEAM_COLORS_PANEL.ally : TEAM_COLORS_PANEL.enemy,
       };
     }
   }
@@ -2260,7 +2269,7 @@ export function initPlayback(container, store) {
     store.playing = p;
   }
   function seekTo(t) {
-    T = Math.max(DATA.meta.t_start, Math.min(DATA.meta.duration, t));
+    T = Math.max(DATA.meta.t_start, Math.min(END, t));
     clearEffects();   // 动态层 dispose（与 teardown 同一路径，防 seek 循环累积显存）
     // 游标一律重定到「T 之后第一条」：clearEffects 已把 transient 游标归零，
     // 若不重定，紧随的 tick() 会把 t<=T 的历史飘字/爆散一次性补播（与 2D seek 语义不符）
@@ -2271,6 +2280,10 @@ export function initPlayback(container, store) {
     winnerShown = false; store.banner = null;
     tick();
   }
+  /** 绝对秒 seek（进度条直接给时刻，不再经 0–1000 份额中转） */
+  function seekTime(t) { if (DATA) seekTo(Number(t)); }
+  /** 相对跳秒：键盘 ←/→ 与传输控件步进用（PLAYBACK_STEP_SECONDS 由调用方给） */
+  function seekBy(delta) { if (DATA) seekTo(T + Number(delta || 0)); }
   function setFollow(eid) {
     FOLLOW_EID = (FOLLOW_EID === eid) ? 0 : eid;
     if (FOLLOW_EID) { setCam('follow'); } else { setCam('free'); }
@@ -2288,11 +2301,8 @@ export function initPlayback(container, store) {
       FOLLOW_EID = 0;
     }
   }
-  function setSpeed(s) { SPEED = s; store.speed = s; }
-
-  function onKeydown(e) {
-    if (e.code === 'Space' && DATA) { e.preventDefault(); setPlaying(!PLAYING); }
-  }
+  // 只接受档位表内的值：面板按钮与 URL 参数都不该把场景带进"1.37×"这种未定义速度
+  function setSpeed(s) { if (!isPlaybackSpeed(s)) return; SPEED = s; store.speed = s; }
 
   // ---------- 数据加载 ----------
   // 注：hull_yaw/turret_yaw 由后端相位解卷绕（连续域）后落盘，朴素线性插值即物理正确，
@@ -2384,7 +2394,7 @@ export function initPlayback(container, store) {
     }
     glbCache = new Map();
     DATA = null;
-    T = 0; shotPtr = 0; killPtr = 0;
+    T = 0; END = 0; shotPtr = 0; killPtr = 0;
     winnerShown = false;
     FOLLOW_EID = 0; followAnchor = null;
     store.killfeed = [];
@@ -2435,6 +2445,9 @@ export function initPlayback(container, store) {
     buildSupremacyBases();
     buildAssaultBase();
     T = DATA.meta.t_start;
+    // 时间轴终点＝比赛结束（进入战后阶段的时刻）；无战后阶段则退回录像流结束。
+    // 必须在 buildVehicles 之后、setPlaying 之前定型：tick() 首帧就要写 store.duration。
+    END = battleEndTime(DATA);
     shotPtr = 0; killPtr = 0;
     if (DEBUG) window.__pbV = V;   // 调试钩子：控制台可查每车 GLB/位姿状态（仅 ?debug）
     if (glbOn) applyGlbToggle(true);   // 会话切换后按用户偏好恢复 GLB 车模
@@ -2442,8 +2455,9 @@ export function initPlayback(container, store) {
     tick();
   }
 
-  // 初始化：事件绑定 + 动画循环（渲染器惰性创建，画质选择先于首帧定型）
-  addEventListener('keydown', onKeydown);
+  // 初始化：动画循环（渲染器惰性创建，画质选择先于首帧定型）。
+  // 键盘监听不在这里——全局 keydown 由 composables/usePlaybackTransport.js 在
+  // 组件生命周期内单点注册，并带输入框白名单（场景内核无权判断焦点落在哪）。
   animate();
   applyGlbGate();
 
@@ -2452,7 +2466,8 @@ export function initPlayback(container, store) {
     togglePlay: () => setPlaying(!PLAYING),
     setPlaying,
     setSpeed,
-    seekFraction: (frac) => { if (DATA) seekTo(DATA.meta.t_start + frac * (DATA.meta.duration - DATA.meta.t_start)); },
+    seekTime,
+    seekBy,
     setCam,
     setFollow,
     setGlb: (on) => { if (Q.allowGlb || !on) applyGlbToggle(on); },
@@ -2463,7 +2478,6 @@ export function initPlayback(container, store) {
       destroyed = true;
       cancelAnimationFrame(rafId);   // 显式取消：不等下一帧的 destroyed 自然退出
       teardownSession();             // 会话资源（车辆/地图/特效/GLB 模板）全量 dispose
-      removeEventListener('keydown', onKeydown);
       removeEventListener('resize', onResize);
       if (DEBUG) {
         delete window.__scene; delete window.__renderer;

@@ -3141,25 +3141,25 @@ export function initTankViewer() {
                 onClick(e);
             });
 
-            let rmbDown = false, rmbStartX = 0, rmbStartY = 0, rmbStartTurret = 0, rmbStartGun = 0;
-            renderer.domElement.addEventListener('contextmenu', function(e) { e.preventDefault(); });
-            renderer.domElement.addEventListener('mousedown', function(e) {
-                if (e.button !== 2) return;
-                if (window.__worldPan) return;   // 世界模式：右键留给 OrbitControls 平移
-                rmbDown = true;
-                rmbStartX = e.clientX;
-                rmbStartY = e.clientY;
-                rmbStartTurret = currentTurretDeg;
-                rmbStartGun = currentGunDeg;
-            });
-            onWin('mousemove', function(e) {
-                if (!rmbDown) return;
-                const dx = e.clientX - rmbStartX;
-                const dy = e.clientY - rmbStartY;
+            // 炮塔/炮管瞄准：右键拖动（鼠标）与「炮塔」开关下的单指拖动（触屏）共用同一套限位数学
+            let rmbDown = false, aimPointer = null;
+            let aimStartX = 0, aimStartY = 0, aimStartTurret = 0, aimStartGun = 0;
+
+            function beginAim(x, y) {
+                aimStartX = x;
+                aimStartY = y;
+                aimStartTurret = currentTurretDeg;
+                aimStartGun = currentGunDeg;
+            }
+            function applyAimDrag(clientX, clientY) {
+                const dx = clientX - aimStartX;
+                const dy = clientY - aimStartY;
                 const norm180 = (a) => ((a + 180) % 360 + 360) % 360 - 180;
                 const yl = currentConfig()?.yaw_limits;
                 const pl = currentConfig()?.pitch_limits;
-                let yawDeg = rmbStartTurret + dx * 0.5;
+                // 模型/配置尚未就绪时拖动不做事——触屏上按下即拖，比鼠标更容易撞上这个窗口期
+                if (!pl) return;
+                let yawDeg = aimStartTurret + dx * 0.5;
                 if (yl) {
                     if (yl.max - yl.min < 360) {
                         yawDeg = norm180(Math.max(-yl.max, Math.min(-yl.min, yawDeg)));
@@ -3177,7 +3177,7 @@ export function initTankViewer() {
                         yawDeg = norm180(yawDeg);   // 同上：无限位炮塔回绕
                     }
                 }
-                let pitchDeg = rmbStartGun - dy * 0.5;
+                let pitchDeg = aimStartGun - dy * 0.5;
                 let lower = -pl.max, upper = -pl.min;
                 const transition = pl.transition || 20;
                 if (pl.back) {
@@ -3210,10 +3210,53 @@ export function initTankViewer() {
                 document.getElementById('turret-val').textContent = currentTurretDeg.toFixed(0) + '°';
                 document.getElementById('gun-val').textContent = currentGunDeg.toFixed(0) + '°';
                 updateTurretGun(currentTurretDeg, currentGunDeg);
+            }
+
+            renderer.domElement.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+            renderer.domElement.addEventListener('mousedown', function(e) {
+                if (e.button !== 2) return;
+                if (window.__worldPan) return;   // 世界模式：右键留给 OrbitControls 平移
+                rmbDown = true;
+                beginAim(e.clientX, e.clientY);
+            });
+            onWin('mousemove', function(e) {
+                if (!rmbDown) return;
+                applyAimDrag(e.clientX, e.clientY);
             });
             onWin('mouseup', function(e) {
                 if (e.button === 2) rmbDown = false;
             });
+
+            // 触屏 / 没有右键的设备：「炮塔」开关打开时，单指拖动转炮塔与炮管，镜头旋转暂停。
+            // 用 pointer 事件（鼠标与触摸统一）——mouse 事件在触屏上根本收不到，右键拖动的
+            // 路径在该设备上等于死路，这是此开关存在的原因。
+            let aimMode = false;
+            const aimBtn = document.getElementById('aim-btn');
+            if (aimBtn) aimBtn.addEventListener('click', function() {
+                aimMode = !aimMode;
+                this.classList.toggle('active', aimMode);
+                this.setAttribute('aria-pressed', String(aimMode));
+                // 瞄准期间暂停镜头旋转：否则同一次拖动会既转炮塔又转相机
+                if (controls) controls.enabled = !aimMode;
+            });
+            renderer.domElement.addEventListener('pointerdown', function(e) {
+                if (!aimMode || aimPointer != null || window.__worldPan) return;
+                e.preventDefault();   // 拖炮塔时不要触发画布滚动手势
+                aimPointer = e.pointerId;
+                beginAim(e.clientX, e.clientY);
+                try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+            });
+            onWin('pointermove', function(e) {
+                if (aimPointer !== e.pointerId) return;
+                applyAimDrag(e.clientX, e.clientY);
+            });
+            const endAim = function(e) {
+                if (aimPointer !== e.pointerId) return;
+                aimPointer = null;
+                try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
+            };
+            onWin('pointerup', endAim);
+            onWin('pointercancel', endAim);
 
             document.getElementById('turret-controls').style.display = 'block';
 

@@ -10,6 +10,7 @@ import {
   TYPE_LABEL, TYPE_CLS, NATION_LABEL, normType, isPremiumShell, armorColorStyle, fmt,
   peerMetrics, peersOf, yawArcSvg, gunFanSvg,
 } from '../utils/tankStats.js'
+import { locationForView } from '../router/views.js'
 
 const route = useRoute()
 const detail = ref(null)
@@ -241,7 +242,7 @@ watchEffect(() => {
 })
 
 function open3d() {
-  window.open(`/armor_view/view/${detail.value.id}?config=${cfgIdx.value}`, '_blank')
+  window.open(locationForView('armor-view', { tankId: detail.value.id, config: cfgIdx.value }), '_blank')
 }
 </script>
 

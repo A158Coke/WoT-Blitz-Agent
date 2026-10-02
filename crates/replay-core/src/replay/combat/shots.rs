@@ -160,7 +160,8 @@ pub struct ShotReplayData {
     pub modifiers: Vec<u32>,
     /// 开火时刻（秒）——与 method29 发射包确定性匹配
     pub fire_time: f32,
-    /// shotId——method29 发射 ↔ method20 终点 确定性配对键
+    /// Shot 顶层身份：unique shotId = 一次开火。method29 发射 ↔ method20 终点以此确定性配对；
+    /// 同一 shotId 的后续 method29 / 多次装甲交互不得展开成额外 Shot。
     pub shot_id: u32,
     /// 弹药槽位——type=28 选择状态在发射时刻的值（3D 视图弹种选择器索引用）
     pub shell_slot: u32,
@@ -344,8 +345,8 @@ pub(crate) struct HitFeedback {
 /// 被复制三份；FilteredTimeline 渲染缓存两路各建一遍）——现在一次收集、两路复用，
 /// `ReplayModel::scan` 也从本结构取位姿/血量/名字索引，整场分析只此一份。
 pub(crate) struct ShotScanShared {
-    /// 全部 method29 发射（作者 + 他人；按发射时刻排序，shotId 全局去重——shotId 与
-    /// 射手一一对应，全局去重与按路径分别去重等价）
+    /// 全部 Shot 的 primary method29（作者 + 他人；按发射时刻排序，shotId 全局去重）。
+    /// unique shotId = 一次开火；同 shotId 的后续 method29 不增加 Shot 数。
     pub launches: Vec<LaunchEntry>,
     /// 每射手首个 args<37 包的 args_len（作者路径 fail-fast 证据；正常回放为空表）
     pub short_args: HashMap<u32, usize>,
@@ -580,6 +581,52 @@ pub(crate) fn build_shot_scan_shared(
     }
 }
 
+
+/// 作者路径 type=32 选择：method38 先确定 victim；同一 victim/命中时钟可能合法出现
+/// 多个不同 segment（一次 Shot 的多次装甲交互）。method8 与 type=32 的 hash6 是同事件
+/// 确定性令牌，因此有唯一 method8 token 时先按 token 收窄；重复 method8 广播按 hash6 去重。
+/// token 缺失/不唯一/无法命中 type=32 时退回原 victim+time 严格判定，不猜选。
+fn select_author_warning32<'a>(
+    warnings32: &'a [ArenaWarning32],
+    direct_hits8: &[DirectHit8],
+    author_player_eid: u32,
+    victim_eid: u32,
+    end_time: f32,
+) -> Result<Option<&'a ArenaWarning32>, usize> {
+    let window: Vec<&ArenaWarning32> = warnings32.iter()
+        .filter(|w| w.eid == victim_eid && (w.t - end_time).abs() <= 0.05)
+        .collect();
+    if window.is_empty() {
+        return Ok(None);
+    }
+
+    let mut hashes: Vec<[u8; 6]> = Vec::new();
+    for d in direct_hits8.iter().filter(|d|
+        d.shooter == author_player_eid
+            && d.victim == victim_eid
+            && (d.t - end_time).abs() <= 0.05
+    ) {
+        if !hashes.contains(&d.hash6) {
+            hashes.push(d.hash6);
+        }
+    }
+
+    let candidates: Vec<&ArenaWarning32> = if hashes.len() == 1 {
+        let matched: Vec<&ArenaWarning32> = window.iter()
+            .copied()
+            .filter(|w| w.hash6 == hashes[0])
+            .collect();
+        if matched.is_empty() { window } else { matched }
+    } else {
+        window
+    };
+
+    let first = candidates[0];
+    if candidates.iter().any(|w| w.segment != first.segment) {
+        return Err(candidates.len());
+    }
+    Ok(Some(first))
+}
 
 // ---------- 作者/他人两路径的同构段共享实现（合并方案见架构债文档第 2 节） ----------
 // 两条路径的本质差异只在"缺失时怎么办"（作者 bail / 他人跳过或兜底）；下列函数把
@@ -923,37 +970,38 @@ pub(crate) fn extract_shot_replays_from_shared(
         let mut game_hit_result: u8 = 255;
         let mut hit_token: Option<String> = None;
         if let Some(teid) = target_eid {
-            // warnings32 已按 t 排序且 filter 保序，seg_cands 天然有序，无需再排
-            let seg_cands: Vec<&ArenaWarning32> = warnings32.iter()
-                .filter(|w| w.eid == teid && (w.t - end_time).abs() <= 0.05)
-                .collect();
-            if !seg_cands.is_empty() {
-                let first = seg_cands[0];
-                if seg_cands.iter().any(|w| w.segment != first.segment) {
-                    anyhow::bail!("{}: type=32 segment 歧义——窗口内 {} 条互不一致的命中段", ctx(), seg_cands.len());
-                }
-                segment = first.segment;
-                game_hit_result = first.result;
-                hit_token = Some(first.hash6.iter().map(|b| format!("{:02x}", b)).collect());
-                // segment 布局解码：[result][shell_global_id u24 LE（=(局部 id<<8)|国家基数）][00][X][Y][Z=armor_group]
-                // （旧 "[tank+9]" 解释为 4 样本巧合，已证伪——B1 是弹种 id 的国家基数字节）
-                let sb = segment.to_le_bytes();
-                // 全局弹种 id = B1B2B3 u24 LE（=(局部 id<<8)|国家基数），与 WI shell_id 同值
-                shell_id = (sb[1] as u32) | ((sb[2] as u32) << 8) | ((sb[3] as u32) << 16);
-                armor_group = sb[7];
-                hit_triangle = u16::from_be_bytes([sb[5], sb[6]]);
-            } else {
-                // direct_hits8 已按 t 排序且 filter 保序，r8 天然有序，无需再排
-                let r8: Vec<&DirectHit8> = direct_hits8.iter()
-                    .filter(|d| d.shooter == author_player_eid && d.victim == teid && (d.t - end_time).abs() <= 0.05)
-                    .collect();
-                if !r8.is_empty() {
-                    let first = r8[0];
-                    if r8.iter().any(|d| d.result != first.result) {
-                        anyhow::bail!("{}: method8 结果枚举歧义——窗口内 {} 条互不一致", ctx(), r8.len());
-                    }
+            // 一次 Shot 可以在同一 victim/同钟产生多个装甲交互；只按 victim+time 会把
+            // 合法的不同 type=32 segment 误判为歧义。作者路径与他人路径统一优先使用
+            // method8.hash6 ↔ type32.hash6 的确定性事件令牌；证据不足时仍 fail-fast。
+            match select_author_warning32(warnings32, direct_hits8, author_player_eid, teid, end_time) {
+                Ok(Some(first)) => {
+                    segment = first.segment;
                     game_hit_result = first.result;
                     hit_token = Some(first.hash6.iter().map(|b| format!("{:02x}", b)).collect());
+                    // segment 布局解码：[result][shell_global_id u24 LE（=(局部 id<<8)|国家基数）][00][X][Y][Z=armor_group]
+                    // （旧 "[tank+9]" 解释为 4 样本巧合，已证伪——B1 是弹种 id 的国家基数字节）
+                    let sb = segment.to_le_bytes();
+                    // 全局弹种 id = B1B2B3 u24 LE（=(局部 id<<8)|国家基数），与 WI shell_id 同值
+                    shell_id = (sb[1] as u32) | ((sb[2] as u32) << 8) | ((sb[3] as u32) << 16);
+                    armor_group = sb[7];
+                    hit_triangle = u16::from_be_bytes([sb[5], sb[6]]);
+                }
+                Ok(None) => {
+                    // type=32 未转发：direct_hits8 已按 t 排序且 filter 保序，r8 天然有序
+                    let r8: Vec<&DirectHit8> = direct_hits8.iter()
+                        .filter(|d| d.shooter == author_player_eid && d.victim == teid && (d.t - end_time).abs() <= 0.05)
+                        .collect();
+                    if !r8.is_empty() {
+                        let first = r8[0];
+                        if r8.iter().any(|d| d.result != first.result) {
+                            anyhow::bail!("{}: method8 结果枚举歧义——窗口内 {} 条互不一致", ctx(), r8.len());
+                        }
+                        game_hit_result = first.result;
+                        hit_token = Some(first.hash6.iter().map(|b| format!("{:02x}", b)).collect());
+                    }
+                }
+                Err(n) => {
+                    anyhow::bail!("{}: type=32 segment 歧义——窗口内 {} 条互不一致的命中段", ctx(), n);
                 }
             }
         }
@@ -1664,3 +1712,89 @@ pub(crate) fn extract_other_shot_replays_from_shared(
         muzzle_fallback,
     }
 }
+
+#[cfg(test)]
+mod author_warning32_pairing_tests {
+    use super::*;
+
+    fn warning(t: f32, eid: u32, hash6: [u8; 6], segment: u64) -> ArenaWarning32 {
+        ArenaWarning32 {
+            t,
+            eid,
+            result: segment.to_le_bytes()[0],
+            segment,
+            hash6,
+            inc_yaw: 0.0,
+            inc_pitch: 0.0,
+        }
+    }
+
+    fn direct(t: f32, shooter: u32, victim: u32, hash6: [u8; 6], result: u8) -> DirectHit8 {
+        DirectHit8 {
+            t,
+            shooter,
+            victim,
+            result,
+            component_index: Some(1),
+            hash6,
+            victim_state: None,
+            victim_prop2: None,
+        }
+    }
+
+    #[test]
+    fn unique_method8_hash_disambiguates_multi_interaction_type32_window() {
+        // 11.20 China Kranvagn 边界形状：同一 Shot / victim / 时钟出现两个不同
+        // type=32 segment；method8 自身重复广播，但两份共享同一 hash6。
+        let a = [0x0a, 0xa3, 0x6c, 0x50, 0xa1, 0x5c];
+        let b = [0x23, 0xa8, 0x6c, 0x4c, 0x8f, 0x4d];
+        let warnings = vec![
+            warning(110.35225, 42, a, 0x0346_0000_0135_8a00),
+            warning(110.35225, 42, b, 0x033a_b700_0135_8a01),
+        ];
+        let hits = vec![
+            direct(110.35225, 7, 42, a, 0),
+            direct(110.35225, 7, 42, a, 0),
+        ];
+
+        let picked = select_author_warning32(&warnings, &hits, 7, 42, 110.35225)
+            .expect("唯一 method8 hash6 应消除 type32 窗口歧义")
+            .expect("应选出命中段");
+        assert_eq!(picked.hash6, a);
+        assert_eq!(picked.segment, warnings[0].segment);
+    }
+
+    #[test]
+    fn conflicting_type32_without_unique_method8_hash_remains_fail_fast() {
+        let a = [1, 2, 3, 4, 5, 6];
+        let b = [6, 5, 4, 3, 2, 1];
+        let warnings = vec![
+            warning(20.0, 42, a, 0x10),
+            warning(20.0, 42, b, 0x20),
+        ];
+
+        assert_eq!(select_author_warning32(&warnings, &[], 7, 42, 20.0), Err(2));
+
+        let hits = vec![
+            direct(20.0, 7, 42, a, 0),
+            direct(20.0, 7, 42, b, 1),
+        ];
+        assert_eq!(select_author_warning32(&warnings, &hits, 7, 42, 20.0), Err(2));
+    }
+
+    #[test]
+    fn duplicate_same_token_type32_with_same_segment_is_not_ambiguous() {
+        let hash = [1, 1, 2, 3, 5, 8];
+        let warnings = vec![
+            warning(30.0, 42, hash, 0x1234),
+            warning(30.0, 42, hash, 0x1234),
+        ];
+        let hits = vec![direct(30.0, 7, 42, hash, 0)];
+
+        let picked = select_author_warning32(&warnings, &hits, 7, 42, 30.0)
+            .expect("相同 token + 相同 segment 的重复通知应去重语义")
+            .expect("应选出命中段");
+        assert_eq!(picked.segment, 0x1234);
+    }
+}
+

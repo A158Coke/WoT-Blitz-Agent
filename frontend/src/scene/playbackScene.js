@@ -1581,22 +1581,22 @@ export function initPlayback(container, store) {
     // —— 实时装填条（血量条下方，细长白条）：单发车整条 = 一发；弹夹/弹鼓车 1/N 条 = 一发
     // （N 由相位数据推导，见 scene/reloadBar.js）。相位流只覆盖**本方全队**：无相位流的车
     // 保持满条（= 已装填），不猜。
-    // —— 装填条：**逐发**绘制，对齐客户端托盘（TrayShellBar + TrayShellSector）——
-    // 每发一枚独立带框小条：full = 整条白 / loading = 按进度填 / empty = 仅暗槽
-    //（即客户端的 Full / Active / Inactive 三态）；单发车即一整条。
-    // 每枚宽度有上限（客户端托盘也是等距固定尺寸，不是按总数摊薄），发数多时不至于压成细丝。
+    // —— 装填条：**逐发**绘制，对齐客户端 OTM 标记的 `GunStatus`
+    //（`VehicleUIObjectMarker.yaml` 的 GunNHealthContainer 里，血量条之下的 70×3 细条）——
+    // 客户端结构：整条一根暗底（fill rgba(0,0,0,.565)）+ `ShellBack` 里 **每发一枚 `ShellItem`**
+    //（等分父宽、无间距），每枚自带 fill（该发状态）与嵌套 `Reload`（该发装填进度）。
+    // 我们同构：固定条宽 ÷ N 逐发均分；full=整条白 / loading=按进度填 / empty=仅暗槽。
     const sx = 56, sy = 112, sw = 400, sh = 16;
     const shells = (v.reloadShells && v.reloadShells.length) ? v.reloadShells : [{ state: 'full', progress: 1 }];
     const rn = shells.length;
-    const gap = rn > 1 ? 12 : 0;                                  // 设计 px ≈ 1.7 屏幕 px
-    const segW = Math.min(200, (sw - gap * (rn - 1)) / rn);       // 每发一枚的宽度（上限 200）
-    const total = segW * rn + gap * (rn - 1);
-    const x0 = sx + (sw - total) / 2;                             // 居中
+    // 客户端 ShellBack 的间距为 0（靠每枚自身 fill/描边>区分）；我们留 ~1 屏幕 px 空隙便于数发数
+    const gap = rn > 1 ? 4 : 0;
+    const segW = (sw - gap * (rn - 1)) / rn;                      // 固定条宽 ÷ N（客户端同式）
     for (let k = 0; k < rn; k++) {
       const st = shells[k] || { state: 'empty', progress: 0 };
-      const x = x0 + k * (segW + gap);
+      const x = sx + k * (segW + gap);
       rrPath(ctx, x, sy, segW, sh, 7);
-      ctx.fillStyle = 'rgba(0, 0, 0, .45)'; ctx.fill();
+      ctx.fillStyle = 'rgba(0, 0, 0, .56)'; ctx.fill();           // 与客户端 0.565 同档
       ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.32)'; ctx.stroke();
       const f = st.state === 'full' ? 1
         : st.state === 'loading' ? Math.max(0, Math.min(1, st.progress)) : 0;

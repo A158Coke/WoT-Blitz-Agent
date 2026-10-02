@@ -17,6 +17,16 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
 
+      - name: 校验 tag 与 VERSION 一致
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $expected = "v$version"
+          $tag = '${{ github.ref_name }}'
+          if ($tag -ne $expected) {
+            throw "Release tag mismatch: tag=$tag, VERSION=$version, expected=$expected"
+          }
+
       - name: 发布前测试（坏 tag 不出包）
         run: cargo test --workspace
 

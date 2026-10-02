@@ -142,4 +142,11 @@ WotbTools 的 canonical 流水线（Java `wotb-core` + 前端）需要 Agent 侧
 - ReplayDataset 阶段 2（observations/simulation 拆层，面向 Java 消费）
 - method16/17/12 消费（模块/乘员时间线、弹药余弹、实时计数器——可选，视 UI 需求）
 - AoI 协议边界收紧 coverage（0.094~2s 短隐藏段，前端消费）
-- 上游版本同步：对方 `deploy/agent/source.json` 仍锁 v0.3.1，v0.3.4–v0.3.8 的切面增量待其升级
+- **对方点名要的字段**（其 `docs/architecture/client-replay-engine-migration.md` §后续，2026-10-02）：
+  `PlaybackData.damages[]`（数据已在 `timeline.hp_events`，加字段、facet 版本不变）、
+  `coverage`（packet 计数与 `decodedPacketRatio`）、`finish_reason`、`unsupported_damage`
+  （只有双方无数值），并实测确认 `Shot.game_hit_result` 与对方 Java `primaryResultRaw` 同义。
+  其中"未钳零原始 HP"与"Visibility 当前 HP"已由 v0.3.5 的 `hp_raw` 覆盖。
+- 上游版本同步：**已解除**——对方 `deploy/agent/source.json` 现已 pin `v0.3.8` / `f35baa46`，
+  v0.3.4–v0.3.8 的切面增量已在其生产链路上（同日对方完成"服务器没有 parser"的客户端解析迁移
+  #447，本项目由此成为其唯一回放解析器）。

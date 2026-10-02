@@ -35,7 +35,22 @@
 | v0.3.8 | 结算阵容完整性 `roster_complete` 与录像者车辆代号 `author_vehicle_codename` |
 
 切面字段均为**附加**（`AiReviewFacet` v1 / `PlaybackData` v2 版本不变）。
-对方 `deploy/agent/source.json` 仍锁 v0.3.1，这一轮增量待其升级固化。
+
+**对方侧状态（2026-10-02 核对）**：`deploy/agent/source.json` 已 pin **`v0.3.8` / `f35baa46`**
+（v0.3.4–v0.3.8 的切面增量已在生产链路上）；同日对方完成**客户端解析迁移**（A158Coke/WotbTools#447
+「服务器没有 parser」）——服务端解析器模块整体删除，浏览器/Android 跑本项目的 WASM，**本项目由此成为
+该仓唯一的回放解析器**；AI 复盘走 WASM → canonical facts → `ClientAiReviewProjection`，parity 由
+`ClientAiProjectionParityTest` 进 required CI 常驻看护。
+
+**对方提出、待本项目补的字段**（见对方 `docs/architecture/client-replay-engine-migration.md` §后续）：
+`PlaybackData.damages[]`（数据已在 `timeline.hp_events`）、`coverage`（packet 计数与
+`decodedPacketRatio`）、`finish_reason`、`unsupported_damage`（仅双方无数值），以及实测确认
+`Shot.game_hit_result` 与对方 Java `primaryResultRaw` 同义；其中"未钳零原始 HP"已由 v0.3.5 的
+`hp_raw` 覆盖。
+
+回放前端同日与对方 3D 回放对齐（顶部基地状态条 + 3D 贴地圆环/圆盘贴花，与对方
+`utils/baseStatus.js`／`scene/baseDecal.js` 同构，口径唯一化在 `frontend/src/scene/baseStatus.js`）。
+
 详见 [docs/wotbtools-cross-reference.md](wotbtools-cross-reference.md) §五。
 
 ## 可行性评估（待决策，2026-10-01）

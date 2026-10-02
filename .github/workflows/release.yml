@@ -61,8 +61,8 @@ jobs:
             $versionChanged = ($previousVersion -ne $version)
           }
 
-          git show-ref --verify --quiet "refs/tags/$tag"
-          $tagExists = ($LASTEXITCODE -eq 0)
+          $tagMatch = (git tag --list $tag | Select-Object -First 1).Trim()
+          $tagExists = ($tagMatch -eq $tag)
           $tagSha = ''
           if ($tagExists) {
             $tagSha = (git rev-list -n 1 $tag).Trim()

@@ -78,7 +78,7 @@ pub fn export_cli(
     for part in &want {
         match part.as_str() {
             "ai" => {
-                let facet = AiReviewFacet::from_model(&model, &summary);
+                let facet = AiReviewFacet::from_model_with_packets(&model, &summary, &packets);
                 let path = write_json(&dir, &format!("{stem}.facet.ai.json"), &facet)?;
                 println!(
                     "  评审切面   → {}（{} 事件 / {} 实体）",

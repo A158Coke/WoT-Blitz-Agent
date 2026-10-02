@@ -25,6 +25,61 @@ pub struct AiReviewFacet {
     pub events: Vec<AiEvent>,
     /// 结算锚点（模型结论与过程互验用；行结构见 ReplayDataset 阶段 1 契约）
     pub settlements: Vec<PlayerSettlementRow>,
+    /// 原始世界位姿观测（type=10，**未滤波**；attachmentParent≠0 的挂接局部变换不是世界坐标，
+    /// 不收）。回放切面的 0.1 s 网格是渲染滤波输出——AoI 重入后有收敛滞后，不能当位置证据。
+    pub poses: Vec<RawPoseTrack>,
+    /// 原始炮塔属性广播（type=7 prop2 u16，未解码；高 10 位 = 相对偏航 coarse、低 6 位 = 俯仰比例）
+    pub turrets: Vec<RawTurretTrack>,
+}
+
+/// 单实体原始位姿观测（列式；各列等长、按包序 = 时钟序）
+#[derive(Debug, Clone, Serialize)]
+pub struct RawPoseTrack {
+    pub eid: u32,
+    pub t: Vec<f32>,
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+    pub z: Vec<f32>,
+    /// 车体偏航（rad，原始域，不解卷绕）
+    pub yaw: Vec<f32>,
+}
+
+/// 单实体原始 prop2 观测（列式）
+#[derive(Debug, Clone, Serialize)]
+pub struct RawTurretTrack {
+    pub eid: u32,
+    pub t: Vec<f32>,
+    pub raw: Vec<u16>,
+}
+
+/// type=10 原始世界位姿 + type=7 prop2 原始值（按 eid 升序、每实体包序）。
+/// 载荷：type10 `[eid][spaceId][attachmentParent][x y z][posError×3][yaw pitch roll]`（≥48）。
+pub fn collect_raw_tracks(packets: &[(u32, f32, &[u8])]) -> (Vec<RawPoseTrack>, Vec<RawTurretTrack>) {
+    use std::collections::BTreeMap;
+    let mut poses: BTreeMap<u32, RawPoseTrack> = BTreeMap::new();
+    let mut turrets: BTreeMap<u32, RawTurretTrack> = BTreeMap::new();
+    for (ptype, clock, p) in packets {
+        let eid_of = |p: &[u8]| u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+        if *ptype == 10 && p.len() >= 48 {
+            if u32::from_le_bytes([p[8], p[9], p[10], p[11]]) != 0 { continue; }
+            let f = |o: usize| f32::from_le_bytes([p[o], p[o + 1], p[o + 2], p[o + 3]]);
+            let eid = eid_of(p);
+            let tr = poses.entry(eid).or_insert_with(|| RawPoseTrack {
+                eid, t: Vec::new(), x: Vec::new(), y: Vec::new(), z: Vec::new(), yaw: Vec::new(),
+            });
+            tr.t.push(*clock);
+            tr.x.push(f(12));
+            tr.y.push(f(16));
+            tr.z.push(f(20));
+            tr.yaw.push(f(36));
+        } else if *ptype == 7 && p.len() >= 14 && u32::from_le_bytes([p[4], p[5], p[6], p[7]]) == 2 {
+            let eid = eid_of(p);
+            let tr = turrets.entry(eid).or_insert_with(|| RawTurretTrack { eid, t: Vec::new(), raw: Vec::new() });
+            tr.t.push(*clock);
+            tr.raw.push(u16::from_le_bytes([p[12], p[13]]));
+        }
+    }
+    (poses.into_values().collect(), turrets.into_values().collect())
 }
 
 /// 战斗头
@@ -150,6 +205,15 @@ impl AiEvent {
 
 impl AiReviewFacet {
     /// 从内部模型 + 结算联表投影。
+    /// 投影 + 原始位姿/炮塔流（`packets` 与建模所用同一包流）。
+    pub fn from_model_with_packets(model: &ReplayModel, summary: &BattleSummary, packets: &[(u32, f32, &[u8])]) -> Self {
+        let mut facet = Self::from_model(model, summary);
+        let (poses, turrets) = collect_raw_tracks(packets);
+        facet.poses = poses;
+        facet.turrets = turrets;
+        facet
+    }
+
     pub fn from_model(model: &ReplayModel, summary: &BattleSummary) -> Self {
         let mut events: Vec<AiEvent> = Vec::new();
 
@@ -266,6 +330,8 @@ impl AiReviewFacet {
             rosters,
             events,
             settlements,
+            poses: Vec::new(),
+            turrets: Vec::new(),
         }
     }
 }
@@ -461,5 +527,28 @@ mod tests {
             crate::replay::combat::Prop3Health { clock: 1.0, eid: 0x77, hp_raw: 1200 },
             crate::replay::combat::Prop3Health { clock: 2.0, eid: 0x77, hp_raw: 0xFFFD },
         ]);
+    }
+
+    /// 原始位姿：只收世界坐标（attachmentParent=0）的 type10，列式等长；prop2 原始 u16 原样。
+    #[test]
+    fn raw_tracks_keep_world_poses_only() {
+        let pose = |eid: u32, parent: u32, x: f32| {
+            let mut p = vec![0u8; 48];
+            p[0..4].copy_from_slice(&eid.to_le_bytes());
+            p[8..12].copy_from_slice(&parent.to_le_bytes());
+            p[12..16].copy_from_slice(&x.to_le_bytes());
+            p[36..40].copy_from_slice(&0.5f32.to_le_bytes());
+            p
+        };
+        let mut prop2 = vec![0u8; 14];
+        prop2[0..4].copy_from_slice(&7u32.to_le_bytes());
+        prop2[4..8].copy_from_slice(&2u32.to_le_bytes());
+        prop2[12..14].copy_from_slice(&0xABCDu16.to_le_bytes());
+        let (a, b, c) = (pose(7, 0, 1.0), pose(7, 99, 2.0), pose(7, 0, 3.0));
+        let packets: Vec<(u32, f32, &[u8])> = vec![(10, 1.0, &a), (10, 2.0, &b), (10, 3.0, &c), (7, 4.0, &prop2)];
+        let (poses, turrets) = collect_raw_tracks(&packets);
+        assert_eq!(poses.len(), 1);
+        assert_eq!((poses[0].t.clone(), poses[0].x.clone(), poses[0].yaw.clone()), (vec![1.0, 3.0], vec![1.0, 3.0], vec![0.5, 0.5]));
+        assert_eq!((turrets[0].eid, turrets[0].t.clone(), turrets[0].raw.clone()), (7, vec![4.0], vec![0xABCD]));
     }
 }

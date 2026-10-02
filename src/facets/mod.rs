@@ -45,17 +45,11 @@ pub fn export_cli(
         .unwrap_or_else(|| summary.map_name.clone());
 
     // 包流（与 playback_probe 同款类型映射）
-    let f = std::fs::File::open(file)?;
-    let mut replay = wotbreplay_parser::replay::Replay::open(f)?;
-    let data = replay.read_data()?;
-    let packets: Vec<(u32, f32, &[u8])> = data.packets.iter().map(|pkt| {
-        let t = match &pkt.payload {
-            wotbreplay_parser::models::data::payload::Payload::BasePlayerCreate { .. } => 0,
-            wotbreplay_parser::models::data::payload::Payload::EntityMethod(_) => 8,
-            wotbreplay_parser::models::data::payload::Payload::Unknown { packet_type } => *packet_type,
-        };
-        (t, pkt.clock_secs, &pkt.raw_payload[..])
-    }).collect();
+    // 原始分帧（不反序列化 payload，与 WASM 通道同源）
+    let raw = crate::replay::packets::read_raw_packets(&std::fs::read(file)?)?;
+    let packets: Vec<(u32, f32, &[u8])> = raw.iter()
+        .map(|p| (p.packet_type, p.clock_secs, p.payload.as_slice()))
+        .collect();
 
     let roster: Vec<PlaybackPlayer> = summary.players.iter().map(|p| PlaybackPlayer {
         account_id: p.account_id,

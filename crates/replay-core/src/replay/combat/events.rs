@@ -324,6 +324,33 @@ pub fn collect_initial_hp(packets: &[(u32, f32, &[u8])]) -> HashMap<u32, (f32, u
     out
 }
 
+/// type=7 sub=3（prop3）血量属性广播：`[eid u32][sub u32][...][health u16 @12]`。
+/// 与 method1 不是镜像——**录像者自身车辆**的血量变化常只有 prop3、没有 method1
+/// （WotbTools 冻结样本：3 场 4/17/11 条录像者 prop3 无对应 method1），同刻两者也可能取值不同。
+/// 只收载荷足长（≥14）的包，原始 u16 原样保留（哨兵族不解释；[`CombatTimeline`] 对短包写 0
+/// 是显示口径，不能当事实）。按时钟排序（稳定，保留包序）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct Prop3Health {
+    pub clock: f32,
+    pub eid: u32,
+    pub hp_raw: u16,
+}
+
+pub fn collect_prop3_health(packets: &[(u32, f32, &[u8])]) -> Vec<Prop3Health> {
+    let mut out: Vec<Prop3Health> = Vec::new();
+    for (ptype, clock, p) in packets {
+        if *ptype != 7 || p.len() < 14 { continue; }
+        if u32::from_le_bytes([p[4], p[5], p[6], p[7]]) != 3 { continue; }
+        out.push(Prop3Health {
+            clock: *clock,
+            eid: u32::from_le_bytes([p[0], p[1], p[2], p[3]]),
+            hp_raw: u16::from_le_bytes([p[12], p[13]]),
+        });
+    }
+    out.sort_by(|x, y| x.clock.partial_cmp(&y.clock).unwrap());
+    out
+}
+
 /// 解析全部 method1 血量事件（全实体、全来源），按时钟排序。
 pub fn parse_hp_events(packets: &[(u32, f32, &[u8])]) -> Vec<HpEvent> {
     let mut out: Vec<HpEvent> = Vec::new();
